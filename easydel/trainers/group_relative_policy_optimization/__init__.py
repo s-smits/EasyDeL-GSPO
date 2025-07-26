@@ -13,5 +13,16 @@
 # limitations under the License.
 from .grpo_config import GRPOConfig
 from .grpo_trainer import GRPOTrainer
+from .dapo_config import DAPOConfig
+from .dapo_trainer import DAPOTrainer
+from .dr_grpo_config import DRGRPOConfig
+from .dr_grpo_trainer import DRGRPOTrainer
 
-__all__ = "GRPOConfig", "GRPOTrainer"
+__all__ = [
+    "GRPOConfig", 
+    "GRPOTrainer",
+    "DAPOConfig",
+    "DAPOTrainer", 
+    "DRGRPOConfig",
+    "DRGRPOTrainer"
+]
