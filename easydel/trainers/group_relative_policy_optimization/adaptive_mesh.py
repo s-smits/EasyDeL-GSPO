@@ -153,12 +153,14 @@ def calculate_optimal_mesh_dims(
         
         # TPU v4 specific recommendations
         if is_tpu_v4 and num_workers == 4 and tp == 2:
-            recommended_batch = min(2, total_batch_size // num_workers)
-            if total_batch_size != recommended_batch * num_workers:
+            # Aim for 1–2 prompts per worker; never recommend 0
+            recommended_per_worker = max(1, min(2, total_batch_size // num_workers))
+            recommended_total_batch = recommended_per_worker * num_workers
+            if total_batch_size != recommended_total_batch:
                 logger.warning(
                     f"TPU v4-32 (4x2x2 topology) recommendation: "
-                    f"Use batch_size={recommended_batch * num_workers} "
-                    f"({recommended_batch} per worker) for optimal memory usage. "
+                    f"Use batch_size={recommended_total_batch} "
+                    f"({recommended_per_worker} per worker) for optimal memory usage. "
                     f"Current: {total_batch_size}"
                 )
         return (dp, fsdp, 1, tp, 1)

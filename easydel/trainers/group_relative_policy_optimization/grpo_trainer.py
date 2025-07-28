@@ -475,9 +475,6 @@ class GRPOTrainer(Trainer):
         step_seed = jax.device_get(state.step)
         key = jax.random.PRNGKey(step_seed + 42)  # +42 for deterministic offset
         
-        # Synchronize all workers at the start of preprocessing to prevent drift
-        jax.block_until_ready((state.step, key))
-        
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
             
@@ -488,23 +485,13 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
-
-            # Force all workers to sync before generation
-            jax.block_until_ready((prompt_ids, prompt_mask))
             
             with capture_time() as generation_time_fn:
-                sequences, prompt_ids, prompt_mask = jax.block_until_ready(
-                    self.generate_function(state, prompt_ids, prompt_mask)
+                sequences, prompt_ids, prompt_mask = self.generate_function(
+                    state, prompt_ids, prompt_mask
                 )
                 
             generation_time = generation_time_fn()
-            
-            # Critical synchronization point: ensure all workers have completed generation
-            # This prevents workers from diverging in subsequent computations
-            jax.block_until_ready((sequences, prompt_ids, prompt_mask))
-            
-            # Additional sync barrier before processing sequences
-            jax.block_until_ready(sequences)
             
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
@@ -542,9 +529,6 @@ class GRPOTrainer(Trainer):
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
                 dtype="f4",
             )
-            
-            # Ensure all workers are synchronized before reward computation
-            jax.block_until_ready((completion_ids, completion_mask, ref_per_token_logps))
             
             with capture_time() as rewarding_time_fn:
                 for i, (reward_func, reward_processing_class) in enumerate(
@@ -615,9 +599,6 @@ class GRPOTrainer(Trainer):
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             
-            # Critical synchronization point: ensure all workers have completed reward computation
-            jax.block_until_ready(rewards_per_func)
-            
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
                 advantages = (
@@ -636,9 +617,6 @@ class GRPOTrainer(Trainer):
             grouped_comp_time = grouped_comp_time_fn()
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
-        
-        # Final synchronization point: ensure all computations are complete before debug/return
-        jax.block_until_ready((rewards, advantages, completion_lengths_per_seq))
         
         # Simplified debug output to prevent TPU coordination issues
         if jax.process_index() == 0:
@@ -696,33 +674,17 @@ class GRPOTrainer(Trainer):
             else:
                 processed_metrics_dict[key] = value
         
-        # Try to gather arrays safely - if TPU halted, return what we can
-        try:
-            return (
-                {
-                    "prompt_ids": self._all_gather(prompt_ids),
-                    "prompt_mask": self._all_gather(prompt_mask),
-                    "completion_ids": self._all_gather(completion_ids),
-                    "completion_mask": self._all_gather(completion_mask),
-                    "ref_per_token_logps": self._all_gather(ref_per_token_logps),
-                    "advantages": advantages,
-                },
-                processed_metrics_dict,
-            )
-        except Exception as e:
-            logger.error(f"Failed to gather arrays after TPU halt: {e}")
-            # Return basic data structure to prevent complete failure
-            return (
-                {
-                    "prompt_ids": prompt_ids,  # Return local arrays if gather fails
-                    "prompt_mask": prompt_mask,
-                    "completion_ids": completion_ids,
-                    "completion_mask": completion_mask,
-                    "ref_per_token_logps": ref_per_token_logps,
-                    "advantages": advantages,
-                },
-                processed_metrics_dict,
-            )
+        return (
+            {
+                "prompt_ids": self._all_gather(prompt_ids),
+                "prompt_mask": self._all_gather(prompt_mask),
+                "completion_ids": self._all_gather(completion_ids),
+                "completion_mask": self._all_gather(completion_mask),
+                "ref_per_token_logps": self._all_gather(ref_per_token_logps),
+                "advantages": advantages,
+            },
+            processed_metrics_dict,
+        )
 
     def on_step_end(
         self,
