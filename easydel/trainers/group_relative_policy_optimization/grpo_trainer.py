@@ -472,6 +472,65 @@ class GRPOTrainer(Trainer):
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
+            
+            # Try multiple solutions to convert numpy arrays to JAX arrays
+            conversion_success = False
+            
+            # Solution 1: Simple jnp.asarray
+            if not conversion_success:
+                try:
+                    prompt_ids = jnp.asarray(prompt_ids)
+                    prompt_mask = jnp.asarray(prompt_mask)
+                    print(f"SUCCESS: Solution 1 (jnp.asarray) worked on worker {jax.process_index()}")
+                    conversion_success = True
+                except Exception as e:
+                    print(f"FAILED: Solution 1 (jnp.asarray) failed on worker {jax.process_index()}: {e}")
+            
+            # Solution 2: jax.device_put with replicated sharding
+            if not conversion_success:
+                try:
+                    mesh = self.model.mesh
+                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
+                    prompt_ids = jax.device_put(jnp.asarray(prompt_ids), replicated_sharding)
+                    prompt_mask = jax.device_put(jnp.asarray(prompt_mask), replicated_sharding)
+                    print(f"SUCCESS: Solution 2 (device_put + replicated) worked on worker {jax.process_index()}")
+                    conversion_success = True
+                except Exception as e:
+                    print(f"FAILED: Solution 2 (device_put + replicated) failed on worker {jax.process_index()}: {e}")
+            
+            # Solution 3: jax.make_array_from_process_local_data
+            if not conversion_success:
+                try:
+                    mesh = self.model.mesh
+                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
+                    prompt_ids = jax.make_array_from_process_local_data(replicated_sharding, prompt_ids)
+                    prompt_mask = jax.make_array_from_process_local_data(replicated_sharding, prompt_mask)
+                    print(f"SUCCESS: Solution 3 (make_array_from_process_local_data) worked on worker {jax.process_index()}")
+                    conversion_success = True
+                except Exception as e:
+                    print(f"FAILED: Solution 3 (make_array_from_process_local_data) failed on worker {jax.process_index()}: {e}")
+            
+            # Solution 4: jax.make_array_from_callback
+            if not conversion_success:
+                try:
+                    mesh = self.model.mesh
+                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
+                    
+                    def _make_prompt_ids():
+                        return jnp.asarray(prompt_ids)
+                    def _make_prompt_mask():
+                        return jnp.asarray(prompt_mask)
+                    
+                    prompt_ids = jax.make_array_from_callback(prompt_ids.shape, replicated_sharding, _make_prompt_ids)
+                    prompt_mask = jax.make_array_from_callback(prompt_mask.shape, replicated_sharding, _make_prompt_mask)
+                    print(f"SUCCESS: Solution 4 (make_array_from_callback) worked on worker {jax.process_index()}")
+                    conversion_success = True
+                except Exception as e:
+                    print(f"FAILED: Solution 4 (make_array_from_callback) failed on worker {jax.process_index()}: {e}")
+            
+            if not conversion_success:
+                print(f"ERROR: All conversion solutions failed on worker {jax.process_index()}")
+                raise RuntimeError("Failed to convert numpy arrays to JAX arrays")
 
             with capture_time() as generation_time_fn:
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(

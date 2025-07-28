@@ -48,20 +48,27 @@ def calculate_optimal_mesh_dims(
         - batch=1, rollouts=8, 4 TPUs, tp=2 → (1, 2, 1, 2, 1) - 2 models on 2 TPUs each
         - batch=2, rollouts=8, 4 TPUs → (2, 2, 1, 1, 1) - hybrid data + model sharding
         - batch=4, rollouts=8, 4 TPUs → (4, 1, 1, 1, 1) - data parallel only
+        
+    Multi-worker examples:
+        - batch=8, 16 TPUs, 4 workers → optimize for cross-worker communication
     """
     if num_devices is None:
         num_devices = jax.device_count()
+    num_workers = jax.process_count()
     
     # Calculate total compute requirements
     total_rollouts = total_batch_size * num_return_sequences
     
+    devices_per_process = num_devices // num_workers if num_workers > 1 else num_devices
+    
     logger.info(
         f"Calculating mesh for batch_size={total_batch_size}, "
         f"rollouts={num_return_sequences}, devices={num_devices}, "
+        f"processes={num_workers}, devices_per_process={devices_per_process}, "
         f"force_tp={force_tensor_parallel}, mini_batch={mini_batch_size}"
     )
     
-    # Strategy 1: Force tensor parallelism (2x2 configuration)
+    # Strategy 1: Force tensor parallelism (multi-worker aware)
     if force_tensor_parallel is not None:
         tp = force_tensor_parallel
         if num_devices % tp != 0:
@@ -69,8 +76,12 @@ def calculate_optimal_mesh_dims(
         
         num_model_slots = num_devices // tp  # How many models we can fit
         
-        # Calculate how many models we want to use
-        if mini_batch_size is not None:
+        # For multi-worker setups, prefer spreading DP across workers
+        if num_workers > 1 and total_batch_size >= num_workers:
+            # Distribute data parallel across workers first
+            dp_per_worker = max(1, total_batch_size // num_workers)
+            dp = min(dp_per_worker * num_workers, num_model_slots)
+        elif mini_batch_size is not None:
             # Calculate models needed based on mini_batch_size
             models_needed = max(1, total_batch_size // mini_batch_size)
             if models_needed > num_model_slots:
@@ -88,7 +99,7 @@ def calculate_optimal_mesh_dims(
         
         logger.info(
             f"Using tensor parallel strategy: dp={dp}, fsdp={fsdp}, tp={tp} "
-            f"({dp} models on {tp} TPUs each)"
+            f"({dp} models on {tp} TPUs each) across {num_workers} workers"
         )
         return (dp, fsdp, 1, tp, 1)
     
