@@ -220,11 +220,18 @@ def get_adaptive_sharding_spec(
             # Sub-batch processing: no batch sharding
             return PartitionSpec(None, 'tp')
         elif dp == 1:
-            # Only FSDP sharding
+            # Only FSDP sharding (no data parallelism)
             return PartitionSpec('fsdp', 'tp')
+        elif fsdp == 1:
+            # Only DP sharding (no FSDP)
+            return PartitionSpec('dp', 'tp')
         else:
-            # Hybrid DP + FSDP
-            return PartitionSpec(('dp', 'fsdp'), 'tp')
+            # Hybrid DP + FSDP: only shard if batch_size is divisible by dp*fsdp
+            if total_batch_size % (dp * fsdp) == 0:
+                return PartitionSpec(('dp', 'fsdp'), 'tp')
+            else:
+                # Fallback to DP only if not evenly divisible
+                return PartitionSpec('dp', 'tp')
     
     # Original logic for non-TP cases
     if total_batch_size == 1:
@@ -273,8 +280,15 @@ def get_adaptive_step_partition_spec(
             # Only DP: multiple models, each spans multiple TPUs
             return PartitionSpec('dp', ('tp', 'sp'))
         else:
-            # Hybrid: multiple models with FSDP across TPUs within each model
-            return PartitionSpec(('dp', 'fsdp'), ('tp', 'sp'))
+            # Hybrid DP + FSDP: only shard batch dim if divisible by dp*fsdp
+            if total_batch_size % (dp * fsdp) == 0:
+                return PartitionSpec(('dp', 'fsdp'), ('tp', 'sp'))
+            elif total_batch_size % dp == 0:
+                # Fallback to DP only when not evenly divisible by dp*fsdp
+                return PartitionSpec('dp', ('tp', 'sp'))
+            else:
+                # Last resort: don't shard batch dimension
+                return PartitionSpec(None, ('tp', 'sp'))
     
     # Original logic for non-TP cases
     if dp == 1:
@@ -282,4 +296,10 @@ def get_adaptive_step_partition_spec(
     elif fsdp == 1:
         return PartitionSpec('dp', 'sp')
     else:
-        return PartitionSpec(('dp', 'fsdp'), 'sp')
+        # Hybrid DP + FSDP for non-TP: same divisibility check
+        if total_batch_size % (dp * fsdp) == 0:
+            return PartitionSpec(('dp', 'fsdp'), 'sp')
+        elif total_batch_size % dp == 0:
+            return PartitionSpec('dp', 'sp')
+        else:
+            return PartitionSpec(None, 'sp')
