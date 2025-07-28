@@ -101,13 +101,18 @@ def calculate_optimal_mesh_dims(
             dp_per_worker = max(1, total_batch_size // num_workers)
             dp = min(dp_per_worker * num_workers, num_model_slots)
             
-            # TPU v4 specific adjustment: ensure we don't exceed memory capacity
-            if is_tpu_v4 and dp > num_model_slots // 2:
-                logger.warning(
-                    f"TPU v4 detected: reducing dp from {dp} to {num_model_slots // 2} "
-                    f"to account for megacore memory constraints"
-                )
-                dp = max(1, num_model_slots // 2)
+            # TPU v4 specific adjustment: ensure mesh dimensions are valid
+            # For TPU v4, we don't need to artificially reduce dp for memory
+            # The megacore architecture handles memory efficiently
+            if is_tpu_v4:
+                # Ensure dp * tp equals total devices
+                if dp * tp > num_devices:
+                    old_dp = dp
+                    dp = num_devices // tp
+                    logger.warning(
+                        f"TPU v4: adjusting dp from {old_dp} to {dp} to match device count "
+                        f"(dp={dp} * tp={tp} = {dp * tp} devices)"
+                    )
         elif mini_batch_size is not None:
             # Calculate models needed based on mini_batch_size
             models_needed = max(1, total_batch_size // mini_batch_size)
