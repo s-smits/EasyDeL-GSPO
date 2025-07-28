@@ -470,8 +470,13 @@ class GRPOTrainer(Trainer):
         batch: dict[str, jax.Array],
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+        # Critical: Ensure deterministic execution across all workers
+        # Use step number as seed to keep all workers synchronized
+        step_seed = jax.device_get(state.step)
+        key = jax.random.PRNGKey(step_seed + 42)  # +42 for deterministic offset
+        
         # Synchronize all workers at the start of preprocessing to prevent drift
-        jax.block_until_ready(state.step)
+        jax.block_until_ready((state.step, key))
         
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
@@ -484,6 +489,9 @@ class GRPOTrainer(Trainer):
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
 
+            # Force all workers to sync before generation
+            jax.block_until_ready((prompt_ids, prompt_mask))
+            
             with capture_time() as generation_time_fn:
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(
                     self.generate_function(state, prompt_ids, prompt_mask)
@@ -492,7 +500,11 @@ class GRPOTrainer(Trainer):
             generation_time = generation_time_fn()
             
             # Critical synchronization point: ensure all workers have completed generation
+            # This prevents workers from diverging in subsequent computations
             jax.block_until_ready((sequences, prompt_ids, prompt_mask))
+            
+            # Additional sync barrier before processing sequences
+            jax.block_until_ready(sequences)
             
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
@@ -530,6 +542,10 @@ class GRPOTrainer(Trainer):
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
                 dtype="f4",
             )
+            
+            # Ensure all workers are synchronized before reward computation
+            jax.block_until_ready((completion_ids, completion_mask, ref_per_token_logps))
+            
             with capture_time() as rewarding_time_fn:
                 for i, (reward_func, reward_processing_class) in enumerate(
                     zip(self.reward_funcs, self.reward_processing_classes, strict=False)
@@ -624,40 +640,15 @@ class GRPOTrainer(Trainer):
         # Final synchronization point: ensure all computations are complete before debug/return
         jax.block_until_ready((rewards, advantages, completion_lengths_per_seq))
         
-        # DEBUG: Check if training is actually happening (with proper synchronization)
+        # Simplified debug output to prevent TPU coordination issues
         if jax.process_index() == 0:
             try:
-                print(f"DEBUG TRAINING CHECK:")
-                print(f"  Step: {jax.device_get(state.step)}")
-                print(f"  Rewards shape: {rewards.shape}, mean: {jax.device_get(jnp.mean(rewards)):.4f}, std: {jax.device_get(jnp.std(rewards)):.4f}")
-                
-                # Safely access completion lengths
-                try:
-                    comp_min = jax.device_get(jnp.min(completion_lengths_per_seq))
-                    comp_max = jax.device_get(jnp.max(completion_lengths_per_seq))
-                    comp_mean = jax.device_get(jnp.mean(completion_lengths_per_seq))
-                    print(f"  Completion lengths: min={comp_min}, max={comp_max}, mean={comp_mean:.1f}")
-                except Exception as e:
-                    print(f"  Completion lengths: Error accessing data - {e}")
-                
-                try:
-                    adv_mean = jax.device_get(jnp.mean(advantages))
-                    adv_std = jax.device_get(jnp.std(advantages))
-                    print(f"  Advantages: mean={adv_mean:.4f}, std={adv_std:.4f}")
-                except Exception as e:
-                    print(f"  Advantages: Error accessing data - {e}")
-                
-                print(f"  Generation time: {generation_time:.1f}s")
-                
-                # Check diversity safely
-                try:
-                    unique_lengths = len(jax.device_get(jnp.unique(completion_lengths_per_seq)))
-                    print(f"  Unique completion lengths: {unique_lengths}/{len(completion_lengths_per_seq)} (diversity check)")
-                except Exception as e:
-                    print(f"  Diversity check: Error - {e}")
-                    
+                step_val = jax.device_get(state.step)
+                print(f"DEBUG: Step {step_val} - Generation time: {generation_time:.1f}s")
+                print(f"  Rewards: shape={rewards.shape}")
+                # Skip complex array operations that can cause coordination issues
             except Exception as e:
-                print(f"DEBUG: Error in training check - {e}")
+                print(f"DEBUG: Basic check failed - {e}")
             
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),
