@@ -111,10 +111,26 @@ def main():
     else:
         load_module = ed.AutoEasyDeLModelForCausalLM
 
+    # Use adaptive mesh configuration if tensor parallelism is specified
+    if gspo_config.force_tensor_parallel is not None:
+        from easydel.trainers.group_relative_policy_optimization.adaptive_mesh import calculate_optimal_mesh_dims
+        
+        optimal_dims = calculate_optimal_mesh_dims(
+            gspo_config.total_batch_size,
+            gspo_config.num_return_sequences,
+            force_tensor_parallel=gspo_config.force_tensor_parallel,
+            mini_batch_size=gspo_config.mini_batch_size
+        )
+        sharding_axis_dims = optimal_dims
+        print(f"Using adaptive mesh dims: {optimal_dims} (tp={gspo_config.force_tensor_parallel})")
+    else:
+        sharding_axis_dims = runtime_config.sharding_axis
+        print(f"Using default mesh dims: {runtime_config.sharding_axis}")
+
     model = load_module.from_pretrained(
         runtime_config.repo_id,
         auto_shard_model=True,
-        sharding_axis_dims=runtime_config.sharding_axis,
+        sharding_axis_dims=sharding_axis_dims,
         config_kwargs=ed.EasyDeLBaseConfigDict(
             max_position_embeddings=max_sequence_length,
             freq_max_position_embeddings=max_sequence_length,

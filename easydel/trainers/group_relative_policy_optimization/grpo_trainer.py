@@ -85,12 +85,34 @@ class GRPOTrainer(Trainer):
         assert isinstance(arguments, GRPOConfig), f"arguments type must be `GRPOConfig` but got {type(arguments)}"
         assert processing_class is not None, "processing_class must be specified to tokenize a DPO dataset."
 
+        # Apply adaptive mesh configuration before storing arguments
+        from .adaptive_mesh import get_adaptive_step_partition_spec
+        adaptive_step_spec = get_adaptive_step_partition_spec(
+            arguments.total_batch_size,
+            force_tensor_parallel=arguments.force_tensor_parallel,
+            mini_batch_size=arguments.mini_batch_size
+        )
+        
+        # Override step_partition_spec if it would cause dimension mismatch or using TP
+        should_override = (
+            (arguments.total_batch_size == 1 and arguments.step_partition_spec == PartitionSpec(("dp", "fsdp"), "sp")) or
+            (arguments.force_tensor_parallel is not None)
+        )
+        
+        if should_override:
+            logger.warning(
+                f"Overriding step_partition_spec from {arguments.step_partition_spec} to {adaptive_step_spec} "
+                f"for batch_size={arguments.total_batch_size}, tp={arguments.force_tensor_parallel}"
+            )
+            arguments.step_partition_spec = adaptive_step_spec
+        
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
         self.processing_class = processing_class
 
         if not isinstance(model, EasyDeLState):
             model = model.to_state()
+
 
         self.ref_state = deepcopy_model(model=model)
 
@@ -302,9 +324,21 @@ class GRPOTrainer(Trainer):
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
 
+        # Use adaptive sharding based on batch size and tensor parallelism
+        from .adaptive_mesh import get_adaptive_sharding_spec
+        adaptive_spec = get_adaptive_sharding_spec(
+            self.arguments.total_batch_size,
+            force_tensor_parallel=self.arguments.force_tensor_parallel,
+            mini_batch_size=self.arguments.mini_batch_size
+        )
+        input_sharding = NamedSharding(
+            mesh=mesh,
+            spec=adaptive_spec
+        )
+        
         @ejit(
-            in_shardings=(self.state_shardings, empty_sharding, empty_sharding),
-            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask):
             module = state.model
@@ -387,14 +421,20 @@ class GRPOTrainer(Trainer):
                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
+        # Token sharding should match step_partition_spec for properly sharded tokens
+        token_sharding = NamedSharding(
+            mesh=mesh,
+            spec=self.arguments.step_partition_spec
+        )
+        
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
             static_argnames=("graphdef"),
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                empty_sharding,
-                empty_sharding,
+                token_sharding,
+                token_sharding,
             ),
             out_shardings=empty_sharding,
         )
@@ -445,11 +485,18 @@ class GRPOTrainer(Trainer):
             ridmask = prompt_mask.repeat(self.num_generations, 0)
 
             with capture_time() as token_logps_time_fn:
+                # Properly shard tokens according to step_partition_spec before passing to compute_refmodel_logps
+                sharded_prompt_completion_ids = with_sharding_constraint(
+                    prompt_completion_ids, self.arguments.step_partition_spec
+                )
+                sharded_mask = with_sharding_constraint(
+                    jnp.concatenate([ridmask, completion_mask], -1), self.arguments.step_partition_spec
+                )
                 ref_per_token_logps = self.compute_refmodel_logps(
                     self.ref_state.graphstate,
                     self.ref_state.graphother,
-                    prompt_completion_ids,
-                    jnp.concatenate([ridmask, completion_mask], -1),
+                    sharded_prompt_completion_ids,
+                    sharded_mask,
                 )
             token_logps_time = token_logps_time_fn()
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)

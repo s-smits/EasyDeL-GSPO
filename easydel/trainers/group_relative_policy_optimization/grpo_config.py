@@ -75,6 +75,20 @@ class GRPOConfig(TrainingArguments):
         default=False,
         metadata={"help": "whenever to skip extracting prompt from dataset."},
     )
+    force_tensor_parallel: int | None = field(
+        default=None,
+        metadata={
+            "help": "Force tensor parallelism dimension. Enables sub-batch processing for more "
+            "efficient parallel training. E.g., tp=2 creates 2 models on 2 TPUs each with 4 TPUs total."
+        },
+    )
+    mini_batch_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Minimum batch size per model instance when using tensor parallelism. "
+            "Must be >= 1. Used to control how batches are distributed across model instances."
+        },
+    )
     num_return_sequences: int = field(
         default=4,
         metadata={
@@ -120,6 +134,18 @@ class GRPOConfig(TrainingArguments):
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
+        
+        # Validate tensor parallelism configuration
+        if self.force_tensor_parallel is not None:
+            if self.force_tensor_parallel < 1:
+                raise ValueError("force_tensor_parallel must be >= 1")
+            
+            if self.mini_batch_size is not None and self.mini_batch_size < 1:
+                raise ValueError("mini_batch_size must be >= 1 when specified")
+            
+            # Default mini_batch_size to 1 if not specified with TP
+            if self.mini_batch_size is None:
+                self.mini_batch_size = 1
 
         if hasattr(super(), "__post_init__"):
             super().__post_init__()

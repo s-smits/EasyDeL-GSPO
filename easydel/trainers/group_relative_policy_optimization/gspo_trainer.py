@@ -73,15 +73,27 @@ class GSPOTrainer(GRPOTrainer):
 
     def _configure_gspo_generate_function(self):
         """
-        Configure the generate function with use_cache=False to avoid KV cache dynamic shape issues.
+        Configure the generate function with adaptive sharding based on batch size.
         """
         from transformers import GenerationConfig
         from easydel.utils.compiling_utils import ejit
         from jax.sharding import NamedSharding, PartitionSpec
         from eformer import common_types
+        from .adaptive_mesh import get_adaptive_sharding_spec
 
         mesh = self.model.mesh
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+
+        # Use adaptive sharding based on batch size and tensor parallelism
+        adaptive_spec = get_adaptive_sharding_spec(
+            self.arguments.total_batch_size,
+            force_tensor_parallel=self.arguments.force_tensor_parallel,
+            mini_batch_size=self.arguments.mini_batch_size
+        )
+        input_sharding = NamedSharding(
+            mesh=mesh,
+            spec=adaptive_spec
+        )
 
         def generate(state: EasyDeLState, input_ids, attention_mask):
             module = state.model
@@ -121,8 +133,8 @@ class GSPOTrainer(GRPOTrainer):
 
         self.generate_function = ejit(
             generate,
-            in_shardings=(empty_sharding, empty_sharding, empty_sharding),
-            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
         )
 
     def configure_functions(self) -> TrainerConfigureFunctionOutput:
