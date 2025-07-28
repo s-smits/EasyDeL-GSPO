@@ -417,14 +417,13 @@ class GRPOTrainer(Trainer):
         def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
             apply = flax.nnx.merge(graphdef, graphtree, graphother)
             with apply.mesh:
-                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
-                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+                # Don't constraint sharding here - let it be handled by the input sharding
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
-        # Token sharding should match step_partition_spec for properly sharded tokens
-        token_sharding = NamedSharding(
+        # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
+        empty_token_sharding = NamedSharding(
             mesh=mesh,
-            spec=self.arguments.step_partition_spec
+            spec=PartitionSpec()
         )
         
         self.compute_refmodel_logps = ejit(
@@ -433,8 +432,8 @@ class GRPOTrainer(Trainer):
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                token_sharding,
-                token_sharding,
+                empty_token_sharding,
+                empty_token_sharding,
             ),
             out_shardings=empty_sharding,
         )
@@ -470,11 +469,6 @@ class GRPOTrainer(Trainer):
         batch: dict[str, jax.Array],
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
-        # Critical: Ensure deterministic execution across all workers
-        # Use step number as seed to keep all workers synchronized
-        step_seed = jax.device_get(state.step)
-        key = jax.random.PRNGKey(step_seed + 42)  # +42 for deterministic offset
-        
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
             
@@ -487,8 +481,8 @@ class GRPOTrainer(Trainer):
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
             
             with capture_time() as generation_time_fn:
-                sequences, prompt_ids, prompt_mask = self.generate_function(
-                    state, prompt_ids, prompt_mask
+                sequences, prompt_ids, prompt_mask = jax.block_until_ready(
+                    self.generate_function(state, prompt_ids, prompt_mask)
                 )
                 
             generation_time = generation_time_fn()
@@ -499,18 +493,13 @@ class GRPOTrainer(Trainer):
             ridmask = prompt_mask.repeat(self.num_generations, 0)
 
             with capture_time() as token_logps_time_fn:
-                # Properly shard tokens according to step_partition_spec before passing to compute_refmodel_logps
-                sharded_prompt_completion_ids = with_sharding_constraint(
-                    prompt_completion_ids, self.arguments.step_partition_spec
-                )
-                sharded_mask = with_sharding_constraint(
-                    jnp.concatenate([ridmask, completion_mask], -1), self.arguments.step_partition_spec
-                )
+                # Call compute_refmodel_logps without explicit sharding constraints
+                full_mask = jnp.concatenate([ridmask, completion_mask], -1)
                 ref_per_token_logps = self.compute_refmodel_logps(
                     self.ref_state.graphstate,
                     self.ref_state.graphother,
-                    sharded_prompt_completion_ids,
-                    sharded_mask,
+                    prompt_completion_ids,
+                    full_mask,
                 )
             token_logps_time = token_logps_time_fn()
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
@@ -676,11 +665,11 @@ class GRPOTrainer(Trainer):
         
         return (
             {
-                "prompt_ids": self._all_gather(prompt_ids),
-                "prompt_mask": self._all_gather(prompt_mask),
-                "completion_ids": self._all_gather(completion_ids),
-                "completion_mask": self._all_gather(completion_mask),
-                "ref_per_token_logps": self._all_gather(ref_per_token_logps),
+                "prompt_ids": prompt_ids,
+                "prompt_mask": prompt_mask,
+                "completion_ids": completion_ids,
+                "completion_mask": completion_mask,
+                "ref_per_token_logps": ref_per_token_logps,
                 "advantages": advantages,
             },
             processed_metrics_dict,
