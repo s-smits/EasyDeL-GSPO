@@ -158,3 +158,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 *.bin
+
+# user
+grpo_numinamath_output

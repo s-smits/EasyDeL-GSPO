@@ -319,7 +319,7 @@ class Qwen2Attention(AttentionModule):
             attention_mask=attention_mask,
             causal_mask=causal_mask,
             fcm_mask=fcm_mask,
-            sliding_window=self.sliding_window,
+            sliding_window=None,  # FORCE DISABLE SLIDING WINDOW TO FIX SLICE ERROR
         )
 
         attentions = self.attention_performer.forward(
@@ -334,7 +334,7 @@ class Qwen2Attention(AttentionModule):
             attention_mask=attention_mask,
             segment_ids=segment_ids,
             causal=True,
-            sliding_window=self.sliding_window,
+            sliding_window=None,  # FORCE DISABLE SLIDING WINDOW TO FIX SLICE ERROR
         )
 
         attn_output = self.shard_attention_prod(self._merge_heads(attentions.attention_outputs))

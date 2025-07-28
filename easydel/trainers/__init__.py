@@ -15,7 +15,7 @@
 from .base_trainer import BaseTrainer
 from .direct_preference_optimization_trainer import DPOConfig, DPOTrainer
 from .distillation_trainer import DistillationConfig, DistillationTrainer
-from .group_relative_policy_optimization import GRPOConfig, GRPOTrainer, DAPOConfig, DAPOTrainer, DRGRPOConfig, DRGRPOTrainer
+from .group_relative_policy_optimization import GRPOConfig, GRPOTrainer, DAPOConfig, DAPOTrainer, DRGRPOConfig, DRGRPOTrainer, GSPOConfig, GSPOTrainer
 from .odds_ratio_preference_optimization_trainer import ORPOConfig, ORPOTrainer
 from .packer import pack_sequences
 from .ray_scaler import RayDistributedTrainer
@@ -44,6 +44,8 @@ __all__ = (
     "DistillationTrainer",
     "GRPOConfig",
     "GRPOTrainer",
+    "GSPOConfig",
+    "GSPOTrainer",
     "JaxDistributedConfig",
     "ORPOConfig",
     "ORPOTrainer",

@@ -3,7 +3,7 @@ from dataclasses import field
 
 import jax
 from datasets import load_dataset
-from easydel import auto_pytree
+from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from math_verify import LatexExtractionConfig, parse, verify  # type:ignore
 from transformers import AutoConfig, AutoTokenizer
@@ -79,15 +79,15 @@ class RunTimeConfig:
             self.sharding_axis = tuple(map(int, self.sharding_axis.split(",")))
 
 
-parser = ed.utils.DataClassArgumentParser((ed.GRPOConfig, RunTimeConfig))
-grpo_config, runtime_config = parser.parse_args_into_dataclasses()
+parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
+gspo_config, runtime_config = parser.parse_args_into_dataclasses()
 
 runtime_config: RunTimeConfig
-grpo_config: ed.GRPOConfig
+gspo_config: ed.GSPOConfig
 
 if jax.process_index() == 0:
     print("Training Arguments\n----------------------")
-    print(grpo_config)
+    print(gspo_config)
     print("----------------------")
 
 
@@ -98,8 +98,8 @@ def main():
     if processor.pad_token_id is None:
         processor.pad_token_id = processor.eos_token_id
 
-    max_prompt_length = grpo_config.max_prompt_length
-    max_completion_length = grpo_config.max_completion_length
+    max_prompt_length = gspo_config.max_prompt_length
+    max_completion_length = gspo_config.max_completion_length
     max_sequence_length = max_completion_length + max_prompt_length
 
     hf_config = AutoConfig.from_pretrained(runtime_config.repo_id)
@@ -121,13 +121,12 @@ def main():
             mask_max_position_embeddings=max_sequence_length,
             attn_dtype=runtime_config.attn_dtype,
             attn_softmax_dtype=runtime_config.attn_softmax_dtype,
-            kv_cache_quantization_method=runtime_config.kv_cache_quantization,
-            attn_mechanism=runtime_config.attn_mechanism,
-            gradient_checkpointing=ed.EasyDeLGradientCheckPointers.NOTHING_SAVEABLE,
-            # Add sliding window configuration
-            use_sliding_window=False,
-            # sliding_window=max(4096, max_sequence_length),  # Safe window size
-            # max_window_layers=0,  # Apply sliding window from layer 0 onwards
+            kv_cache_quantization_method=ed.EasyDeLQuantizationMethods.NONE,  # Disable cache quantization to avoid shape issues
+            attn_mechanism=ed.AttentionMechanisms.VANILLA,  # Force vanilla attention to avoid sliding window issues
+            gradient_checkpointing=ed.EasyDeLGradientCheckPointers.NOTHING_SAVEABLE,  # Avoid static_argnums issues
+            use_sliding_window=False,  # Explicitly disable sliding window
+            sliding_window=None,  # Force None to prevent sliding window logic
+            use_cache=False,  # Disable KV cache to avoid dynamic shape issues
         ),
         quantization_method=ed.EasyDeLQuantizationMethods.NONE,
         param_dtype=runtime_config.param_dtype,
@@ -136,70 +135,47 @@ def main():
         partition_axis=ed.PartitionAxis(),
     )
 
-    def format_reward(completions, max_length=grpo_config.max_completion_length, completion_lengths=None, **kwargs):
+    # Configure proper EOS tokens for Qwen models to fix generation stopping
+    if hasattr(model, 'generation_config'):
+        # Get EOS tokens from processor
+        eos_tokens = []
+        if hasattr(processor, 'eos_token_id') and processor.eos_token_id is not None:
+            eos_tokens.append(processor.eos_token_id)
+        
+        # Add common Qwen end tokens
+        special_tokens = [
+            "<|im_end|>",
+            "<|endoftext|>",
+        ]
+        
+        for token_str in special_tokens:
+            token_id = processor.convert_tokens_to_ids(token_str)
+            if token_id is not None and token_id != processor.unk_token_id:
+                eos_tokens.append(token_id)
+        
+        # Remove duplicates and None values
+        eos_tokens = list(set([t for t in eos_tokens if t is not None]))
+        
+        if eos_tokens:
+            model.generation_config.eos_token_id = eos_tokens
+            print(f"Configured EOS tokens: {eos_tokens}")
+        else:
+            print("Warning: No valid EOS tokens found")
+    else:
+        print("Warning: Model has no generation_config")
+
+    def format_reward(completions, **kwargs):
         """Reward function that checks if the completion has a specific format."""
         pattern = r"^<think>.*?</think>\s*<answer>.*?</answer>$"
         completion_contents = [completion[0]["content"] for completion in completions]
-        
-        rewards_list = []
-        max_context_count = 0
-        correct_count = 0
-        
-        for i, content in enumerate(completion_contents):
-            # Check if format matches
-            match = re.match(pattern, content, re.DOTALL)
-            
-            # Check if reached max context (no </think> means incomplete)
-            # Use actual completion length if provided
-            if completion_lengths is not None:
-                is_max_context = "</think>" not in content and completion_lengths[i] >= max_length - 10
-            else:
-                is_max_context = "</think>" not in content and len(processor(content)["input_ids"]) >= max_length - 10
-            
-            if is_max_context:
-                max_context_count += 1
-            
-            if match:
-                rewards_list.append(1.0)
-                correct_count += 1
-            else:
-                rewards_list.append(0.0)
-        
-        # Apply negative rewards if 50% or more reach max context
-        total_completions = len(completion_contents)
-        max_context_ratio = max_context_count / total_completions
-        
-        if max_context_ratio >= 0.5:
-            # Calculate negative reward based on ratio of max context and correctness
-            # If 4/8 max context and 0/8 correct = -0.5
-            # Scale: -0.5 * (max_context_ratio) * (1 - correct_ratio)
-            correct_ratio = correct_count / total_completions
-            negative_penalty = -0.5 * max_context_ratio * (1 - correct_ratio)
-            
-            # Apply negative penalty to completions that reached max context without correct format
-            for i in range(len(rewards_list)):
-                content = completion_contents[i]
-                if completion_lengths is not None:
-                    is_max_context = "</think>" not in content and completion_lengths[i] >= max_length - 10
-                else:
-                    is_max_context = "</think>" not in content and len(processor(content)["input_ids"]) >= max_length - 10
-                if is_max_context and rewards_list[i] == 0.0:
-                    rewards_list[i] = negative_penalty
-            
-            # Debug logging
-            if jax.process_index() == 0:
-                print(f"  Format reward negative penalty applied:")
-                print(f"    Max context ratio: {max_context_ratio:.2f} ({max_context_count}/{total_completions})")
-                print(f"    Correct ratio: {correct_ratio:.2f} ({correct_count}/{total_completions})")
-                print(f"    Negative penalty: {negative_penalty:.3f}")
-                print(f"    Final rewards: {rewards_list}")
-        
+        matches = [re.match(pattern, content) for content in completion_contents]
+        rewards_list = [1.0 if match else 0.0 for match in matches]
         return rewards_list
 
     def accuracy_reward(prompts, completions, batch, **kwargs):
         """Reward function that checks if the completion is the same as the ground truth."""
         # solutions = kwargs["solution"]
-        solutions = processor.batch_decode(batch["solution_ids"]) * grpo_config.num_return_sequences
+        solutions = processor.batch_decode(batch["solution_ids"]) * gspo_config.num_return_sequences
         completion_contents = [completion[0]["content"] for completion in completions]
         rewards = []
         for content, solution in zip(completion_contents, solutions, strict=False):
@@ -221,7 +197,6 @@ def main():
             else:
                 rewards.append(1.0)
         return rewards
-
 
     SYSTEM_PROMPT = (
         "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant"
@@ -256,7 +231,7 @@ def main():
             return_tensors="np",
             padding="max_length",
             padding_side="left",
-            max_length=grpo_config.max_prompt_length,
+            max_length=gspo_config.max_prompt_length,
             truncation=True,
             add_special_tokens=False,
         )
@@ -265,7 +240,7 @@ def main():
             return_tensors="np",
             padding="max_length",
             padding_side="left",
-            max_length=grpo_config.max_prompt_length,
+            max_length=gspo_config.max_prompt_length,
             truncation=True,
             add_special_tokens=False,
             return_attention_mask=False,
@@ -273,13 +248,15 @@ def main():
         ids.update({"solution_ids": ans["input_ids"]})
         return ids
 
-    trainer = ed.GRPOTrainer(
+    from easydel.trainers.group_relative_policy_optimization import GSPOTrainer
+    
+    trainer = GSPOTrainer(
         model=model,
         reward_funcs=[format_reward, accuracy_reward],
         processing_class=processor,
         eval_dataset=test_dataset,
         train_dataset=train_dataset,
-        arguments=grpo_config,
+        arguments=gspo_config,
         data_tokenize_fn=data_tokenize_fn,
     )
 

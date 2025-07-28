@@ -389,18 +389,31 @@ class MinLengthLogitsProcessor(LogitsProcessor):
     """
 
     min_length: int
-    eos_token_id: int
+    eos_token_id: int | list[int]
 
     def __post_init__(self):
         if not isinstance(self.min_length, int) or self.min_length < 0:
             raise ValueError(f"`min_length` has to be a positive integer, but is {self.min_length}")
 
-        if not isinstance(self.eos_token_id, int) or self.eos_token_id < 0:
-            raise ValueError(f"`eos_token_id` has to be a positive integer, but is {self.eos_token_id},")
+        # Validate EOS token ID(s)
+        if isinstance(self.eos_token_id, (list, tuple)):
+            if len(self.eos_token_id) == 0:
+                raise ValueError("`eos_token_id` list cannot be empty")
+            for token_id in self.eos_token_id:
+                if not isinstance(token_id, int) or token_id < 0:
+                    raise ValueError(f"All `eos_token_id` values must be positive integers, but got {token_id}")
+        elif not isinstance(self.eos_token_id, int) or self.eos_token_id < 0:
+            raise ValueError(f"`eos_token_id` has to be a positive integer or list of integers, but is {self.eos_token_id}")
 
     def __call__(self, input_ids: jnp.ndarray, scores: jnp.ndarray, cur_len: int) -> jnp.ndarray:
         apply_penalty = 1 - jnp.clip(cur_len - self.min_length, 0, 1)
-        scores = jnp.where(apply_penalty, scores.at[:, self.eos_token_id].set(-float("inf")), scores)
+        
+        # Handle both single EOS token and list of EOS tokens
+        if isinstance(self.eos_token_id, (list, tuple)):
+            eos_tokens = jnp.array(self.eos_token_id, dtype=jnp.int32)
+            scores = jnp.where(apply_penalty, scores.at[:, eos_tokens].set(-float("inf")), scores)
+        else:
+            scores = jnp.where(apply_penalty, scores.at[:, self.eos_token_id].set(-float("inf")), scores)
         return scores
 
 

@@ -104,6 +104,19 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    advantage_epsilon: float = field(
+        default=1e-6,
+        metadata={
+            "help": "Minimum standard deviation threshold for computing advantages. Groups with std < epsilon "
+            "will have their advantages set to 0 to avoid numerical instability. Typical values: 1e-6 to 1e-3. "
+            "Critical for avoiding tiny advantages (e.g., 1e-8) that provide no learning signal. "
+            "After per-group standardization, advantages should typically have median |A| ~ 0.5-1.5 "
+            "and 95th percentile |A| ~ 2-5. If you see many low-variance groups, consider: "
+            "(1) using more diverse prompts, (2) increasing num_return_sequences, "
+            "(3) using continuous rewards instead of binary, or (4) increasing this epsilon."
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length

@@ -77,7 +77,8 @@ def dapo_step(
     partition_spec: PartitionSpec | None = None,
     gradient_accumulation_steps: int = 1,
     is_training: bool = True,
-) -> tuple[EasyDeLState, LossMetrics]:
+# Returns state & metrics in training mode, metrics only in eval mode.
+) -> tp.Union[tuple[EasyDeLState, LossMetrics], LossMetrics]:
     """
     DAPO training step with four key improvements over GRPO:
     1. Asymmetric clipping (Clip-Higher) 
@@ -172,7 +173,9 @@ def dapo_step(
                 "mean_ratio": mean_ratio,
                 "clipped_fraction": clipped_fraction,
                 "ref_per_token_logps": jnp.mean(ref_per_token_logps),
-                "advantages": jnp.mean(shaped_advantages),
+                "advantages_mean": jnp.mean(shaped_advantages),
+                "advantage_median_abs": jnp.median(jnp.abs(shaped_advantages)),
+                "advantage_95th_percentile_abs": jnp.percentile(jnp.abs(shaped_advantages), 95),
                 "clip_ratio_low": clip_ratio_low,
                 "clip_ratio_high": clip_ratio_high,
             },
@@ -198,9 +201,9 @@ def dapo_step(
             ),
         )
         return state, metrics
-    else:
+    else:  # evaluation ⇒ state is unchanged, only metrics are needed
         _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
-        return metrics
+        return metrics  # type: ignore[return-value] (Union return)
 
 
 def check_batch_diversity(batch: tp.Mapping[str, jax.Array], num_generations: int, min_variance: float = 0.1) -> bool:
@@ -229,4 +232,4 @@ def check_batch_diversity(batch: tp.Mapping[str, jax.Array], num_generations: in
     
     # Return True if all groups have sufficient variance
     # Add small epsilon to avoid FP equality issues when variance is exactly zero
-    return jnp.all(group_variances >= (min_variance - 1e-6)) 
+    return bool(jnp.all(group_variances >= (min_variance - 1e-6))) 

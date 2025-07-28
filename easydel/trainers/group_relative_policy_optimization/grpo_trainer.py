@@ -144,7 +144,8 @@ class GRPOTrainer(Trainer):
                     reward_processing_class.pad_token = reward_processing_class.eos_token
 
                 reward_func.model.config.pad_token_id = reward_processing_class.pad_token_id
-                reward_processing_classes[i] = reward_processing_class
+                if reward_processing_classes is not None:
+                    reward_processing_classes[i] = reward_processing_class
                 reward_funcs[i] = reward_func
 
         self.num_generations = arguments.num_return_sequences
@@ -172,6 +173,11 @@ class GRPOTrainer(Trainer):
         log_table = None
         if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
             log_table = wandb.Table(columns=["generations", "took", "length", "step"])
+            if jax.process_index() == 0:
+                print(f"DEBUG: Created WandB table - use_wandb:{self.arguments.use_wandb}, can_log_metrics:{self.arguments.can_log_metrics}, wandb_available:{wandb is not None}")
+        else:
+            if jax.process_index() == 0:
+                print(f"DEBUG: WandB table NOT created - use_wandb:{self.arguments.use_wandb}, can_log_metrics:{self.arguments.can_log_metrics}, wandb_available:{wandb is not None}")
         self.log_table = log_table
 
         super().__init__(
@@ -314,20 +320,24 @@ class GRPOTrainer(Trainer):
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
                     mode=common_types.MODE_PREFILL,
                 )
+                # Proper generation config that relies on natural EOS stopping
+                generation_config = GenerationConfig(
+                    top_p=self.arguments.top_p,
+                    top_k=self.arguments.top_k,
+                    temperature=self.arguments.temperature,
+                    pad_token_id=self.pad_token_id,
+                    eos_token_id=self.eos_token_id,  # EasyDeL will stop naturally when these tokens are generated
+                    max_new_tokens=self.arguments.max_completion_length,
+                    max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
+                    num_return_sequences=self.num_generations,
+                    do_sample=True,
+                    use_cache=False,
+                )
+                
                 sequences = module.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    generation_config=GenerationConfig(
-                        top_p=self.arguments.top_p,
-                        top_k=self.arguments.top_k,
-                        temperature=self.arguments.temperature,
-                        pad_token_id=self.pad_token_id,
-                        eos_token_id=self.eos_token_id,
-                        max_new_tokens=self.arguments.max_completion_length,
-                        max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
-                        num_return_sequences=self.num_generations,
-                        do_sample=True,
-                    ),
+                    generation_config=generation_config,
                 ).sequences
                 return sequences, input_ids, attention_mask
 
@@ -409,9 +419,10 @@ class GRPOTrainer(Trainer):
             <= jnp.where(
                 is_eos.any(axis=1),
                 jnp.argmax(is_eos.astype(jnp.int32), axis=1),
-                jnp.full((is_eos.shape[0],), is_eos.shape[1]),
+                jnp.full((is_eos.shape[0],), is_eos.shape[1] - 1),  # Fix off-by-one
             )[:, None]
         ).astype(jnp.int32)
+
 
     def _preprocess_batch_input(
         self,
@@ -426,6 +437,7 @@ class GRPOTrainer(Trainer):
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(
                     self.generate_function(state, prompt_ids, prompt_mask)
                 )
+                
             generation_time = generation_time_fn()
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
@@ -449,6 +461,9 @@ class GRPOTrainer(Trainer):
             else:
                 completions = completions_text
 
+            # Calculate completion lengths before rewards
+            completion_lengths_per_seq = completion_mask.sum(-1)  # Length per sequence
+            
             rewards_per_func = jnp.zeros(
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
                 dtype="f4",
@@ -486,13 +501,39 @@ class GRPOTrainer(Trainer):
                         ).logits[:, 0]
                     else:
                         in_prompts = prompts * self.num_generations
+                        if jax.process_index() == 0 and i == 0:  # Debug first reward function only
+                            print(f"DEBUG REWARD FUNCTION:")
+                            print(f"  Function: {getattr(reward_func, '__name__', 'unknown')}")
+                            print(f"  Prompts count: {len(in_prompts)}")
+                            print(f"  Completions type: {type(completions)}")
+                            print(f"  First completion type: {type(completions[0]) if completions else 'empty'}")
+                            if completions and len(completions) > 0:
+                                # Show FULL completion text to see the ending
+                                full_text = completions[0][0]["content"] if isinstance(completions[0], list) else completions[0]
+                                # print(f"  FULL completion text:\n{full_text}") don't display full completion text
+                                print(f"  Text ends with: ...{full_text[-100:]}")
+                                # Check pattern match
+                                import re
+                                pattern = r"^<think>.*?</think>\s*<answer>.*?</answer>$"
+                                match = re.match(pattern, full_text, re.DOTALL)
+                                print(f"  Pattern match: {match is not None}")
+                                if not match:
+                                    print(f"  Checking if has <think>: {'<think>' in full_text}")
+                                    print(f"  Checking if has </think>: {'</think>' in full_text}")
+                                    print(f"  Checking if has <answer>: {'<answer>' in full_text}")
+                                    print(f"  Checking if has </answer>: {'</answer>' in full_text}")
+                                print("="*50)
                         output_reward_func = reward_func(
                             prompts=in_prompts,
                             completions=completions,
                             max_length=self.arguments.max_sequence_length,
                             batch=batch,
+                            completion_lengths=jax.device_get(completion_lengths_per_seq),
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
+                        if jax.process_index() == 0 and i == 0:  # Debug first reward function only
+                            print(f"  Reward output: {output_reward_func}")
+                            print(f"  Reward array: {rew}")
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             with capture_time() as grouped_comp_time_fn:
@@ -512,7 +553,21 @@ class GRPOTrainer(Trainer):
                 )
             grouped_comp_time = grouped_comp_time_fn()
         preprocessing_time = preprocessing_time_fn()
-        completion_length = jnp.sum(completion_mask.sum(-1), -1)
+        completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
+        
+        # DEBUG: Check if training is actually happening
+        if jax.process_index() == 0:
+            print(f"DEBUG TRAINING CHECK:")
+            print(f"  Step: {jax.device_get(state.step)}")
+            print(f"  Rewards shape: {rewards.shape}, mean: {jnp.mean(rewards):.4f}, std: {jnp.std(rewards):.4f}")
+            print(f"  Completion lengths: min={jnp.min(completion_lengths_per_seq)}, max={jnp.max(completion_lengths_per_seq)}, mean={jnp.mean(completion_lengths_per_seq):.1f}")
+            print(f"  Advantages: mean={jnp.mean(advantages):.4f}, std={jnp.std(advantages):.4f}")
+            print(f"  Note: Advantage magnitudes (median, 95th percentile) are now visible in progress bar")
+            print(f"  Generation time: {generation_time:.1f}s")
+            # Check if we're getting diverse outputs
+            unique_lengths = len(jnp.unique(completion_lengths_per_seq))
+            print(f"  Unique completion lengths: {unique_lengths}/{len(completion_lengths_per_seq)} (diversity check)")
+            
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),
             "completion_length": completion_length,
@@ -527,13 +582,33 @@ class GRPOTrainer(Trainer):
             metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None:
             cur_step = jax.device_get(state.step)
+            # HARDCODED: Always log to WandB table every step
+            if jax.process_index() == 0:
+                print(f"DEBUG: WandB table logging EVERY STEP - step {cur_step}")
             decoded_text = self.processing_class.batch_decode(jax.device_get(completion_ids))
-            for text in decoded_text:
-                self.log_table.add_data(text, generation_time, completion_length, cur_step)
+            individual_lengths = jax.device_get(completion_lengths_per_seq)
+            if jax.process_index() == 0:
+                print(f"DEBUG: Logging {len(decoded_text)} generations to WandB table")
+                print(f"DEBUG: Sample generation (first 100 chars): {decoded_text[0][:100]}...")
+                print(f"DEBUG: Individual lengths: {individual_lengths}")
+            for text, length in zip(decoded_text, individual_lengths, strict=False):
+                self.log_table.add_data(text, generation_time, float(length), cur_step)
+            if jax.process_index() == 0:
+                print(f"DEBUG: Calling wandb.log with table containing {len(self.log_table.data)} rows")
             wandb.log({"generations": self.log_table}, step=cur_step)
+            if jax.process_index() == 0:
+                print("DEBUG: WandB log call completed")
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
+        # Convert JAX arrays to float for metrics dict to match return type
+        processed_metrics_dict = {}
+        for key, value in metrics_dict.items():
+            if hasattr(value, 'item'):  # JAX array or numpy array
+                processed_metrics_dict[key] = float(value.item())
+            else:
+                processed_metrics_dict[key] = value
+        
         return (
             {
                 "prompt_ids": self._all_gather(prompt_ids),
@@ -543,7 +618,7 @@ class GRPOTrainer(Trainer):
                 "ref_per_token_logps": self._all_gather(ref_per_token_logps),
                 "advantages": advantages,
             },
-            metrics_dict,
+            processed_metrics_dict,
         )
 
     def on_step_end(

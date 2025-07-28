@@ -616,6 +616,27 @@ class EasyGenerationMixin:
         return filtered_kwargs
 
     @staticmethod
+    def _normalize_eos_token_id(eos_token_id) -> chex.Array | None:
+        """
+        Normalize EOS token ID(s) to a 1D JAX array for use with jnp.isin().
+        
+        Args:
+            eos_token_id: None, int, list, tuple, or array of EOS token IDs
+            
+        Returns:
+            1D JAX array of EOS token IDs or None if input is None
+        """
+        if eos_token_id is None:
+            return None
+        
+        if isinstance(eos_token_id, (list, tuple)):
+            return jnp.array(eos_token_id, dtype=jnp.int32).reshape(-1)
+        elif isinstance(eos_token_id, int):
+            return jnp.array([eos_token_id], dtype=jnp.int32)
+        else:
+            return jnp.array(eos_token_id, dtype=jnp.int32).reshape(-1)
+
+    @staticmethod
     def _run_loop_in_debug(cond_fn, body_fn, init_state) -> tp.Any:
         """
         Executes a conditional loop (`while cond_fn: state = body_fn(state)`) without JAX tracing.
@@ -1148,7 +1169,7 @@ class EasyGenerationMixin:
 
         batch_size, cur_len = input_ids.shape
 
-        eos_token_id = jnp.array(eos_token_id, dtype=jnp.int32 if eos_token_id is not None else None)
+        eos_token_id = self._normalize_eos_token_id(eos_token_id)
         pad_token_id = jnp.array(pad_token_id, dtype=jnp.int32)
         cur_len = jnp.array(cur_len)
 
@@ -1239,10 +1260,7 @@ class EasyGenerationMixin:
 
         batch_size, cur_len = input_ids.shape
 
-        eos_token_id = jnp.array(
-            eos_token_id,
-            dtype=jnp.int32 if eos_token_id is not None else None,
-        )
+        eos_token_id = self._normalize_eos_token_id(eos_token_id)
         pad_token_id = jnp.array(pad_token_id, dtype=jnp.int32)
         cur_len = jnp.array(cur_len)
 
@@ -1386,7 +1404,7 @@ class EasyGenerationMixin:
 
         batch_size, num_beams, cur_len = input_ids.shape
 
-        eos_token_id = jnp.array(eos_token_id, dtype=jnp.int32 if eos_token_id is not None else None)
+        eos_token_id = self._normalize_eos_token_id(eos_token_id)
         pad_token_id = jnp.array(pad_token_id, dtype=jnp.int32)
         cur_len = jnp.array(cur_len)
 
@@ -1498,7 +1516,7 @@ class EasyGenerationMixin:
             topk_ids = jnp.expand_dims(topk_indices % vocab_size, axis=2)
             topk_sequences = lax.dynamic_update_slice(topk_running_sequences, topk_ids, (0, 0, state.cur_len))
 
-            did_topk_just_finished = topk_sequences[:, :, state.cur_len] == eos_token_id
+            did_topk_just_finished = jnp.isin(topk_sequences[:, :, state.cur_len], eos_token_id) if eos_token_id is not None else jnp.zeros_like(topk_sequences[:, :, state.cur_len], dtype=jnp.bool_)
             running_topk_log_probs = topk_log_probs + did_topk_just_finished * np.array(-1.0e7)
 
             next_topk_indices = lax.top_k(running_topk_log_probs, k=num_beams)[1]

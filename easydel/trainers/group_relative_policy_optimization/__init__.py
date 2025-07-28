@@ -17,6 +17,8 @@ from .dapo_config import DAPOConfig
 from .dapo_trainer import DAPOTrainer
 from .dr_grpo_config import DRGRPOConfig
 from .dr_grpo_trainer import DRGRPOTrainer
+from .gspo_config import GSPOConfig
+from .gspo_trainer import GSPOTrainer
 
 __all__ = [
     "GRPOConfig", 
@@ -24,5 +26,7 @@ __all__ = [
     "DAPOConfig",
     "DAPOTrainer", 
     "DRGRPOConfig",
-    "DRGRPOTrainer"
+    "DRGRPOTrainer",
+    "GSPOConfig",
+    "GSPOTrainer",
 ]

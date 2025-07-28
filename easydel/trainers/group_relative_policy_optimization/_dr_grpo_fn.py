@@ -108,7 +108,7 @@ def dr_grpo_step(
     partition_spec: PartitionSpec | None = None,
     gradient_accumulation_steps: int = 1,
     is_training: bool = True,
-) -> tuple[EasyDeLState, LossMetrics]:
+) -> tp.Union[tuple[EasyDeLState, LossMetrics], LossMetrics]:
     """
     DR GRPO training step with corrected normalization to eliminate optimization biases.
     
@@ -175,7 +175,9 @@ def dr_grpo_step(
             other_metrics={
                 "mean_kl": mean_kl,
                 "ref_per_token_logps": jnp.mean(ref_per_token_logps),
-                "advantages": jnp.mean(advantages),
+                "advantages_mean": jnp.mean(advantages),
+                "advantage_median_abs": jnp.median(jnp.abs(advantages)),
+                "advantage_95th_percentile_abs": jnp.percentile(jnp.abs(advantages), 95),
                 "use_constant_normalization": float(use_constant_normalization),
                 "constant_normalization_factor": constant_normalization_factor,
                 "disable_std_scaling": float(disable_std_scaling),
@@ -204,4 +206,4 @@ def dr_grpo_step(
         return state, metrics
     else:
         _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
-        return metrics 
+        return metrics  # type: ignore[return-value] 
