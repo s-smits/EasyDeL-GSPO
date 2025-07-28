@@ -276,8 +276,12 @@ def get_adaptive_step_partition_spec(
     if tp > 1:
         # With tensor parallelism, include tp in sequence dimension
         if dp == 1:
-            # Only FSDP: each model spans multiple TPUs
-            return PartitionSpec('fsdp', ('tp', 'sp'))
+            # Only FSDP. Shard batch dim across fsdp **only** if it divides
+            # the batch size; otherwise, do not shard the batch dim.
+            if total_batch_size % fsdp == 0:
+                return PartitionSpec('fsdp', ('tp', 'sp'))
+            else:
+                return PartitionSpec(None, ('tp', 'sp'))
         elif fsdp == 1:
             # Only DP: multiple models, each spans multiple TPUs
             return PartitionSpec('dp', ('tp', 'sp'))
@@ -294,7 +298,11 @@ def get_adaptive_step_partition_spec(
     
     # Original logic for non-TP cases
     if dp == 1:
-        return PartitionSpec('fsdp', 'sp')
+        # Shard batch dim across fsdp only when divisible
+        if total_batch_size % fsdp == 0:
+            return PartitionSpec('fsdp', 'sp')
+        else:
+            return PartitionSpec(None, 'sp')
     elif fsdp == 1:
         return PartitionSpec('dp', 'sp')
     else:
