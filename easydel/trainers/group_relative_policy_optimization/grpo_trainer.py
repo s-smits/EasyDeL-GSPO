@@ -470,67 +470,19 @@ class GRPOTrainer(Trainer):
         batch: dict[str, jax.Array],
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+        # Synchronize all workers at the start of preprocessing to prevent drift
+        jax.block_until_ready(state.step)
+        
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
             
-            # Try multiple solutions to convert numpy arrays to JAX arrays
-            conversion_success = False
-            
-            # Solution 1: Simple jnp.asarray
-            if not conversion_success:
-                try:
-                    prompt_ids = jnp.asarray(prompt_ids)
-                    prompt_mask = jnp.asarray(prompt_mask)
-                    print(f"SUCCESS: Solution 1 (jnp.asarray) worked on worker {jax.process_index()}")
-                    conversion_success = True
-                except Exception as e:
-                    print(f"FAILED: Solution 1 (jnp.asarray) failed on worker {jax.process_index()}: {e}")
-            
-            # Solution 2: jax.device_put with replicated sharding
-            if not conversion_success:
-                try:
-                    mesh = self.model.mesh
-                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
-                    prompt_ids = jax.device_put(jnp.asarray(prompt_ids), replicated_sharding)
-                    prompt_mask = jax.device_put(jnp.asarray(prompt_mask), replicated_sharding)
-                    print(f"SUCCESS: Solution 2 (device_put + replicated) worked on worker {jax.process_index()}")
-                    conversion_success = True
-                except Exception as e:
-                    print(f"FAILED: Solution 2 (device_put + replicated) failed on worker {jax.process_index()}: {e}")
-            
-            # Solution 3: jax.make_array_from_process_local_data
-            if not conversion_success:
-                try:
-                    mesh = self.model.mesh
-                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
-                    prompt_ids = jax.make_array_from_process_local_data(replicated_sharding, prompt_ids)
-                    prompt_mask = jax.make_array_from_process_local_data(replicated_sharding, prompt_mask)
-                    print(f"SUCCESS: Solution 3 (make_array_from_process_local_data) worked on worker {jax.process_index()}")
-                    conversion_success = True
-                except Exception as e:
-                    print(f"FAILED: Solution 3 (make_array_from_process_local_data) failed on worker {jax.process_index()}: {e}")
-            
-            # Solution 4: jax.make_array_from_callback
-            if not conversion_success:
-                try:
-                    mesh = self.model.mesh
-                    replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
-                    
-                    def _make_prompt_ids():
-                        return jnp.asarray(prompt_ids)
-                    def _make_prompt_mask():
-                        return jnp.asarray(prompt_mask)
-                    
-                    prompt_ids = jax.make_array_from_callback(prompt_ids.shape, replicated_sharding, _make_prompt_ids)
-                    prompt_mask = jax.make_array_from_callback(prompt_mask.shape, replicated_sharding, _make_prompt_mask)
-                    print(f"SUCCESS: Solution 4 (make_array_from_callback) worked on worker {jax.process_index()}")
-                    conversion_success = True
-                except Exception as e:
-                    print(f"FAILED: Solution 4 (make_array_from_callback) failed on worker {jax.process_index()}: {e}")
-            
-            if not conversion_success:
-                print(f"ERROR: All conversion solutions failed on worker {jax.process_index()}")
-                raise RuntimeError("Failed to convert numpy arrays to JAX arrays")
+            # Convert numpy arrays to JAX arrays using the working solution
+            try:
+                prompt_ids = jnp.asarray(prompt_ids)
+                prompt_mask = jnp.asarray(prompt_mask)
+            except Exception as e:
+                logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
+                raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
 
             with capture_time() as generation_time_fn:
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(
@@ -661,18 +613,43 @@ class GRPOTrainer(Trainer):
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         
-        # DEBUG: Check if training is actually happening
+        # DEBUG: Check if training is actually happening (with proper synchronization)
         if jax.process_index() == 0:
-            print(f"DEBUG TRAINING CHECK:")
-            print(f"  Step: {jax.device_get(state.step)}")
-            print(f"  Rewards shape: {rewards.shape}, mean: {jnp.mean(rewards):.4f}, std: {jnp.std(rewards):.4f}")
-            print(f"  Completion lengths: min={jnp.min(completion_lengths_per_seq)}, max={jnp.max(completion_lengths_per_seq)}, mean={jnp.mean(completion_lengths_per_seq):.1f}")
-            print(f"  Advantages: mean={jnp.mean(advantages):.4f}, std={jnp.std(advantages):.4f}")
-            print(f"  Note: Advantage magnitudes (median, 95th percentile) are now visible in progress bar")
-            print(f"  Generation time: {generation_time:.1f}s")
-            # Check if we're getting diverse outputs
-            unique_lengths = len(jnp.unique(completion_lengths_per_seq))
-            print(f"  Unique completion lengths: {unique_lengths}/{len(completion_lengths_per_seq)} (diversity check)")
+            try:
+                # Synchronize all workers before accessing device arrays
+                jax.block_until_ready((rewards, completion_lengths_per_seq, advantages))
+                
+                print(f"DEBUG TRAINING CHECK:")
+                print(f"  Step: {jax.device_get(state.step)}")
+                print(f"  Rewards shape: {rewards.shape}, mean: {jax.device_get(jnp.mean(rewards)):.4f}, std: {jax.device_get(jnp.std(rewards)):.4f}")
+                
+                # Safely access completion lengths
+                try:
+                    comp_min = jax.device_get(jnp.min(completion_lengths_per_seq))
+                    comp_max = jax.device_get(jnp.max(completion_lengths_per_seq))
+                    comp_mean = jax.device_get(jnp.mean(completion_lengths_per_seq))
+                    print(f"  Completion lengths: min={comp_min}, max={comp_max}, mean={comp_mean:.1f}")
+                except Exception as e:
+                    print(f"  Completion lengths: Error accessing data - {e}")
+                
+                try:
+                    adv_mean = jax.device_get(jnp.mean(advantages))
+                    adv_std = jax.device_get(jnp.std(advantages))
+                    print(f"  Advantages: mean={adv_mean:.4f}, std={adv_std:.4f}")
+                except Exception as e:
+                    print(f"  Advantages: Error accessing data - {e}")
+                
+                print(f"  Generation time: {generation_time:.1f}s")
+                
+                # Check diversity safely
+                try:
+                    unique_lengths = len(jax.device_get(jnp.unique(completion_lengths_per_seq)))
+                    print(f"  Unique completion lengths: {unique_lengths}/{len(completion_lengths_per_seq)} (diversity check)")
+                except Exception as e:
+                    print(f"  Diversity check: Error - {e}")
+                    
+            except Exception as e:
+                print(f"DEBUG: Error in training check - {e}")
             
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),

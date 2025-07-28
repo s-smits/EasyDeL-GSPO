@@ -61,11 +61,30 @@ def calculate_optimal_mesh_dims(
     
     devices_per_process = num_devices // num_workers if num_workers > 1 else num_devices
     
+    # TPU v4 detection and adjustment
+    is_tpu_v4 = False
+    try:
+        # Check if we're on TPU v4 by examining device properties
+        device = jax.devices()[0]
+        if hasattr(device, 'device_kind') and 'v4' in str(device.device_kind).lower():
+            is_tpu_v4 = True
+    except:
+        pass
+    
+    # For TPU v4, each "device" is actually a megacore (2 TensorCores)
+    # but batch sizes should be calculated based on actual memory capacity
+    effective_devices = num_devices
+    if is_tpu_v4 and num_workers > 1:
+        # TPU v4-32: 16 megacores, but each has 32GB HBM (like 2 v3 cores)
+        # For multi-worker training, account for the actual topology
+        logger.info(f"Detected TPU v4 configuration with {num_devices} megacores")
+        
     logger.info(
         f"Calculating mesh for batch_size={total_batch_size}, "
         f"rollouts={num_return_sequences}, devices={num_devices}, "
         f"processes={num_workers}, devices_per_process={devices_per_process}, "
-        f"force_tp={force_tensor_parallel}, mini_batch={mini_batch_size}"
+        f"force_tp={force_tensor_parallel}, mini_batch={mini_batch_size}, "
+        f"is_tpu_v4={is_tpu_v4}"
     )
     
     # Strategy 1: Force tensor parallelism (multi-worker aware)
@@ -81,6 +100,14 @@ def calculate_optimal_mesh_dims(
             # Distribute data parallel across workers first
             dp_per_worker = max(1, total_batch_size // num_workers)
             dp = min(dp_per_worker * num_workers, num_model_slots)
+            
+            # TPU v4 specific adjustment: ensure we don't exceed memory capacity
+            if is_tpu_v4 and dp > num_model_slots // 2:
+                logger.warning(
+                    f"TPU v4 detected: reducing dp from {dp} to {num_model_slots // 2} "
+                    f"to account for megacore memory constraints"
+                )
+                dp = max(1, num_model_slots // 2)
         elif mini_batch_size is not None:
             # Calculate models needed based on mini_batch_size
             models_needed = max(1, total_batch_size // mini_batch_size)
@@ -101,6 +128,17 @@ def calculate_optimal_mesh_dims(
             f"Using tensor parallel strategy: dp={dp}, fsdp={fsdp}, tp={tp} "
             f"({dp} models on {tp} TPUs each) across {num_workers} workers"
         )
+        
+        # TPU v4 specific recommendations
+        if is_tpu_v4 and num_workers == 4 and tp == 2:
+            recommended_batch = min(2, total_batch_size // num_workers)
+            if total_batch_size != recommended_batch * num_workers:
+                logger.warning(
+                    f"TPU v4-32 (4x2x2 topology) recommendation: "
+                    f"Use batch_size={recommended_batch * num_workers} "
+                    f"({recommended_batch} per worker) for optimal memory usage. "
+                    f"Current: {total_batch_size}"
+                )
         return (dp, fsdp, 1, tp, 1)
     
     # Strategy 2: When batch_size >= num_devices, use pure data parallelism
