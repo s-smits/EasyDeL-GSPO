@@ -101,18 +101,22 @@ def calculate_optimal_mesh_dims(
             dp_per_worker = max(1, total_batch_size // num_workers)
             dp = min(dp_per_worker * num_workers, num_model_slots)
             
-            # TPU v4 specific adjustment: ensure mesh dimensions are valid
-            # For TPU v4, we don't need to artificially reduce dp for memory
-            # The megacore architecture handles memory efficiently
-            if is_tpu_v4:
-                # Ensure dp * tp equals total devices
-                if dp * tp > num_devices:
-                    old_dp = dp
-                    dp = num_devices // tp
-                    logger.warning(
-                        f"TPU v4: adjusting dp from {old_dp} to {dp} to match device count "
-                        f"(dp={dp} * tp={tp} = {dp * tp} devices)"
+            # Critical fix: Ensure we use all available devices
+            devices_used = dp * tp
+            if devices_used < num_devices:
+                # Use remaining devices for FSDP
+                remaining_devices = num_devices // devices_used
+                if remaining_devices > 1:
+                    fsdp = remaining_devices
+                    logger.info(
+                        f"Using remaining {remaining_devices} devices for FSDP: "
+                        f"dp={dp}, fsdp={fsdp}, tp={tp} "
+                        f"(total: {dp * fsdp * tp} devices)"
                     )
+                else:
+                    fsdp = 1
+            else:
+                fsdp = 1
         elif mini_batch_size is not None:
             # Calculate models needed based on mini_batch_size
             models_needed = max(1, total_batch_size // mini_batch_size)
@@ -122,16 +126,29 @@ def calculate_optimal_mesh_dims(
                     f"but only have {num_model_slots} model slots. Using all available slots."
                 )
             dp = min(models_needed, num_model_slots)
+            
+            # Ensure we use all available devices
+            devices_used = dp * tp
+            if devices_used < num_devices:
+                remaining_devices = num_devices // devices_used
+                fsdp = remaining_devices if remaining_devices > 1 else 1
+            else:
+                fsdp = 1
         else:
             # Default: use all available model slots for maximum parallelism
             dp = num_model_slots
-        
-        # FSDP is always 1 with tensor parallelism (each model uses TP for internal sharding)
-        fsdp = 1
+            
+            # Ensure we use all available devices
+            devices_used = dp * tp
+            if devices_used < num_devices:
+                remaining_devices = num_devices // devices_used
+                fsdp = remaining_devices if remaining_devices > 1 else 1
+            else:
+                fsdp = 1
         
         logger.info(
             f"Using tensor parallel strategy: dp={dp}, fsdp={fsdp}, tp={tp} "
-            f"({dp} models on {tp} TPUs each) across {num_workers} workers"
+            f"({dp} models, each using {fsdp * tp} TPUs: {fsdp} FSDP × {tp} TP) across {num_workers} workers"
         )
         
         # TPU v4 specific recommendations
