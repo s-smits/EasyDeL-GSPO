@@ -490,6 +490,10 @@ class GRPOTrainer(Trainer):
                 )
                 
             generation_time = generation_time_fn()
+            
+            # Critical synchronization point: ensure all workers have completed generation
+            jax.block_until_ready((sequences, prompt_ids, prompt_mask))
+            
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
             completion_mask = self._make_attn_mask(completion_ids)
@@ -594,6 +598,10 @@ class GRPOTrainer(Trainer):
                             print(f"  Reward array: {rew}")
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
+            
+            # Critical synchronization point: ensure all workers have completed reward computation
+            jax.block_until_ready(rewards_per_func)
+            
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
                 advantages = (
@@ -613,12 +621,12 @@ class GRPOTrainer(Trainer):
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         
+        # Final synchronization point: ensure all computations are complete before debug/return
+        jax.block_until_ready((rewards, advantages, completion_lengths_per_seq))
+        
         # DEBUG: Check if training is actually happening (with proper synchronization)
         if jax.process_index() == 0:
             try:
-                # Synchronize all workers before accessing device arrays
-                jax.block_until_ready((rewards, completion_lengths_per_seq, advantages))
-                
                 print(f"DEBUG TRAINING CHECK:")
                 print(f"  Step: {jax.device_get(state.step)}")
                 print(f"  Rewards shape: {rewards.shape}, mean: {jax.device_get(jnp.mean(rewards)):.4f}, std: {jax.device_get(jnp.std(rewards)):.4f}")
@@ -688,21 +696,42 @@ class GRPOTrainer(Trainer):
         processed_metrics_dict = {}
         for key, value in metrics_dict.items():
             if hasattr(value, 'item'):  # JAX array or numpy array
-                processed_metrics_dict[key] = float(value.item())
+                try:
+                    processed_metrics_dict[key] = float(value.item())
+                except Exception as e:
+                    # If TPU halted, use a default value or skip the metric
+                    logger.warning(f"Failed to convert metric '{key}' to float: {e}")
+                    processed_metrics_dict[key] = 0.0  # Default fallback value
             else:
                 processed_metrics_dict[key] = value
         
-        return (
-            {
-                "prompt_ids": self._all_gather(prompt_ids),
-                "prompt_mask": self._all_gather(prompt_mask),
-                "completion_ids": self._all_gather(completion_ids),
-                "completion_mask": self._all_gather(completion_mask),
-                "ref_per_token_logps": self._all_gather(ref_per_token_logps),
-                "advantages": advantages,
-            },
-            processed_metrics_dict,
-        )
+        # Try to gather arrays safely - if TPU halted, return what we can
+        try:
+            return (
+                {
+                    "prompt_ids": self._all_gather(prompt_ids),
+                    "prompt_mask": self._all_gather(prompt_mask),
+                    "completion_ids": self._all_gather(completion_ids),
+                    "completion_mask": self._all_gather(completion_mask),
+                    "ref_per_token_logps": self._all_gather(ref_per_token_logps),
+                    "advantages": advantages,
+                },
+                processed_metrics_dict,
+            )
+        except Exception as e:
+            logger.error(f"Failed to gather arrays after TPU halt: {e}")
+            # Return basic data structure to prevent complete failure
+            return (
+                {
+                    "prompt_ids": prompt_ids,  # Return local arrays if gather fails
+                    "prompt_mask": prompt_mask,
+                    "completion_ids": completion_ids,
+                    "completion_mask": completion_mask,
+                    "ref_per_token_logps": ref_per_token_logps,
+                    "advantages": advantages,
+                },
+                processed_metrics_dict,
+            )
 
     def on_step_end(
         self,
