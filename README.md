@@ -1,1 +1,1 @@
-Multi-worker GSPO in EasyDeL 🔥
+Multi-worker GSPO on TPUs with EasyDeL 🔥
