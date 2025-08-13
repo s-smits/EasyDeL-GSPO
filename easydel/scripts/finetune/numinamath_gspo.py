@@ -119,6 +119,7 @@ def main():
             gspo_config.total_batch_size,
             gspo_config.num_return_sequences,
             force_tensor_parallel=gspo_config.force_tensor_parallel,
+            force_data_parallel=gspo_config.force_data_parallel,
             mini_batch_size=gspo_config.mini_batch_size
         )
         sharding_axis_dims = optimal_dims

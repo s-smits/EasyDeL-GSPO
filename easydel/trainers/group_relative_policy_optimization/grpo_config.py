@@ -82,6 +82,12 @@ class GRPOConfig(TrainingArguments):
             "efficient parallel training. E.g., tp=2 creates 2 models on 2 TPUs each with 4 TPUs total."
         },
     )
+    force_data_parallel: int | None = field(
+        default=None,
+        metadata={
+            "help": "Force data parallelism dimension. When used with --force_tensor_parallel, must satisfy dp * tp <= num_devices."
+        },
+    )
     mini_batch_size: int | None = field(
         default=None,
         metadata={
@@ -146,6 +152,11 @@ class GRPOConfig(TrainingArguments):
             # Default mini_batch_size to 1 if not specified with TP
             if self.mini_batch_size is None:
                 self.mini_batch_size = 1
+
+        # Validate data parallelism configuration
+        if self.force_data_parallel is not None:
+            if self.force_data_parallel < 1:
+                raise ValueError("force_data_parallel must be >= 1")
 
         if hasattr(super(), "__post_init__"):
             super().__post_init__()

@@ -90,6 +90,7 @@ class GRPOTrainer(Trainer):
         adaptive_step_spec = get_adaptive_step_partition_spec(
             arguments.total_batch_size,
             force_tensor_parallel=arguments.force_tensor_parallel,
+            force_data_parallel=arguments.force_data_parallel,
             mini_batch_size=arguments.mini_batch_size
         )
         
@@ -329,6 +330,7 @@ class GRPOTrainer(Trainer):
         adaptive_spec = get_adaptive_sharding_spec(
             self.arguments.total_batch_size,
             force_tensor_parallel=self.arguments.force_tensor_parallel,
+            force_data_parallel=self.arguments.force_data_parallel,
             mini_batch_size=self.arguments.mini_batch_size
         )
         input_sharding = NamedSharding(
