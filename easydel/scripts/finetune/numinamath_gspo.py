@@ -86,13 +86,15 @@ gspo_config, runtime_config = parser.parse_args_into_dataclasses()
 runtime_config: RunTimeConfig
 gspo_config: ed.GSPOConfig
 
-if jax.process_index() == 0:
-    print("Training Arguments\n----------------------")
-    print(gspo_config)
-    print("----------------------")
-
 
 def main():
+    # Print arguments once per process without initializing JAX backend at import-time
+    try:
+        print("Training Arguments\n----------------------")
+        print(gspo_config)
+        print("----------------------")
+    except Exception:
+        pass
     processor = AutoTokenizer.from_pretrained(runtime_config.processor_repo_id)
     processor.padding_side = "left"
 
