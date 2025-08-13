@@ -27,6 +27,7 @@ def calculate_optimal_mesh_dims(
     num_devices: int = None,
     prefer_data_parallel: bool = True,
     force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
     mini_batch_size: int = None,
 ) -> tuple[int, int, int, int, int]:
     """
@@ -37,279 +38,438 @@ def calculate_optimal_mesh_dims(
         num_return_sequences: Number of rollouts per prompt
         num_devices: Number of available devices (defaults to JAX device count)
         prefer_data_parallel: Whether to prioritize data parallelism over model parallelism
-        force_tensor_parallel: Force specific TP dimension (enables sub-batch processing)
+        force_tensor_parallel: Force specific TP dimension
+        force_data_parallel: Force specific DP dimension
         mini_batch_size: Minimum batch size per model instance (used with TP)
         
     Returns:
         Tuple of (dp, fsdp, ep, tp, sp) dimensions
-        
-    Examples:
-        - batch=1, rollouts=8, 4 TPUs → (1, 4, 1, 1, 1) - model sharding only
-        - batch=1, rollouts=8, 4 TPUs, tp=2 → (1, 2, 1, 2, 1) - 2 models on 2 TPUs each
-        - batch=2, rollouts=8, 4 TPUs → (2, 2, 1, 1, 1) - hybrid data + model sharding
-        - batch=4, rollouts=8, 4 TPUs → (4, 1, 1, 1, 1) - data parallel only
-        
-    Multi-worker examples:
-        - batch=8, 16 TPUs, 4 workers → optimize for cross-worker communication
     """
     if num_devices is None:
         num_devices = jax.device_count()
     num_workers = jax.process_count()
-    
-    # Calculate total compute requirements
-    total_rollouts = total_batch_size * num_return_sequences
-    
-    devices_per_process = num_devices // num_workers if num_workers > 1 else num_devices
-    
-    # TPU v4 detection and adjustment
-    is_tpu_v4 = False
+    # On TPU v4, devices commonly come as multiples of 8 per worker (megacore).
+    # If TPU v4-32 is expected but only 16 devices are visible due to 2 chips per worker,
+    # still compute logical dp/tp using total devices across workers.
     try:
-        # Check if we're on TPU v4 by examining device properties
-        device = jax.devices()[0]
-        if hasattr(device, 'device_kind') and 'v4' in str(device.device_kind).lower():
-            is_tpu_v4 = True
-    except:
-        pass
+        devices_per_process = len([d for d in jax.devices() if d.process_index == jax.process_index()])
+    except Exception:
+        devices_per_process = None
     
-    # For TPU v4, each "device" is actually a megacore (2 TensorCores)
-    # but batch sizes should be calculated based on actual memory capacity
-    effective_devices = num_devices
-    if is_tpu_v4 and num_workers > 1:
-        # TPU v4-32: 16 megacores, but each has 32GB HBM (like 2 v3 cores)
-        # For multi-worker training, account for the actual topology
-        logger.info(f"Detected TPU v4 configuration with {num_devices} megacores")
-        
+    # Detect TPU configuration
+    tpu_type = _detect_tpu_type()
+    
     logger.info(
         f"Calculating mesh for batch_size={total_batch_size}, "
         f"rollouts={num_return_sequences}, devices={num_devices}, "
-        f"processes={num_workers}, devices_per_process={devices_per_process}, "
-        f"force_tp={force_tensor_parallel}, mini_batch={mini_batch_size}, "
-        f"is_tpu_v4={is_tpu_v4}"
+        f"processes={num_workers}, tpu_type={tpu_type}, "
+        f"force_tp={force_tensor_parallel}, force_dp={force_data_parallel}, "
+        f"mini_batch={mini_batch_size}"
     )
     
-    # Strategy 1: Force tensor parallelism (multi-worker aware)
+    # Strategy 1: Both TP and DP are forced
+    if force_tensor_parallel is not None and force_data_parallel is not None:
+        tp = force_tensor_parallel
+        dp = force_data_parallel
+        
+        # Validate configuration
+        total_used = dp * tp
+        if total_used > num_devices:
+            raise ValueError(
+                f"force_data_parallel({dp}) × force_tensor_parallel({tp}) = {total_used} "
+                f"exceeds available devices({num_devices})"
+            )
+        elif total_used < num_devices:
+            # Use remaining devices for FSDP
+            fsdp = num_devices // total_used
+            logger.warning(
+                f"Using {total_used}/{num_devices} devices. "
+                f"Remaining {num_devices - total_used} devices will be used for FSDP={fsdp}"
+            )
+        else:
+            fsdp = 1
+        
+        logger.info(
+            f"Using forced configuration: dp={dp}, fsdp={fsdp}, tp={tp} "
+            f"(total: {dp * fsdp * tp} devices)"
+        )
+        return (dp, fsdp, 1, tp, 1)
+    
+    # Strategy 2: Only TP is forced
     if force_tensor_parallel is not None:
         tp = force_tensor_parallel
         if num_devices % tp != 0:
             raise ValueError(f"num_devices ({num_devices}) must be divisible by tp ({tp})")
         
-        num_model_slots = num_devices // tp  # How many models we can fit
+        # Calculate DP based on remaining devices
+        remaining_devices = num_devices // tp
         
-        # For multi-worker setups, prefer spreading DP across workers
-        if num_workers > 1 and total_batch_size >= num_workers:
-            # Distribute data parallel across workers first
-            dp_per_worker = max(1, total_batch_size // num_workers)
-            dp = min(dp_per_worker * num_workers, num_model_slots)
-            
-            # Critical fix: Ensure we use all available devices
-            devices_used = dp * tp
-            if devices_used < num_devices:
-                # Use remaining devices for FSDP
-                remaining_devices = num_devices // devices_used
-                if remaining_devices > 1:
-                    fsdp = remaining_devices
-                    logger.info(
-                        f"Using remaining {remaining_devices} devices for FSDP: "
-                        f"dp={dp}, fsdp={fsdp}, tp={tp} "
-                        f"(total: {dp * fsdp * tp} devices)"
-                    )
-                else:
-                    fsdp = 1
-            else:
-                fsdp = 1
-        elif mini_batch_size is not None:
-            # Calculate models needed based on mini_batch_size
-            models_needed = max(1, total_batch_size // mini_batch_size)
-            if models_needed > num_model_slots:
-                logger.warning(
-                    f"Need {models_needed} models for mini_batch_size={mini_batch_size}, "
-                    f"but only have {num_model_slots} model slots. Using all available slots."
+        if force_data_parallel is not None:
+            dp = force_data_parallel
+            if dp > remaining_devices:
+                raise ValueError(
+                    f"force_data_parallel({dp}) exceeds available slots({remaining_devices}) "
+                    f"after tensor_parallel({tp})"
                 )
-            dp = min(models_needed, num_model_slots)
-            
-            # Ensure we use all available devices
-            devices_used = dp * tp
-            if devices_used < num_devices:
-                remaining_devices = num_devices // devices_used
-                fsdp = remaining_devices if remaining_devices > 1 else 1
-            else:
-                fsdp = 1
+            fsdp = remaining_devices // dp if remaining_devices % dp == 0 else 1
         else:
-            # Default: use all available model slots for maximum parallelism
-            dp = num_model_slots
-            
-            # Ensure we use all available devices
-            devices_used = dp * tp
-            if devices_used < num_devices:
-                remaining_devices = num_devices // devices_used
-                fsdp = remaining_devices if remaining_devices > 1 else 1
-            else:
+            # Auto-calculate DP
+            if total_batch_size >= remaining_devices:
+                # Use all remaining for DP
+                dp = remaining_devices
                 fsdp = 1
+            elif mini_batch_size is not None:
+                # Calculate based on mini-batch requirements
+                models_needed = max(1, total_batch_size // mini_batch_size)
+                dp = min(models_needed, remaining_devices)
+                fsdp = remaining_devices // dp if remaining_devices % dp == 0 else 1
+            else:
+                # Default: balance between DP and FSDP
+                dp = min(total_batch_size, remaining_devices)
+                fsdp = remaining_devices // dp if remaining_devices % dp == 0 else 1
         
         logger.info(
             f"Using tensor parallel strategy: dp={dp}, fsdp={fsdp}, tp={tp} "
-            f"({dp} models, each using {fsdp * tp} TPUs: {fsdp} FSDP × {tp} TP) across {num_workers} workers"
+            f"(total: {dp * fsdp * tp} devices)"
         )
-        
-        # TPU v4 specific recommendations
-        if is_tpu_v4 and num_workers == 4 and tp == 2:
-            # Aim for 1–2 prompts per worker; never recommend 0
-            recommended_per_worker = max(1, min(2, total_batch_size // num_workers))
-            recommended_total_batch = recommended_per_worker * num_workers
-            if total_batch_size != recommended_total_batch:
-                logger.warning(
-                    f"TPU v4-32 (4x2x2 topology) recommendation: "
-                    f"Use batch_size={recommended_total_batch} "
-                    f"({recommended_per_worker} per worker) for optimal memory usage. "
-                    f"Current: {total_batch_size}"
-                )
         return (dp, fsdp, 1, tp, 1)
     
-    # Strategy 2: When batch_size >= num_devices, use pure data parallelism
-    if total_batch_size >= num_devices:
-        dp = num_devices
-        fsdp = 1
-        logger.info(f"Using data parallel strategy: dp={dp}, fsdp={fsdp}")
-        return (dp, fsdp, 1, 1, 1)
-    
-    # Strategy 3: When batch_size < num_devices, use hybrid approach
-    if prefer_data_parallel and total_batch_size > 1:
-        # Find largest divisor of num_devices that's <= total_batch_size
-        dp = total_batch_size
+    # Strategy 3: Only DP is forced
+    if force_data_parallel is not None:
+        dp = force_data_parallel
+        if num_devices % dp != 0:
+            raise ValueError(f"num_devices ({num_devices}) must be divisible by dp ({dp})")
+        
         remaining_devices = num_devices // dp
-        fsdp = remaining_devices if remaining_devices > 0 else 1
-        logger.info(f"Using hybrid strategy: dp={dp}, fsdp={fsdp}")
-        return (dp, fsdp, 1, 1, 1)
+        
+        # Decide between FSDP and TP for remaining devices
+        if remaining_devices > 1:
+            # For TPU v4, prefer TP within megacores
+            if tpu_type == "v4" and remaining_devices in [2, 4, 8]:
+                tp = remaining_devices
+                fsdp = 1
+            else:
+                # Default to FSDP
+                fsdp = remaining_devices
+                tp = 1
+        else:
+            fsdp = 1
+            tp = 1
+        
+        logger.info(
+            f"Using data parallel strategy: dp={dp}, fsdp={fsdp}, tp={tp} "
+            f"(total: {dp * fsdp * tp} devices)"
+        )
+        return (dp, fsdp, 1, tp, 1)
     
-    # Strategy 4: batch_size=1, use pure model parallelism
-    dp = 1
-    fsdp = num_devices
-    logger.info(f"Using model parallel strategy: dp={dp}, fsdp={fsdp}")
-    return (dp, fsdp, 1, 1, 1)
+    # Strategy 4: Auto-calculate optimal configuration
+    return _auto_calculate_mesh_dims(
+        total_batch_size, num_return_sequences, num_devices, 
+        prefer_data_parallel, mini_batch_size, tpu_type
+    )
+
+
+def _detect_tpu_type() -> str:
+    """Detect TPU version and configuration."""
+    try:
+        device = jax.devices()[0]
+        device_kind = str(getattr(device, 'device_kind', '')).lower()
+        
+        if 'v5' in device_kind:
+            return 'v5'
+        elif 'v4' in device_kind:
+            return 'v4'
+        elif 'v3' in device_kind:
+            return 'v3'
+        elif 'v2' in device_kind:
+            return 'v2'
+        else:
+            return 'unknown'
+    except:
+        return 'unknown'
+
+
+def _auto_calculate_mesh_dims(
+    total_batch_size: int,
+    num_return_sequences: int,
+    num_devices: int,
+    prefer_data_parallel: bool,
+    mini_batch_size: int,
+    tpu_type: str,
+) -> tuple[int, int, int, int, int]:
+    """Auto-calculate optimal mesh dimensions based on hardware and workload."""
+    
+    num_workers = jax.process_count()
+    
+    # Special handling for common TPU configurations
+    if tpu_type == "v4" and ((num_devices == 32 and num_workers == 4) or (num_devices == 16 and num_workers == 4)):
+        # TPU v4-32: 4 workers × 8 chips
+        return _optimize_for_tpu_v4_32(total_batch_size, num_return_sequences, mini_batch_size)
+    elif tpu_type == "v4" and num_devices == 8:
+        # TPU v4-8: 1 worker × 8 chips
+        return _optimize_for_tpu_v4_8(total_batch_size, num_return_sequences, mini_batch_size)
+    elif tpu_type == "v5" and num_devices == 8:
+        # TPU v5e-8 or v5p-8
+        return _optimize_for_tpu_v5_8(total_batch_size, num_return_sequences, mini_batch_size)
+    
+    # Generic optimization
+    if total_batch_size >= num_devices:
+        # Pure data parallelism
+        return (num_devices, 1, 1, 1, 1)
+    elif total_batch_size == 1:
+        # Pure model parallelism
+        return (1, num_devices, 1, 1, 1)
+    else:
+        # Hybrid approach
+        dp = total_batch_size
+        remaining = num_devices // dp
+        
+        if prefer_data_parallel or remaining == 1:
+            fsdp = remaining
+            tp = 1
+        else:
+            # Consider tensor parallelism for small batches
+            if remaining in [2, 4, 8] and tpu_type in ["v4", "v5"]:
+                tp = min(remaining, 4)  # Cap TP at 4 for efficiency
+                fsdp = remaining // tp
+            else:
+                fsdp = remaining
+                tp = 1
+        
+        return (dp, fsdp, 1, tp, 1)
+
+
+def _optimize_for_tpu_v4_32(
+    total_batch_size: int,
+    num_return_sequences: int,
+    mini_batch_size: int,
+) -> tuple[int, int, int, int, int]:
+    """Optimize mesh for TPU v4-32 (4 workers × 8 chips)."""
+    
+    # TPU v4-32 optimal configurations based on empirical testing
+    if total_batch_size >= 32:
+        # Full data parallelism
+        return (32, 1, 1, 1, 1)
+    elif total_batch_size >= 16:
+        # DP with some FSDP
+        dp = total_batch_size
+        fsdp = 32 // dp
+        return (dp, fsdp, 1, 1, 1)
+    elif total_batch_size >= 8:
+        # Balanced DP and FSDP
+        dp = total_batch_size
+        fsdp = 32 // dp
+        return (dp, fsdp, 1, 1, 1)
+    elif total_batch_size >= 4:
+        # DP=4 (one per worker), rest for model parallelism
+        dp = 4
+        remaining = 8  # 32 / 4
+        
+        # Use TP=4 for efficient cross-chip communication within worker
+        if mini_batch_size and total_batch_size // mini_batch_size >= 4:
+            return (dp, 2, 1, 4, 1)  # 4×2×4 = 32
+        else:
+            return (dp, 8, 1, 1, 1)  # 4×8 = 32
+    elif total_batch_size == 2:
+        # 2-way DP, significant model parallelism
+        return (2, 4, 1, 4, 1)  # 2×4×4 = 32
+    else:
+        # Single batch, maximum model parallelism
+        # Option 1: Pure FSDP
+        # return (1, 32, 1, 1, 1)
+        # Option 2: FSDP + TP for better memory usage
+        return (1, 8, 1, 4, 1)  # 1×8×4 = 32
+
+
+def _optimize_for_tpu_v4_8(
+    total_batch_size: int,
+    num_return_sequences: int,
+    mini_batch_size: int,
+) -> tuple[int, int, int, int, int]:
+    """Optimize mesh for TPU v4-8 (1 worker × 8 chips)."""
+    
+    if total_batch_size >= 8:
+        return (8, 1, 1, 1, 1)
+    elif total_batch_size >= 4:
+        dp = total_batch_size
+        fsdp = 8 // dp
+        return (dp, fsdp, 1, 1, 1)
+    elif total_batch_size == 2:
+        # Consider TP for better memory distribution
+        return (2, 2, 1, 2, 1)  # 2×2×2 = 8
+    else:
+        # Single batch
+        return (1, 4, 1, 2, 1)  # 1×4×2 = 8
+
+
+def _optimize_for_tpu_v5_8(
+    total_batch_size: int,
+    num_return_sequences: int,
+    mini_batch_size: int,
+) -> tuple[int, int, int, int, int]:
+    """Optimize mesh for TPU v5e-8 or v5p-8."""
+    
+    # TPU v5 has better inter-chip bandwidth
+    if total_batch_size >= 8:
+        return (8, 1, 1, 1, 1)
+    elif total_batch_size >= 4:
+        dp = total_batch_size
+        fsdp = 8 // dp
+        return (dp, fsdp, 1, 1, 1)
+    elif total_batch_size == 2:
+        # v5 handles TP well
+        return (2, 1, 1, 4, 1)  # 2×1×4 = 8
+    else:
+        return (1, 2, 1, 4, 1)  # 1×2×4 = 8
 
 
 def get_adaptive_sharding_spec(
     total_batch_size: int,
     num_devices: int = None,
     force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
     mini_batch_size: int = None,
 ) -> PartitionSpec:
     """
     Get appropriate sharding spec for input tensors based on batch size.
     
-    Args:
-        total_batch_size: Number of prompts in the batch
-        num_devices: Number of available devices
-        force_tensor_parallel: Force specific TP dimension
-        mini_batch_size: Minimum batch size per model instance
-        
     Returns:
         PartitionSpec for input sharding
     """
     if num_devices is None:
         num_devices = jax.device_count()
     
-    # Get mesh dimensions to determine sharding strategy
+    # Get mesh dimensions
     dp, fsdp, _, tp, _ = calculate_optimal_mesh_dims(
-        total_batch_size, 8, num_devices, 
+        total_batch_size, 8, num_devices,
         force_tensor_parallel=force_tensor_parallel,
+        force_data_parallel=force_data_parallel,
         mini_batch_size=mini_batch_size
     )
     
-    # With tensor parallelism, always include tp in sequence dimension
-    if tp > 1:
-        if total_batch_size == 1 or (mini_batch_size and total_batch_size <= mini_batch_size):
-            # Sub-batch processing: no batch sharding
-            return PartitionSpec(None, 'tp')
-        elif dp == 1:
-            # Only FSDP sharding (no data parallelism)
-            return PartitionSpec('fsdp', 'tp')
-        elif fsdp == 1:
-            # Only DP sharding (no FSDP)
-            return PartitionSpec('dp', 'tp')
-        else:
-            # Hybrid DP + FSDP: only shard if batch_size is divisible by dp*fsdp
-            if total_batch_size % (dp * fsdp) == 0:
-                return PartitionSpec(('dp', 'fsdp'), 'tp')
-            else:
-                # Fallback to DP only if not evenly divisible
-                return PartitionSpec('dp', 'tp')
+    # Build partition spec based on actual mesh configuration
+    batch_spec = []
+    seq_spec = []
     
-    # Original logic for non-TP cases
-    if total_batch_size == 1:
-        return PartitionSpec(None, 'tp')
-    elif total_batch_size >= num_devices:
-        return PartitionSpec('dp', 'tp')
+    # Batch dimension sharding
+    if dp > 1:
+        batch_spec.append('dp')
+    if fsdp > 1 and total_batch_size % (dp * fsdp) == 0:
+        batch_spec.append('fsdp')
+    
+    # Sequence dimension sharding
+    if tp > 1:
+        seq_spec.append('tp')
+    
+    # Create final spec
+    if not batch_spec:
+        batch_spec = None
+    elif len(batch_spec) == 1:
+        batch_spec = batch_spec[0]
     else:
-        return PartitionSpec(('dp', 'fsdp'), 'tp')
+        batch_spec = tuple(batch_spec)
+    
+    if not seq_spec:
+        seq_spec = None
+    elif len(seq_spec) == 1:
+        seq_spec = seq_spec[0]
+    
+    return PartitionSpec(batch_spec, seq_spec)
 
 
 def get_adaptive_step_partition_spec(
     total_batch_size: int,
     num_devices: int = None,
     force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
     mini_batch_size: int = None,
 ) -> PartitionSpec:
     """
     Get appropriate step partition spec for training based on batch size.
     
-    Args:
-        total_batch_size: Number of prompts in the batch  
-        num_devices: Number of available devices
-        force_tensor_parallel: Force specific TP dimension
-        mini_batch_size: Minimum batch size per model instance
-        
     Returns:
         PartitionSpec for step partitioning
     """
     if num_devices is None:
         num_devices = jax.device_count()
     
-    # Calculate mesh dimensions
+    # Get mesh dimensions
     dp, fsdp, _, tp, sp = calculate_optimal_mesh_dims(
         total_batch_size, 8, num_devices,
         force_tensor_parallel=force_tensor_parallel,
+        force_data_parallel=force_data_parallel,
         mini_batch_size=mini_batch_size
     )
     
-    # Create appropriate partition spec based on mesh dimensions
-    if tp > 1:
-        # With tensor parallelism, include tp in sequence dimension
-        if dp == 1:
-            # Only FSDP. Shard batch dim across fsdp **only** if it divides
-            # the batch size; otherwise, do not shard the batch dim.
-            if total_batch_size % fsdp == 0:
-                return PartitionSpec('fsdp', ('tp', 'sp'))
-            else:
-                return PartitionSpec(None, ('tp', 'sp'))
-        elif fsdp == 1:
-            # Only DP: multiple models, each spans multiple TPUs
-            return PartitionSpec('dp', ('tp', 'sp'))
-        else:
-            # Hybrid DP + FSDP: only shard batch dim if divisible by dp*fsdp
-            if total_batch_size % (dp * fsdp) == 0:
-                return PartitionSpec(('dp', 'fsdp'), ('tp', 'sp'))
-            elif total_batch_size % dp == 0:
-                # Fallback to DP only when not evenly divisible by dp*fsdp
-                return PartitionSpec('dp', ('tp', 'sp'))
-            else:
-                # Last resort: don't shard batch dimension
-                return PartitionSpec(None, ('tp', 'sp'))
+    # Build partition spec
+    batch_spec = []
+    seq_spec = []
     
-    # Original logic for non-TP cases
-    if dp == 1:
-        # Shard batch dim across fsdp only when divisible
-        if total_batch_size % fsdp == 0:
-            return PartitionSpec('fsdp', 'sp')
-        else:
-            return PartitionSpec(None, 'sp')
-    elif fsdp == 1:
-        return PartitionSpec('dp', 'sp')
+    # Batch dimension - only shard if evenly divisible
+    if dp > 1 and total_batch_size % dp == 0:
+        batch_spec.append('dp')
+    if fsdp > 1 and total_batch_size % (dp * fsdp) == 0:
+        batch_spec.append('fsdp')
+    
+    # Sequence dimension
+    if tp > 1:
+        seq_spec.append('tp')
+    if sp > 1:
+        seq_spec.append('sp')
+    
+    # Create final spec
+    if not batch_spec:
+        batch_spec = None
+    elif len(batch_spec) == 1:
+        batch_spec = batch_spec[0]
     else:
-        # Hybrid DP + FSDP for non-TP: same divisibility check
-        if total_batch_size % (dp * fsdp) == 0:
-            return PartitionSpec(('dp', 'fsdp'), 'sp')
-        elif total_batch_size % dp == 0:
-            return PartitionSpec('dp', 'sp')
-        else:
-            return PartitionSpec(None, 'sp')
+        batch_spec = tuple(batch_spec)
+    
+    if not seq_spec:
+        seq_spec = 'sp' if sp > 1 else None
+    elif len(seq_spec) == 1:
+        seq_spec = seq_spec[0]
+    else:
+        seq_spec = tuple(seq_spec)
+    
+    return PartitionSpec(batch_spec, seq_spec)
+
+
+def validate_mesh_config(
+    dp: int, fsdp: int, tp: int, num_devices: int, total_batch_size: int
+) -> bool:
+    """Validate that mesh configuration is correct."""
+    total = dp * fsdp * tp
+    if total != num_devices:
+        logger.error(
+            f"Mesh validation failed: dp({dp}) × fsdp({fsdp}) × tp({tp}) = {total} "
+            f"!= num_devices({num_devices})"
+        )
+        return False
+    
+    if dp > total_batch_size and total_batch_size > 0:
+        logger.warning(
+            f"Data parallel dim ({dp}) exceeds batch size ({total_batch_size}). "
+            f"This may cause inefficiency."
+        )
+    
+    return True
+
+
+# Usage example for your specific case (TPU v4-32)
+if __name__ == "__main__":
+    # Your configuration
+    config = {
+        "total_batch_size": 1,
+        "num_return_sequences": 1,
+        "force_tensor_parallel": 1,
+        "force_data_parallel": 1,
+    }
+    
+    # Calculate mesh
+    dp, fsdp, ep, tp, sp = calculate_optimal_mesh_dims(**config)
+    print(f"Mesh dimensions: dp={dp}, fsdp={fsdp}, ep={ep}, tp={tp}, sp={sp}")
+    print(f"Total devices used: {dp * fsdp * tp}")
+    
+    # Validate
+    validate_mesh_config(dp, fsdp, tp, 32, config["total_batch_size"])

@@ -430,9 +430,10 @@ class GRPOTrainer(Trainer):
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
         # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
-        empty_token_sharding = NamedSharding(
+        # Match token ids/masks sharding to the adaptive input sharding to avoid pjit sharding mismatches
+        token_sharding = NamedSharding(
             mesh=mesh,
-            spec=PartitionSpec()
+            spec=adaptive_spec,
         )
         
         self.compute_refmodel_logps = ejit(
@@ -441,8 +442,8 @@ class GRPOTrainer(Trainer):
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                empty_token_sharding,
-                empty_token_sharding,
+                token_sharding,
+                token_sharding,
             ),
             out_shardings=empty_sharding,
         )
