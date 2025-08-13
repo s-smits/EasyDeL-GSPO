@@ -347,7 +347,7 @@ class GRPOTrainer(Trainer):
         
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
-            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            out_shardings=(input_sharding, input_sharding, input_sharding),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask):
             module = state.model
@@ -426,7 +426,9 @@ class GRPOTrainer(Trainer):
         def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
             apply = flax.nnx.merge(graphdef, graphtree, graphother)
             with apply.mesh:
-                # Don't constraint sharding here - let it be handled by the input sharding
+                # Ensure token arrays conform to the step partitioning spec before compute
+                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
         # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
@@ -438,7 +440,7 @@ class GRPOTrainer(Trainer):
         
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
-            static_argnames=("graphdef"),
+            static_argnames=("graphdef",),
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,

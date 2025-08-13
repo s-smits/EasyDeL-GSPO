@@ -139,7 +139,7 @@ class GSPOTrainer(GRPOTrainer):
         self.generate_function = ejit(
             generate,
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
-            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            out_shardings=(input_sharding, input_sharding, input_sharding),
         )
 
     def configure_functions(self) -> TrainerConfigureFunctionOutput:
