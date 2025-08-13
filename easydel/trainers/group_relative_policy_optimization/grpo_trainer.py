@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import typing as tp
 from functools import cached_property, partial
+import inspect
 
 import flax
 import flax.nnx
@@ -87,12 +88,15 @@ class GRPOTrainer(Trainer):
 
         # Apply adaptive mesh configuration before storing arguments
         from .adaptive_mesh import get_adaptive_step_partition_spec
-        adaptive_step_spec = get_adaptive_step_partition_spec(
-            arguments.total_batch_size,
+        _step_sig = inspect.signature(get_adaptive_step_partition_spec)
+        _step_kwargs = dict(
+            total_batch_size=arguments.total_batch_size,
             force_tensor_parallel=arguments.force_tensor_parallel,
-            force_data_parallel=arguments.force_data_parallel,
-            mini_batch_size=arguments.mini_batch_size
+            mini_batch_size=arguments.mini_batch_size,
         )
+        if 'force_data_parallel' in _step_sig.parameters:
+            _step_kwargs['force_data_parallel'] = arguments.force_data_parallel
+        adaptive_step_spec = get_adaptive_step_partition_spec(**_step_kwargs)
         
         # Override step_partition_spec if it would cause dimension mismatch or using TP
         should_override = (
@@ -327,12 +331,15 @@ class GRPOTrainer(Trainer):
 
         # Use adaptive sharding based on batch size and tensor parallelism
         from .adaptive_mesh import get_adaptive_sharding_spec
-        adaptive_spec = get_adaptive_sharding_spec(
-            self.arguments.total_batch_size,
+        _shard_sig = inspect.signature(get_adaptive_sharding_spec)
+        _shard_kwargs = dict(
+            total_batch_size=self.arguments.total_batch_size,
             force_tensor_parallel=self.arguments.force_tensor_parallel,
-            force_data_parallel=self.arguments.force_data_parallel,
-            mini_batch_size=self.arguments.mini_batch_size
+            mini_batch_size=self.arguments.mini_batch_size,
         )
+        if 'force_data_parallel' in _shard_sig.parameters:
+            _shard_kwargs['force_data_parallel'] = self.arguments.force_data_parallel
+        adaptive_spec = get_adaptive_sharding_spec(**_shard_kwargs)
         input_sharding = NamedSharding(
             mesh=mesh,
             spec=adaptive_spec

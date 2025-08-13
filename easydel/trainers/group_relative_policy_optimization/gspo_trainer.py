@@ -80,17 +80,21 @@ class GSPOTrainer(GRPOTrainer):
         from jax.sharding import NamedSharding, PartitionSpec
         from eformer import common_types
         from .adaptive_mesh import get_adaptive_sharding_spec
+        import inspect
 
         mesh = self.model.mesh
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
 
         # Use adaptive sharding based on batch size and tensor parallelism
-        adaptive_spec = get_adaptive_sharding_spec(
-            self.arguments.total_batch_size,
+        _sig = inspect.signature(get_adaptive_sharding_spec)
+        _kwargs = dict(
+            total_batch_size=self.arguments.total_batch_size,
             force_tensor_parallel=self.arguments.force_tensor_parallel,
-            force_data_parallel=self.arguments.force_data_parallel,
-            mini_batch_size=self.arguments.mini_batch_size
+            mini_batch_size=self.arguments.mini_batch_size,
         )
+        if 'force_data_parallel' in _sig.parameters:
+            _kwargs['force_data_parallel'] = self.arguments.force_data_parallel
+        adaptive_spec = get_adaptive_sharding_spec(**_kwargs)
         input_sharding = NamedSharding(
             mesh=mesh,
             spec=adaptive_spec
