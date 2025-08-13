@@ -16,7 +16,11 @@ from __future__ import annotations
 import re
 import typing as tp
 import warnings
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import cached_property, partial
+from re import Pattern
+from typing import Self
 
 import chex
 import flax
@@ -47,13 +51,24 @@ from .mixins import BaseModuleProtocol, EasyBridgeMixin, EasyGenerationMixin
 
 if tp.TYPE_CHECKING:
     from easydel.infra.base_state import EasyDeLState
+    from easydel.layers.linear import ParallelLinear
+
 PartitionLike = tp.Mapping[str, tp.Callable] | tp.Mapping[tuple, tp.Callable] | None
 
 
 logger = get_logger(__name__)
 
 BaseConf = EasyDeLBaseConfig
-Self = tp.TypeVar("Self")
+
+
+@dataclass
+class ParameterTransformRule:
+    """Rule for transforming MoE parameter names and tensors."""
+
+    pattern: str | Pattern
+    replacement: str
+    tensor_transform: Callable | None = None
+    consolidate_experts: bool = False
 
 
 class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGenerationMixin):
@@ -64,9 +79,10 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
 
     config_class: type[BaseConf]
     base_model_prefix: str
+    config: BaseConf | None = None
     _model_task: str | None = None
     _model_type: str | None = None
-    config: BaseConf | None = None
+    _parameter_transform_rules: tp.ClassVar[list[ParameterTransformRule]] = []
 
     def __init__(
         self,
@@ -99,7 +115,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         _ = self.model_type
 
     @property
-    def parameters(self) -> dict:
+    def parameters(self: Self) -> dict:
         """
         Retrieves the parameters of the module as a dictionary.
 
@@ -118,10 +134,10 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return parameters
 
     @property
-    def graphstate_type(self):
+    def graphstate_type(self: Self):
         return nn.LoRAParam if self.lora_is_enabled else nn.Param
 
-    def split_module(self):
+    def split_module(self: Self):
         return nn.split(self, self.graphstate_type, ...)
 
     @staticmethod
@@ -129,7 +145,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.merge(graphdef, graphstate, graphother)
 
     @property
-    def graphdef(self) -> nn.GraphDef:
+    def graphdef(self: Self) -> nn.GraphDef:
         """
         Returns the graph definition (structure without parameters) of the module.
 
@@ -141,7 +157,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.split(self, self.graphstate_type, ...)[0]
 
     @property
-    def graphstate(self) -> nn.GraphState:
+    def graphstate(self: Self) -> nn.GraphState:
         """
         Returns the graph state (parameters) of the module.
 
@@ -153,7 +169,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.split(self, self.graphstate_type, ...)[1]
 
     @property
-    def graphother(self) -> nn.GraphState:
+    def graphother(self: Self) -> nn.GraphState:
         """
         Returns any other state variables in the module (non-parameters).
 
@@ -165,7 +181,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.split(self, self.graphstate_type, ...)[-1]
 
     @property
-    def graphtree_params_shape(self) -> dict:
+    def graphtree_params_shape(self: Self) -> dict:
         """
         Computes and returns the shapes of the module's parameters as a nested dictionary.
 
@@ -183,7 +199,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return unflatten_dict(param_shapes)
 
     @property
-    def graphtree_shape(self) -> dict:
+    def graphtree_shape(self: Self) -> dict:
         """
         Computes and returns the shapes of all state variables (including non-parameters) in the module.
 
@@ -201,7 +217,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return unflatten_dict(param_shapes)
 
     @property
-    def mesh(self) -> jax.sharding.Mesh:
+    def mesh(self: Self) -> jax.sharding.Mesh:
         """
         Retrieves the JAX device mesh from the module's configuration.
 
@@ -211,7 +227,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self.config.mesh
 
     @property
-    def model_task(self) -> str | None:
+    def model_task(self: Self) -> str | None:
         """
         Returns the specific task associated with this model instance (e.g., 'causal-language-model').
 
@@ -221,7 +237,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self._model_task
 
     @property
-    def model_type(self) -> str | None:
+    def model_type(self: Self) -> str | None:
         """
         Returns the specific type of this model instance (e.g., 'llama', 'mistral').
 
@@ -231,7 +247,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self._model_type
 
     @property
-    def params(self) -> dict:
+    def params(self: Self) -> dict:
         """
         Returns the parameters and other state variables of the module as a dictionary.
 
@@ -243,7 +259,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.split(self)[-1]
 
     @cached_property
-    def causal_mask(self) -> jnp.ndarray:
+    def causal_mask(self: Self) -> jnp.ndarray:
         """
         Retrieves or computes the basic causal attention mask from the configuration.
 
@@ -255,7 +271,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self.config.get_basic_causal_mask()
 
     @cached_property
-    def frequencies(self) -> jnp.ndarray:
+    def frequencies(self: Self) -> jnp.ndarray:
         """
         Retrieves or computes the frequency components (e.g., for RoPE) from the configuration.
 
@@ -267,7 +283,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self.config.get_basic_frequencies()
 
     @cached_property
-    def inv_frequencies(self) -> jnp.ndarray:
+    def inv_frequencies(self: Self) -> jnp.ndarray:
         """
         Retrieves or computes the inv-frequency components (e.g., for RoPE) from the configuration.
 
@@ -279,7 +295,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self.config.get_basic_inv_frequencies()
 
     @cached_property
-    def static_arguments(self) -> tuple:
+    def static_arguments(self: Self) -> tuple:
         """
         Retrieves or computes static arguments needed for the module's `__call__` method.
 
@@ -292,7 +308,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self.get_static_arguments()
 
     @cached_property
-    def lossfn_type(self):
+    def lossfn_type(self: Self):
         if getattr(self.config, "loss_type", None) is not None:
             loss_type = self.config.loss_type
         elif getattr(self, "loss_type", None) is not None:
@@ -316,7 +332,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return loss_type
 
     @cached_property
-    def loss_function(self):
+    def loss_function(self: Self):
         """
         Determines and returns the appropriate loss function based on the configuration or model type.
 
@@ -331,7 +347,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return LOSS_MAPPING[self.lossfn_type]
 
     @property
-    def module_dtype(self) -> jnp.dtype:
+    def module_dtype(self: Self) -> jnp.dtype:
         """
         Determines the data type of the module's parameters.
 
@@ -491,7 +507,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         )
 
     @property
-    def _specs_sharding(self):
+    def _specs_sharding(self: Self):
         """
         Extracts the PartitionSpec part from the NamedSharding of each parameter.
 
@@ -509,7 +525,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return nn.from_tree(jax.tree_util.tree_map(_map, nn.to_tree(self)))
 
     @property
-    def _shardings(self):
+    def _shardings(self: Self):
         """
         Extracts the sharding information (PartitionSpec or NamedSharding) for each parameter.
 
@@ -524,7 +540,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         )
 
     @property
-    def _named_shardings(self):
+    def _named_shardings(self: Self):
         """
         Extracts the NamedSharding object (if present) for each parameter.
 
@@ -630,14 +646,8 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         """
         mesh = self._get_mesh(mesh)
         partition_rules = self._get_partition_rules(partition_rules)
-        partition_specs = match_partition_rules(
-            rules=partition_rules,
-            tree=self.graphtree_params_shape,
-        )
-        shard_fns, _ = make_shard_and_gather_fns(
-            partition_specs=partition_specs,
-            mesh=mesh,
-        )
+        partition_specs = match_partition_rules(rules=partition_rules, tree=self.graphtree_params_shape)
+        shard_fns, _ = make_shard_and_gather_fns(partition_specs=partition_specs, mesh=mesh)
         if overlay_fns is not None:
             shard_fns.update(overlay_fns)
         self = self._apply_sharding_fns(shard_fns)
@@ -679,7 +689,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return self._apply_sharding_fns(gather_fns)
 
     @property
-    def _shard_fns(self):
+    def _shard_fns(self: Self):
         """
         Generates the dictionary of sharding functions based on the module's configuration.
 
@@ -697,7 +707,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         )[0]
 
     @property
-    def _gather_fns(self):
+    def _gather_fns(self: Self):
         """
         Generates the dictionary of gathering functions based on the module's configuration.
 
@@ -875,18 +885,15 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         Returns:
             torch.nn.Module: The equivalent Hugging Face PyTorch model with loaded weights.
         """
-        from easydel.utils.parameters_transformation import module_to_huggingface_model
+        from easydel.utils.parameters_transformation import ModelConverter
 
-        hf_autoloader = self.get_torch_loader()
-        model_class = hf_autoloader._model_mapping[type(self.config)]
-        hf_model = module_to_huggingface_model(
+        return ModelConverter.easydel_to_huggingface(
             module=self,
-            base_huggingface_module=model_class,
+            base_huggingface_module=self.get_torch_loader()._model_mapping[type(self.config)],
             config=self.config,
             dtype=self.param_dtype,
             **kwargs,
         )
-        return hf_model
 
     def prepare_inputs_for_call(self, **kwargs):
         """
@@ -903,7 +910,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         """
         return kwargs
 
-    def get_static_arguments(self) -> tuple:
+    def get_static_arguments(self: Self) -> tuple:
         """
         Returns a tuple of static arguments required by the module's `__call__` method.
 
@@ -915,6 +922,42 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
             tp.Tuple: A tuple containing static arguments.
         """
         return ()
+
+    def get_encoder(self: Self) -> nn.Module | EasyDeLBaseModule:
+        """
+        Returns the encoder part of the model's graph definition.
+
+        This is useful for models that have a distinct encoder component, such as
+        encoder-decoder architectures. The base implementation returns the full graph definition..
+        """
+        raise NotImplementedError()
+
+    def get_decoder(self: Self) -> nn.Module | EasyDeLBaseModule:
+        """
+        Returns the decoder part of the model's graph definition.
+
+        This is useful for models that have a distinct decoder component, such as
+        encoder-decoder architectures. The base implementation returns the full graph definition.
+        """
+        raise NotImplementedError()
+
+    def get_lm_head(self: Self) -> ParallelLinear:
+        """
+        Returns the language model head of the module.
+
+        This is useful for models that have a separate head for language modeling tasks.
+        The base implementation returns the full graph definition.
+        """
+        raise NotImplementedError()
+
+    def get_embedding(self: Self) -> nn.Module | nn.Embed:
+        """
+        Returns the embedding layer of the module.
+
+        This is useful for models that have a separate embedding layer for input tokens.
+        The base implementation returns the full graph definition.
+        """
+        raise NotImplementedError()
 
     @classmethod
     def lazy_init(cls: type[Self], **kwargs) -> Self:
@@ -971,7 +1014,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return pytree
 
     @property
-    def lora_is_enabled(self):
+    def lora_is_enabled(self: Self):
         for _, tensor in nn.iter_graph(self):
             if isinstance(tensor, nn.LoRAParam):
                 return True
@@ -1035,32 +1078,30 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
 
     @property
     def transform_fn(self):
-        """
-        Returns a partial function for transforming PyTorch state dicts to EasyDeL parameters.
-
-        This function identifies embedding and LayerNorm layers within the module and creates
-        a transformation function (`torch_dict_to_easydel_params`) pre-configured with these
-        layer names, the target parameter dtype, and the module's sharding functions.
-
-        Returns:
-            tp.Callable: A partial function ready to convert a PyTorch state dict.
-        """
+        """Transform function with rules."""
+        from easydel.layers.moe import BaseMoeModule, ParallelMoELinear
         from easydel.utils import graph_utils
-        from easydel.utils.parameters_transformation import torch_dict_to_easydel_params
+        from easydel.utils.parameters_transformation import StateDictConverter
 
         embedding_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, nn.Embed)]
         layernorm_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, nn.LayerNorm)]
+        moe_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, ParallelMoELinear)]
+        moe_block_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, BaseMoeModule)]
 
         return partial(
-            torch_dict_to_easydel_params,
+            StateDictConverter.huggingface_to_easydel,
             embedding_layer_names=embedding_path,
             layernorm_names=layernorm_path,
+            moe_names=list(set([names.split(".")[-1] for names in moe_path])),
+            moe_block_names=list(set([names.split(".")[-1] for names in moe_block_path])),
+            moe_block_path=moe_block_path,
+            moe_path=moe_path,
             dtype=self.param_dtype,
             shard_fns=self._shard_fns,
         )
 
     @property
-    def _generate_compatible_graphdef(self):
+    def _generate_compatible_graphdef(self: Self):
         """
         Creates a graph definition compatible with generation tasks.
 
@@ -1086,7 +1127,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return gdef
 
     @property
-    def _generate_compatible_graphother(self):
+    def _generate_compatible_graphother(self: Self):
         """
         Creates the 'other' state (non-parameters) compatible with generation tasks.
 
@@ -1113,7 +1154,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return gother
 
     @property
-    def params_sharding(self) -> dict:
+    def params_sharding(self: Self) -> dict:
         """
         Retrieves the sharding annotation for each parameter in the module.
 
@@ -1144,7 +1185,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         self = nn.merge(gdef, tree, gother)
         return self
 
-    def split_params(self):
+    def split_params(self: Self):
         """
         Splits the module and returns the parameter state.
 
@@ -1292,7 +1333,7 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         return count_flop_jaxpr(jax.make_jaxpr(self.__call__)(*args, **kwargs))
 
     @property
-    def pure_transform_fn(self):
+    def pure_transform_fn(self: Self):
         """
         Returns a pure transformation function for PyTorch state dicts to EasyDeL parameters.
 
@@ -1303,21 +1344,28 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         Returns:
             tp.Callable: A partial function for converting a PyTorch state dict without applying sharding.
         """
+        from easydel.layers.moe import BaseMoeModule, ParallelMoELinear
         from easydel.utils import graph_utils
-        from easydel.utils.parameters_transformation import torch_dict_to_easydel_params
+        from easydel.utils.parameters_transformation import StateDictConverter
 
         embedding_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, nn.Embed)]
         layernorm_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, nn.LayerNorm)]
+        moe_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, ParallelMoELinear)]
+        moe_block_path = [".".join(tuple(map(str, pa))) for pa, _ in graph_utils.iter_module_search(self, BaseMoeModule)]
 
         return partial(
-            torch_dict_to_easydel_params,
+            StateDictConverter.huggingface_to_easydel,
             embedding_layer_names=embedding_path,
             layernorm_names=layernorm_path,
+            moe_names=list(set([names.split(".")[-1] for names in moe_path])),
+            moe_block_names=list(set([names.split(".")[-1] for names in moe_block_path])),
+            moe_block_path=moe_block_path,
+            moe_path=moe_path,
             dtype=self.param_dtype,
         )
 
     @property
-    def _default_loss_config(self) -> LossConfig | None:
+    def _default_loss_config(self: Self) -> LossConfig | None:
         """
         Provides a default LossConfig for the module, if applicable.
 
@@ -1397,3 +1445,25 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
                 loss_output.loss = loss_output.loss + outputs.aux_loss
         outputs = outputs.replace(loss=loss_output.loss)
         return outputs, loss_output
+
+    def apply_lm_head(self, hidden_states: chex.Array) -> chex.Array:
+        """
+        Apply the language model head to transform hidden states into logits.
+
+        Args:
+            hidden_states: Input hidden states from the transformer model.
+                Shape should be [..., hidden_size].
+
+        Returns:
+            Output logits over the vocabulary. Shape will be [..., vocab_size].
+        """
+        tie_embeddings = next(
+            (
+                getattr(self.config, key)
+                for key in ["tie_word_embeddings", "use_lm_head", "share_input_output_layers"]
+                if hasattr(self.config, key)
+            ),
+            False,
+        )
+        w = self.get_embedding().embedding.value.T if tie_embeddings else None
+        return self.get_lm_head()(hidden_states, w=w)

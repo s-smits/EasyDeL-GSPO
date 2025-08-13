@@ -238,6 +238,7 @@ class FlexibleAttentionModule(nn.Module):
         attention_mask: Array | None = None,
         segment_ids: Array | None = None,
         causal: bool = True,
+        softmax_aux: Array | None = None,
     ) -> AttentionOutput:
         """
         Performs the attention computation using the selected backend implementation.
@@ -281,6 +282,7 @@ class FlexibleAttentionModule(nn.Module):
                 causal=causal,
                 deterministic=self.deterministic,
                 dropout_rng=rngs,
+                softmax_aux=softmax_aux,
             )
             if mode == common_types.MODE_DECODE:
                 assert cache_view is not None
@@ -497,7 +499,6 @@ class AttentionModule(nn.Module):
         """Handles concatenation of current KV states to the cache."""
         if cache_view is None:
             return key, value, attention_mask, None, None
-
         key, value, attention_mask, cache_view, masking_details = cache_view.concatenate_to_cache(
             query=query,
             key=key,
@@ -530,7 +531,8 @@ class AttentionModule(nn.Module):
         if cache_view is None:
             if causal:
                 target_length = initial_key_length
-                causal_mask = causal_mask or self.config._create_causal_mask(target_length=target_length)
+                if isinstance(causal_mask, bool) or causal_mask is None:
+                    causal_mask = self.config._create_causal_mask(target_length=target_length)
                 causal_mask = causal_mask[:, :, :query_length, :initial_key_length]
                 causal_mask = jnp.broadcast_to(causal_mask, (attention_mask.shape[0], *causal_mask.shape[1:]))
                 if token_type_ids is not None and query_length != 1:

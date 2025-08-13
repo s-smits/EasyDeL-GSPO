@@ -269,6 +269,29 @@ _import_structure = {
         "Gemma3TextConfig",
         "Gemma3TextModel",
     ],
+    "modules.gidd": [
+        "GiddConfig",
+        "GiddModel",
+        "GiddForDiffusionLM",
+    ],
+    "modules.glm": [
+        "GlmConfig",
+        "GlmForCausalLM",
+        "GlmForSequenceClassification",
+        "GlmModel",
+    ],
+    "modules.glm4": [
+        "Glm4Config",
+        "Glm4ForCausalLM",
+        "Glm4ForSequenceClassification",
+        "Glm4Model",
+    ],
+    "modules.glm4_moe": [
+        "Glm4MoeConfig",
+        "Glm4MoeForCausalLM",
+        "Glm4MoeForSequenceClassification",
+        "Glm4MoeModel",
+    ],
     "modules.gpt2": [
         "GPT2Config",
         "GPT2LMHeadModel",
@@ -283,6 +306,12 @@ _import_structure = {
         "GPTNeoXConfig",
         "GPTNeoXForCausalLM",
         "GPTNeoXModel",
+    ],
+    "modules.gpt_oss": [
+        "GptOssConfig",
+        "GptOssForCausalLM",
+        "GptOssForSequenceClassification",
+        "GptOssModel",
     ],
     "modules.grok_1": [
         "Grok1Config",
@@ -480,9 +509,9 @@ _import_structure = {
         "pack_sequences",
     ],
     "utils.parameters_transformation": [
-        "module_to_huggingface_model",
-        "module_to_torch",
-        "torch_dict_to_easydel_params",
+        "ModelConverter",
+        "StateDictConverter",
+        "TensorConverter",
     ],
 }
 
@@ -648,6 +677,29 @@ if _tp.TYPE_CHECKING:
         Gemma3TextConfig,
         Gemma3TextModel,
     )
+    from .modules.gidd import (
+        GiddConfig,
+        GiddForDiffusionLM,
+        GiddModel,
+    )
+    from .modules.glm import (
+        GlmConfig,
+        GlmForCausalLM,
+        GlmForSequenceClassification,
+        GlmModel,
+    )
+    from .modules.glm4 import (
+        Glm4Config,
+        Glm4ForCausalLM,
+        Glm4ForSequenceClassification,
+        Glm4Model,
+    )
+    from .modules.glm4_moe import (
+        Glm4MoeConfig,
+        Glm4MoeForCausalLM,
+        Glm4MoeForSequenceClassification,
+        Glm4MoeModel,
+    )
     from .modules.gpt2 import (
         GPT2Config,
         GPT2LMHeadModel,
@@ -662,6 +714,12 @@ if _tp.TYPE_CHECKING:
         GPTNeoXConfig,
         GPTNeoXForCausalLM,
         GPTNeoXModel,
+    )
+    from .modules.gpt_oss import (
+        GptOssConfig,
+        GptOssForCausalLM,
+        GptOssForSequenceClassification,
+        GptOssModel,
     )
     from .modules.grok_1 import (
         Grok1Config,
@@ -871,9 +929,9 @@ if _tp.TYPE_CHECKING:
         traversals,
     )
     from .utils.parameters_transformation import (
-        module_to_huggingface_model,
-        module_to_torch,
-        torch_dict_to_easydel_params,
+        ModelConverter,
+        StateDictConverter,
+        TensorConverter,
     )
 else:
     _logger = _get_logger("EasyDeL")
@@ -885,7 +943,7 @@ else:
         extra_objects={"__version__": __version__},
     )
 
-    _targeted_versions = ["0.0.47"]
+    _targeted_versions = ["0.0.48"]
 
     from eformer import __version__ as _eform_version
 

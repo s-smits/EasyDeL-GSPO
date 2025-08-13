@@ -27,17 +27,11 @@ from jax import numpy as jnp
 
 from easydel.infra.base_module import EasyDeLBaseModule
 from easydel.infra.factory import TaskType, register_module
-from easydel.infra.modeling_outputs import (
-    AttentionLayerOutput,
-    BaseModelOutput,
-    CausalLMOutput,
-    DecoderLayerOutput,
-)
+from easydel.infra.modeling_outputs import AttentionLayerOutput, BaseModelOutput, CausalLMOutput, DecoderLayerOutput
 from easydel.infra.utils import (
     ACT2FN,
     ModuleCaches,
     auto_remat,
-    block_wise_ffn,
     get_dot_general_by_bits,
 )
 from easydel.layers.attention import AttentionModule, FlexibleAttentionModule
@@ -50,6 +44,13 @@ from easydel.layers.caching import (
     TransformerMetadata,
 )
 from easydel.layers.linear import ParallelLinear
+from easydel.layers.moe import (
+    BaseMoeModule,
+    ColumnParallelMoELinear,
+    MoeLoadBalancingStrategy,
+    MoeRoutingStrategy,
+    RowParallelMoELinear,
+)
 from easydel.layers.norms import RMSNorm
 
 from .deepseek_configuration import DeepseekV2Config
@@ -168,6 +169,77 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
     return q_embed, k_embed
 
 
+class DeepseekV2MLPMoE(nn.Module):
+    def __init__(
+        self,
+        config: DeepseekV2Config,
+        dtype: jnp.dtype = jnp.bfloat16,
+        param_dtype: jnp.dtype = jnp.bfloat16,
+        precision: str | jax.lax.Precision | None = None,
+        hidden_size: int | None = None,
+        intermediate_size: int | None = None,
+        *,
+        rngs: nn.Rngs,
+    ):
+        self.config = config
+
+        imz = intermediate_size or config.intermediate_size
+        hs = hidden_size or config.hidden_size
+        self.gate_proj = ColumnParallelMoELinear(
+            config.n_routed_experts,
+            hs,
+            imz,
+            use_bias=False,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            kernel_init=nn.initializers.normal(),
+            use_pallas_group_matmul=config.use_pallas_group_matmul,
+            partition_manager=config.partition_manager,
+            rngs=rngs,
+        )
+        self.up_proj = ColumnParallelMoELinear(
+            config.n_routed_experts,
+            hs,
+            imz,
+            use_bias=False,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            kernel_init=nn.initializers.normal(),
+            use_pallas_group_matmul=config.use_pallas_group_matmul,
+            partition_manager=config.partition_manager,
+            rngs=rngs,
+        )
+        self.down_proj = RowParallelMoELinear(
+            config.n_routed_experts,
+            imz,
+            hs,
+            use_bias=False,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            kernel_init=nn.initializers.normal(),
+            use_pallas_group_matmul=config.use_pallas_group_matmul,
+            partition_manager=config.partition_manager,
+            rngs=rngs,
+        )
+        self.act_fn = ACT2FN[config.hidden_act]
+
+    def __call__(self, hidden_states: chex.Array, group_sizes: chex.Array):
+        hidden_states = apply_logical_sharding(
+            hidden_states,
+            dynamic_axes=common_types.HiddenStateSharding,
+            partition_manager=self.config.partition_manager,
+        )
+
+        return apply_logical_sharding(
+            self.down_proj(
+                self.act_fn(self.gate_proj(hidden_states, group_sizes)) * self.up_proj(hidden_states, group_sizes),
+                group_sizes,
+            ),
+            dynamic_axes=common_types.HiddenStateSharding,
+            partition_manager=self.config.partition_manager,
+        )
+
+
 class DeepseekV2MLP(nn.Module):
     def __init__(
         self,
@@ -251,9 +323,8 @@ class MoEGate(nn.Module):
         )
         self.dp = nn.Dropout(0, rngs=rngs)
 
-    def __call__(self, hidden_states):
-        bsz, seq_len, h = hidden_states.shape
-        hidden_states = hidden_states.reshape(-1, h)
+    def __call__(self, hidden_states: chex.Array) -> chex.Array:
+        seu, _ = hidden_states.shape
         logits = jax.lax.batch_matmul(
             hidden_states.astype(jnp.float32),
             self.kernel.value.astype(jnp.float32),
@@ -264,65 +335,32 @@ class MoEGate(nn.Module):
         else:
             raise NotImplementedError(f"insupportable scoring function for MoE gating: {self.scoring_func}")
 
-        ### select top-k experts
         if self.topk_method == "gready":
-            topk_weight, topk_idx = jax.lax.top_k(scores, k=self.top_k)
+            topk_weight, _ = jax.lax.top_k(scores, k=self.top_k)
         elif self.topk_method == "group_limited_greedy":
-            group_scores = scores.reshape(bsz * seq_len, self.n_group, -1).max(axis=-1)  # [n, n_group]
-
-            # Find the indices of the top k scores in each group
+            group_scores = scores.reshape(seu, self.n_group, -1).max(axis=-1)  # [n, n_group]
             top_k_indices = lax.top_k(group_scores, self.topk_group)[1]  # [n, topk_group]
 
-            # Initialize a mask with zeros
             group_mask = jnp.zeros_like(group_scores)  # [n, n_group]
-
-            # Update the mask: this is a bit tricky in JAX as there is no direct scatter function
             n_indices = jnp.arange(group_mask.shape[0])[:, None]
             group_mask = group_mask.at[n_indices, top_k_indices].set(1)  # [n, n_group]
 
-            # Expand and reshape the group_mask
             score_mask = jnp.repeat(group_mask[:, :, None], self.n_routed_experts // self.n_group, axis=2)
-            score_mask = score_mask.reshape(bsz * seq_len, -1)  # [n, e]
-
-            # Apply the mask to scores
-            masked_scores = jnp.where(score_mask, scores, 0.0)  # [n, e]
-
-            # Compute the top k scores after masking
-            topk_weight, topk_idx = lax.top_k(masked_scores, self.top_k)
+            score_mask = score_mask.reshape(seu, -1)
+            masked_scores = jnp.where(score_mask, scores, 0.0)
+            topk_weight, _ = lax.top_k(masked_scores, self.top_k)
         else:
             raise ValueError()
-        ### norm gate to sum 1
         if self.top_k > 1 and self.norm_topk_prob:
             denominator = jnp.sum(topk_weight, axis=-1, keepdims=True) + 1e-20
             topk_weight = topk_weight / denominator
         else:
             topk_weight = topk_weight * self.routed_scaling_factor
-        ### expert-level computation auxiliary loss
 
-        if not self.dp.deterministic and self.alpha > 0.0:
-            scores_for_aux = scores
-            aux_topk = self.top_k
-            topk_idx_for_aux_loss = topk_idx.reshape(bsz, -1)
-            if self.seq_aux:
-                scores_for_seq_aux = scores_for_aux.reshape(bsz, seq_len, -1)
-                ce = jnp.zeros(bsz, self.n_routed_experts)
-                ce = ce.at[1, topk_idx_for_aux_loss].add(
-                    jnp.ones(bsz, seq_len * aux_topk),
-                )
-                ce = jnp.divide(ce, (seq_len * aux_topk / self.n_routed_experts))
-                aux_loss = jnp.mean(jnp.sum((ce * jnp.mean(scores_for_seq_aux, axis=-1)), axis=1)) * self.alpha
-            else:
-                mask_ce = jax.nn.one_hot(topk_idx_for_aux_loss.reshape(-1), num_classes=self.n_routed_experts)
-                ce = jnp.mean(mask_ce.astype("float32"), axis=0)
-                Pi = jnp.mean(scores_for_aux, axis=0)
-                fi = ce * self.n_routed_experts
-                aux_loss = jnp.sum(Pi * fi) * self.alpha
-        else:
-            aux_loss = None
-        return topk_idx, topk_weight, aux_loss
+        return topk_weight
 
 
-class DeepseekV2MoE(nn.Module):
+class DeepseekV2MoE(BaseMoeModule):
     def __init__(
         self,
         config: DeepseekV2Config,
@@ -332,28 +370,31 @@ class DeepseekV2MoE(nn.Module):
         *,
         rngs: nn.Rngs,
     ):
-        super().__init__()
+        super().__init__(
+            config=config,
+            n_routed_experts=config.n_routed_experts,
+            num_experts_per_tok=config.num_experts_per_tok,
+            hidden_size=config.hidden_size,
+            lbl_coef=getattr(config, "router_aux_loss_coef", None),
+            rzl_coef=getattr(config, "router_z_loss_coef", None),
+            routing_strategy=MoeRoutingStrategy.TOP_K,
+            load_balancing_strategy=MoeLoadBalancingStrategy.STANDARD,
+        )
         self.config = config
         self.dtype = dtype
         self.param_dtype = param_dtype
         self.precision = precision
         self.rngs = rngs
         self.num_experts_per_tok = config.num_experts_per_tok
-
-        self.ep_size = 1
         self.experts_per_rank = config.n_routed_experts
-        self.ep_rank = 0
-        self.experts = self.experts = [
-            DeepseekV2MLP(
-                config=config,
-                dtype=dtype,
-                param_dtype=param_dtype,
-                precision=precision,
-                intermediate_size=self.config.moe_intermediate_size,
-                rngs=rngs,
-            )
-            for i in range(self.config.n_routed_experts)
-        ]
+        self.experts = DeepseekV2MLPMoE(
+            config=config,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            precision=precision,
+            intermediate_size=self.config.moe_intermediate_size,
+            rngs=rngs,
+        )
         self.gate = MoEGate(
             config=config,
             dtype=dtype,
@@ -363,7 +404,7 @@ class DeepseekV2MoE(nn.Module):
         )
         if config.n_shared_experts is not None:
             intermediate_size = config.moe_intermediate_size * config.n_shared_experts
-            self.shared_experts = DeepseekV2MoE(
+            self.shared_experts = DeepseekV2MLP(
                 config=config,
                 dtype=dtype,
                 param_dtype=param_dtype,
@@ -379,19 +420,16 @@ class DeepseekV2MoE(nn.Module):
             partition_manager=self.config.partition_manager,
         )
         identity = hidden_states
-        orig_shape = hidden_states.shape
-        topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
-        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
-        flat_topk_idx = topk_idx.reshape(-1)
-        hidden_states = hidden_states.repeat(self.num_experts_per_tok, axis=0)
-        y = jnp.empty_like(hidden_states)
-        for i, expert in enumerate(self.experts):
-            y[flat_topk_idx == i] = expert(hidden_states[flat_topk_idx == i])
-        y = (y.reshape(*topk_weight.shape, -1) * jnp.expand_dims(topk_weight, -1)).sum(axis=1)
-        y = y.reshape(*orig_shape)
+        y, router_logits = self._moe_call(
+            gate_layer=self.gate,
+            expert_layer=self.experts,
+            hidden_state=hidden_states,
+            output_metrics=False,
+            validate_inputs=False,
+        )
         if self.config.n_shared_experts is not None:
             y = y + self.shared_experts(identity)
-        return y
+        return y, router_logits
 
 
 class DeepseekV2Attention(AttentionModule):
@@ -755,14 +793,10 @@ class DeepseekV2DecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        if self.config.use_scan_mlp:
-            feed_forward_hidden_states = block_wise_ffn(
-                self.mlp,
-                hidden_states,
-                self.config.scan_mlp_chunk_size,
-            )
-        else:
-            feed_forward_hidden_states = self.mlp(hidden_states)
+        feed_forward_hidden_states = self.mlp(hidden_states)
+        router_logits = None
+        if isinstance(feed_forward_hidden_states, tuple):
+            feed_forward_hidden_states, router_logits = feed_forward_hidden_states
         hidden_states = residual + feed_forward_hidden_states
         hidden_states = apply_logical_sharding(
             hidden_states,
@@ -961,6 +995,35 @@ class DeepseekV2Model(EasyDeLBaseModule):
             past_key_values=past_key_values,
         )
 
+    def get_encoder(self) -> nn.Module:
+        """
+        Returns the encoder part of the model's graph definition.
+        For DeepseekV2Model (decoder-only), this is not applicable.
+        """
+        raise NotImplementedError("DeepseekV2Model is a decoder-only model and does not have a separate encoder.")
+
+    def get_decoder(self) -> nn.Module:
+        """
+        Returns the decoder part of the model's graph definition.
+        For DeepseekV2Model, this is the model itself.
+        """
+        return self
+
+    def get_lm_head(self) -> nn.Module:
+        """
+        Returns the language model head of the module.
+        DeepseekV2Model does not include the lm_head.
+        """
+        raise NotImplementedError("DeepseekV2Model does not include the language model head. See DeepseekV2ForCausalLM.")
+
+    def get_embedding(self) -> nn.Module:
+        """
+        Returns the embedding layer of the module.
+        """
+        # Assuming the embedding layer is named `embed_tokens` based on common conventions
+        # and the presence of `self.embed_tokens(input_ids.astype("i4"))` in typical __call__ methods.
+        return self.embed_tokens
+
 
 @register_module(TaskType.CAUSAL_LM, DeepseekV2Config, model_type="deepseek_v2")
 class DeepseekV2ForCausalLM(EasyDeLBaseModule):
@@ -1029,6 +1092,7 @@ class DeepseekV2ForCausalLM(EasyDeLBaseModule):
         mode: common_types.RUNTIME_MODE_TYPES | None = None,  # type:ignore
         past_key_values: TransformerCache | PagesCache | None = None,
         cache_metadata: TransformerMetadata | PagesMetadata | None = None,
+        apply_lm_head: bool = True,
     ) -> CausalLMOutput:
         """
         Forward pass of the causal language model.
@@ -1071,18 +1135,42 @@ class DeepseekV2ForCausalLM(EasyDeLBaseModule):
             partition_manager=self.config.partition_manager,
         )
 
-        if self.config.tie_word_embeddings:
-            lm_logits = jax.lax.dot_general(
-                hidden_states,
-                self.model.embed_tokens.embedding.value.T,
-                (((hidden_states.ndim - 1), (0,)), ((), ())),
-            )
-        else:
-            lm_logits = self.lm_head(hidden_states)
+        lm_logits = None
+        if apply_lm_head:
+            lm_logits = self.apply_lm_head(hidden_states)
 
         return CausalLMOutput(
             logits=lm_logits,
             hidden_states=outputs.hidden_states,
+            last_hidden_state=outputs.last_hidden_state,
             attentions=outputs.attentions,
             past_key_values=outputs.past_key_values,
         )
+
+    def get_encoder(self) -> nn.Module:
+        """
+        Returns the encoder part of the model's graph definition.
+        For DeepseekV2ForCausalLM (decoder-only), this is not applicable.
+        """
+        raise NotImplementedError("DeepseekV2ForCausalLM is a decoder-only model and does not have a separate encoder.")
+
+    def get_decoder(self) -> nn.Module:
+        """
+        Returns the decoder part of the model's graph definition.
+        For DeepseekV2ForCausalLM, this is the underlying DeepseekV2Model.
+        """
+        # Assuming the base model is stored in `self.model`
+        return self.model.get_decoder()
+
+    def get_lm_head(self) -> nn.Module:
+        """
+        Returns the language model head of the module.
+        """
+        return self.lm_head
+
+    def get_embedding(self) -> nn.Module:
+        """
+        Returns the embedding layer of the module.
+        """
+        # Access the embedding layer through the decoder (DeepseekV2Model)
+        return self.model.get_embedding()  # Leverages DeepseekV2Model's get_embedding

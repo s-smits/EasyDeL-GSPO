@@ -197,7 +197,7 @@ if ! eopod run "pip install uv --quiet -U"; then
 fi
 
 log_info "Creating virtual environment..."
-if ! eopod run "~/.local/bin/uv venv $VENV_PATH --clear"; then
+if ! eopod run "~/.local/bin/uv venv $VENV_PATH --clear --python 3.11.6"; then
     log_error "Failed to create virtual environment"
     exit 1
 fi
@@ -221,7 +221,7 @@ log_info "Starting package installations in virtual environment..."
 
 log_info "Uninstalling existing easydel..."
 eopod run "~/.local/bin/uv pip uninstall  --python ${VENV_PATH}/bin/python easydel" 2>/dev/null || true
-install_package "git+https://github.com/erfanzar/easydel.git[tpu,torch]" || exit 1
+install_package "git+https://github.com/erfanzar/easydel.git[tpu,torch,lm_eval]" || exit 1
 
 log_info "Configuring Ray..."
 if ! "$ENV_EOPOD_PATH" auto-config-ray --self-job --python-path "$VENV_PATH/bin/python"; then

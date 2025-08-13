@@ -160,11 +160,7 @@ class DAPOTrainer(GRPOTrainer):
                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
-        # Token sharding should match step_partition_spec for properly sharded tokens
-        token_sharding = NamedSharding(
-            mesh=mesh,
-            spec=self.arguments.step_partition_spec
-        )
+        # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
         
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
@@ -172,8 +168,8 @@ class DAPOTrainer(GRPOTrainer):
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                token_sharding,
-                token_sharding,
+                empty_sharding,
+                empty_sharding,
             ),
             out_shardings=empty_sharding,
         )
