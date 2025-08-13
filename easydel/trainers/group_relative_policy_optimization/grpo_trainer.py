@@ -432,11 +432,6 @@ class GRPOTrainer(Trainer):
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
         # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
-        # Match token ids/masks sharding to the adaptive input sharding to avoid pjit sharding mismatches
-        token_sharding = NamedSharding(
-            mesh=mesh,
-            spec=adaptive_spec,
-        )
         
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
@@ -444,8 +439,8 @@ class GRPOTrainer(Trainer):
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                token_sharding,
-                token_sharding,
+                empty_sharding,
+                empty_sharding,
             ),
             out_shardings=empty_sharding,
         )
@@ -498,6 +493,11 @@ class GRPOTrainer(Trainer):
                 )
                 
             generation_time = generation_time_fn()
+            # Cross-host barrier to keep hosts in program lockstep after generation
+            try:
+                jax.experimental.multihost_utils.sync_global_devices("after_generate")
+            except Exception:
+                pass
             
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
@@ -514,6 +514,11 @@ class GRPOTrainer(Trainer):
                     full_mask,
                 )
             token_logps_time = token_logps_time_fn()
+            # Cross-host barrier to keep hosts in program lockstep after ref logps
+            try:
+                jax.experimental.multihost_utils.sync_global_devices("after_ref_logps")
+            except Exception:
+                pass
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 

@@ -158,20 +158,14 @@ class DRGRPOTrainer(GRPOTrainer):
                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
-        # Token sharding should match step_partition_spec for properly sharded tokens
-        token_sharding = NamedSharding(
-            mesh=mesh,
-            spec=self.arguments.step_partition_spec
-        )
-        
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
             static_argnames=("graphdef",),
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                token_sharding,
-                token_sharding,
+                empty_sharding,
+                empty_sharding,
             ),
             out_shardings=empty_sharding,
         )
@@ -206,6 +200,9 @@ class DRGRPOTrainer(GRPOTrainer):
                     self.generate_function(state, prompt_ids, prompt_mask)
                 )
             generation_time = generation_time_fn()
+            
+            # Cross-host barrier to keep hosts in program lockstep after generation is TOO RISKY
+
             prompt_completion_ids = sequences
             completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
             completion_mask = self._make_attn_mask(completion_ids)
@@ -219,6 +216,8 @@ class DRGRPOTrainer(GRPOTrainer):
                     jnp.concatenate([ridmask, completion_mask], -1),
                 )
             token_logps_time = token_logps_time_fn()
+            # Cross-host barrier to keep hosts in program lockstep after ref logps TOO RISKY SO 
+
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
