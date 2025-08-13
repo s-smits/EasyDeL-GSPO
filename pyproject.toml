@@ -50,6 +50,7 @@ dependencies = [
 	"gcsfs",
 	"zstandard>=0.23.0",
 	"msgspec~=0.19.0",
+	"tpux>=0.1.6",
 ]
 
 [project.urls]

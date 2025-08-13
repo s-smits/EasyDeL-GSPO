@@ -347,7 +347,7 @@ class GRPOTrainer(Trainer):
         
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
-            out_shardings=(input_sharding, input_sharding, input_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask):
             module = state.model
