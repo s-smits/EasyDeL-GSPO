@@ -21,6 +21,7 @@ import sys
 import types
 import typing as tp
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, ArgumentTypeError
+import re
 from copy import copy
 from enum import Enum
 from inspect import isclass
@@ -127,19 +128,53 @@ class DataClassArgumentParser(ArgumentParser):
         if isinstance(aliases, str):
             aliases = [aliases]
 
-        # Process union types (only tp.Optional[T] is supported)
-        origin_type = getattr(field.type, "__origin__", None)
+        # Process union types (supports PEP 604 unions)
+        origin_type = tp.get_origin(field.type)
         if origin_type in (tp.Union, getattr(types, "UnionType", None)):
-            union_args = field.type.__args__
+            union_args = tp.get_args(field.type)
             if len(union_args) == 2 and type(None) in union_args:
                 # tp.Optional[T] detected: choose the non-None type
                 field.type = next(arg for arg in union_args if arg is not type(None))
-                origin_type = getattr(field.type, "__origin__", None)
+                origin_type = tp.get_origin(field.type)
             else:
-                raise ValueError(
-                    f"Only tp.Optional types (tp.Union[T, None]) are supported for "
-                    f"field '{field.name}', got {field.type}."
-                )
+                # Limited support for non-Optional unions used in EasyDeL
+                # Currently supported: bool | float (track_memory use-case)
+                simple_union = set(union_args)
+
+                def _parse_bool_or_float(value):
+                    if isinstance(value, bool):
+                        return value
+                    if isinstance(value, (int, float)):
+                        return float(value)
+                    if isinstance(value, str):
+                        v = value.strip()
+                        # Prefer numeric parsing when the token looks numeric
+                        try:
+                            # Accept standard numeric strings, including scientific notation
+                            return float(v)
+                        except ValueError:
+                            pass
+                        # Fall back to boolean tokens (true/false/yes/no/1/0)
+                        return string_to_bool(v)
+                    raise ArgumentTypeError(f"Cannot parse '{value}' as bool or float for '{field.name}'.")
+
+                if simple_union == {bool, float}:
+                    # Treat as an option that can be:
+                    #   --flag               -> True (const)
+                    #   --flag 0.5           -> float interval
+                    #   --flag true/false    -> bool
+                    kwargs["type"] = _parse_bool_or_float
+                    kwargs["nargs"] = "?"
+                    kwargs["const"] = True
+                    default_val = False if field.default is dataclasses.MISSING else field.default
+                    kwargs["default"] = default_val
+                    # Do not modify field.type further; we handle it via custom parser
+                    origin_type = None
+                else:
+                    raise ValueError(
+                        f"Unsupported Union type for field '{field.name}': {field.type}. "
+                        "Only Optional[T] and bool|float are supported."
+                    )
 
         # Special handling for booleans
         bool_kwargs: dict[str, tp.Any] = {}
@@ -170,7 +205,10 @@ class DataClassArgumentParser(ArgumentParser):
             elif field.default is dataclasses.MISSING:
                 kwargs["required"] = True
         else:
-            kwargs["type"] = field.type
+            # If not already set by a custom handler (e.g., bool|float above),
+            # set the standard argparse type.
+            if "type" not in kwargs:
+                kwargs["type"] = field.type
             if field.default is not dataclasses.MISSING:
                 kwargs["default"] = field.default
             elif field.default_factory is not dataclasses.MISSING:
