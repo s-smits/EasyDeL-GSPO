@@ -7,6 +7,7 @@ from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from math_verify import LatexExtractionConfig, parse, verify  # type:ignore
 from transformers import AutoConfig, AutoTokenizer
+import inspect
 
 import easydel as ed
 from easydel.infra.factory import registry
@@ -114,14 +115,18 @@ def main():
     # Use adaptive mesh configuration if tensor parallelism is specified
     if gspo_config.force_tensor_parallel is not None:
         from easydel.trainers.group_relative_policy_optimization.adaptive_mesh import calculate_optimal_mesh_dims
-        
-        optimal_dims = calculate_optimal_mesh_dims(
-            gspo_config.total_batch_size,
-            gspo_config.num_return_sequences,
+
+        calculate_kwargs = dict(
+            total_batch_size=gspo_config.total_batch_size,
+            num_return_sequences=gspo_config.num_return_sequences,
             force_tensor_parallel=gspo_config.force_tensor_parallel,
-            force_data_parallel=gspo_config.force_data_parallel,
-            mini_batch_size=gspo_config.mini_batch_size
+            mini_batch_size=gspo_config.mini_batch_size,
         )
+        # Backward-compatible: only pass force_data_parallel if the function supports it
+        if 'force_data_parallel' in inspect.signature(calculate_optimal_mesh_dims).parameters:
+            calculate_kwargs['force_data_parallel'] = gspo_config.force_data_parallel
+
+        optimal_dims = calculate_optimal_mesh_dims(**calculate_kwargs)
         sharding_axis_dims = optimal_dims
         print(f"Using adaptive mesh dims: {optimal_dims} (tp={gspo_config.force_tensor_parallel})")
     else:
