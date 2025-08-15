@@ -462,12 +462,9 @@ class GRPOTrainer(Trainer):
 
         static_argnames = (2, 3, 4, 5, 6, 7, 8)
         
-        # Get batch-aware shardings for mixed-rank tensors
-        batch_shardings = self.get_batch_shardings()
-
         sharded_training_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, batch_shardings),
+            in_shardings=(self.state_shardings, empty_sharding),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -485,7 +482,7 @@ class GRPOTrainer(Trainer):
 
         sharded_evaluation_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, batch_shardings),
+            in_shardings=(self.state_shardings, empty_sharding),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )
