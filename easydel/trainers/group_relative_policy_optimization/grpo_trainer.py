@@ -404,10 +404,14 @@ class GRPOTrainer(Trainer):
             mesh=mesh,
             spec=adaptive_spec
         )
+        step_sharding = NamedSharding(
+            mesh=mesh,
+            spec=self.arguments.step_partition_spec,
+        )
         
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
-            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            out_shardings=(empty_sharding, step_sharding, step_sharding),
             static_argnums=(3,),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
