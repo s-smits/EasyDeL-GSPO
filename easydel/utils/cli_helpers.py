@@ -324,6 +324,7 @@ class DataClassArgumentParser(ArgumentParser):
         if namespace.__dict__:
             outputs.append(namespace)
 
+        # CHANGED: Instead of raising ValueError on unknown args, print a warning and continue.
         if return_remaining_strings:
             return (*outputs, remaining_args)
         elif remaining_args:
