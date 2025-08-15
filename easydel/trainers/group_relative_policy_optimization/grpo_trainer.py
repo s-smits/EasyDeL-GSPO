@@ -404,6 +404,8 @@ class GRPOTrainer(Trainer):
             mesh=mesh,
             spec=adaptive_spec
         )
+        # Store input spec for debugging/inspection
+        self.input_partition_spec = adaptive_spec
         step_sharding = NamedSharding(
             mesh=mesh,
             spec=self.arguments.step_partition_spec,
@@ -418,6 +420,13 @@ class GRPOTrainer(Trainer):
             module = state.model
 
             with module.mesh:
+                if jax.process_index() == 0:
+                    try:
+                        print("DEBUG(gen): in ids", getattr(input_ids, "shape", None), "sharding=", getattr(input_ids, "sharding", None))
+                        print("DEBUG(gen): in mask", getattr(attention_mask, "shape", None), "sharding=", getattr(attention_mask, "sharding", None))
+                        print("DEBUG(gen): input_spec=", adaptive_spec, "step_spec=", self.arguments.step_partition_spec)
+                    except Exception:
+                        pass
                 input_ids = module.config.partition_manager.shard(
                     input_ids,
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
@@ -447,6 +456,13 @@ class GRPOTrainer(Trainer):
                     attention_mask=attention_mask,
                     generation_config=generation_config,
                 ).sequences
+                if jax.process_index() == 0:
+                    try:
+                        print("DEBUG(gen): out seq", getattr(sequences, "shape", None), "sharding=", getattr(sequences, "sharding", None))
+                        print("DEBUG(gen): post-partition ids", getattr(input_ids, "shape", None), "sharding=", getattr(input_ids, "sharding", None))
+                        print("DEBUG(gen): post-partition mask", getattr(attention_mask, "shape", None), "sharding=", getattr(attention_mask, "sharding", None))
+                    except Exception:
+                        pass
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
@@ -577,6 +593,13 @@ class GRPOTrainer(Trainer):
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs)
                     )
+                if jax.process_index() == 0:
+                    try:
+                        print("DEBUG(loop): cur_nrs=", cur_nrs)
+                        print("DEBUG(loop): ids", getattr(prompt_ids, "shape", None), "sharding=", getattr(prompt_ids, "sharding", None))
+                        print("DEBUG(loop): mask", getattr(prompt_mask, "shape", None), "sharding=", getattr(prompt_mask, "sharding", None))
+                    except Exception:
+                        pass
                 generation_time += float(generation_time_fn())
 
                 # Cross-host barrier to keep hosts in program lockstep after each chunk generation
@@ -617,6 +640,13 @@ class GRPOTrainer(Trainer):
                 nrs_remaining -= cur_nrs
 
             # Concatenate accumulated chunks
+            if jax.process_index() == 0:
+                try:
+                    print("DEBUG(cat): num seq chunks=", len(sequences_chunks))
+                    if len(completion_ids_chunks) > 0:
+                        print("DEBUG(cat): shard ids[0] sharding=", getattr(completion_ids_chunks[0], "sharding", None))
+                except Exception:
+                    pass
             prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
             completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
             completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
@@ -762,8 +792,8 @@ class GRPOTrainer(Trainer):
                         pass
                     shards = getattr(x, "addressable_shards", None)
                     if shards:
-                        local = jnp.concatenate([s.data for s in shards], axis=0)
-                        return jax.device_get(local)
+                        # Prefer returning the first local shard to avoid cross-device concat
+                        return jax.device_get(shards[0].data)
                 return x
             local_completion_ids = _to_local_host(completion_ids)
             local_comp_lens = _to_local_host(completion_lengths_per_seq)
