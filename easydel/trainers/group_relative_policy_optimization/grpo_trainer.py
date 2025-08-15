@@ -363,7 +363,7 @@ class GRPOTrainer(Trainer):
         )
         
         @ejit(
-            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, None),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )

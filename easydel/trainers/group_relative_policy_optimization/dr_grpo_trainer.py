@@ -197,7 +197,7 @@ class DRGRPOTrainer(GRPOTrainer):
 
             with capture_time() as generation_time_fn:
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(
-                    self.generate_function(state, prompt_ids, prompt_mask)
+                    self.generate_function(state, prompt_ids, prompt_mask, self.num_generations)
                 )
             generation_time = generation_time_fn()
             

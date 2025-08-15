@@ -100,7 +100,7 @@ class GSPOTrainer(GRPOTrainer):
             spec=adaptive_spec
         )
 
-        def generate(state: EasyDeLState, input_ids, attention_mask):
+        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
             module = state.model
 
             with module.mesh:
@@ -123,7 +123,7 @@ class GSPOTrainer(GRPOTrainer):
                     eos_token_id=self.eos_token_id,
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
-                    num_return_sequences=self.num_generations,
+                    num_return_sequences=num_return_sequences,
                     do_sample=True,
                     use_cache=False,
                 )
@@ -138,8 +138,9 @@ class GSPOTrainer(GRPOTrainer):
 
         self.generate_function = ejit(
             generate,
-            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, None),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
+            static_argnums=(3,),
         )
 
     def configure_functions(self) -> TrainerConfigureFunctionOutput:
