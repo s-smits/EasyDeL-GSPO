@@ -778,18 +778,15 @@ class GRPOTrainer(Trainer):
                     processed_metrics_dict[key] = 0.0  # Default fallback value
             else:
                 processed_metrics_dict[key] = value
-        
-        batch_shardings = self.get_batch_shardings()
-        sharded_batch = {
-            "prompt_ids": jax.device_put(prompt_ids, batch_shardings["prompt_ids"]),
-            "prompt_mask": jax.device_put(prompt_mask, batch_shardings["prompt_mask"]),
-            "completion_ids": jax.device_put(completion_ids, batch_shardings["completion_ids"]),
-            "completion_mask": jax.device_put(completion_mask, batch_shardings["completion_mask"]),
-            "ref_per_token_logps": jax.device_put(ref_per_token_logps, batch_shardings["ref_per_token_logps"]),
-            "advantages": jax.device_put(advantages, batch_shardings["advantages"]),
-        }
-        
-        return sharded_batch, processed_metrics_dict
+                
+        return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "ref_per_token_logps": ref_per_token_logps,
+            "advantages": advantages,
+        }, processed_metrics_dict    
     
     def on_step_end(
         self,
