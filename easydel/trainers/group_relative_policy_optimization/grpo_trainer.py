@@ -780,6 +780,7 @@ class GRPOTrainer(Trainer):
                 
         # Ensure all arrays are moved to host memory (unsharded) before returning
         # This is necessary because the training step expects empty_sharding on inputs
+        # and arrays from generation/computation may have device sharding that conflicts
         return {
             "prompt_ids": jax.device_get(prompt_ids),
             "prompt_mask": jax.device_get(prompt_mask),
