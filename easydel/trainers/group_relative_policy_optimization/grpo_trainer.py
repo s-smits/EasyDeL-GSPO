@@ -418,7 +418,8 @@ class GRPOTrainer(Trainer):
 
         sharded_training_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, self.step_sharding),
+            # Allow per-leaf rank-aware constraints inside step; avoid boundary mismatch
+            in_shardings=(self.state_shardings, None),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -436,7 +437,7 @@ class GRPOTrainer(Trainer):
 
         sharded_evaluation_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, self.step_sharding),
+            in_shardings=(self.state_shardings, None),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )

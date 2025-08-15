@@ -87,7 +87,25 @@ def grpo_step(
         gradient_accumulation_steps=gradient_accumulation_steps,
         batch_partition_spec=partition_spec,
     )
-    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
+    # Apply rank-aware sharding: 2D tensors (batch, seq) follow full step spec;
+    # 1D tensors (batch-only, e.g., advantages) shard only over batch dims.
+    def _maybe_constrain(arr):
+        if not isinstance(arr, jax.Array):
+            return arr
+        if getattr(arr, 'ndim', 0) >= 2:
+            return with_sharding_constraint(arr, partition_spec)
+        if getattr(arr, 'ndim', 0) == 1:
+            # Prefer combining dp and fsdp on single axis; fall back to dp only.
+            try:
+                return with_sharding_constraint(arr, PartitionSpec(('dp', 'fsdp')))
+            except Exception:
+                try:
+                    return with_sharding_constraint(arr, PartitionSpec('dp'))
+                except Exception:
+                    return arr
+        return arr
+
+    batch = jax.tree_util.tree_map(_maybe_constrain, batch)
 
     def loss_fn(tree, minibatch):
         module = flax.nnx.merge(state.graphdef, tree, state.graphother)
