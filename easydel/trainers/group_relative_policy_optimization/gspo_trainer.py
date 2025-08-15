@@ -182,7 +182,7 @@ class GSPOTrainer(GRPOTrainer):
 
         sharded_training_step_function = ejit(
             gspo_step,
-            in_shardings=(self.state_shardings, empty_sharding),
+            in_shardings=(self.state_shardings, None),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -203,7 +203,7 @@ class GSPOTrainer(GRPOTrainer):
 
         sharded_evaluation_step_function = ejit(
             gspo_step,
-            in_shardings=(self.state_shardings, empty_sharding),
+            in_shardings=(self.state_shardings, None),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )

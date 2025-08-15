@@ -464,7 +464,7 @@ class GRPOTrainer(Trainer):
         
         sharded_training_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, empty_sharding),
+            in_shardings=(self.state_shardings, None),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -482,7 +482,7 @@ class GRPOTrainer(Trainer):
 
         sharded_evaluation_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, empty_sharding),
+            in_shardings=(self.state_shardings, None),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )
@@ -745,23 +745,36 @@ class GRPOTrainer(Trainer):
         for i, reward_func in enumerate(self.reward_funcs):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
             metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
-        if self.log_table is not None:
-            cur_step = jax.device_get(state.step)
-            # HARDCODED: Always log to WandB table every step
-            if jax.process_index() == 0:
-                print(f"DEBUG: WandB table logging EVERY STEP - step {cur_step}")
-            decoded_text = self.processing_class.batch_decode(jax.device_get(completion_ids))
-            individual_lengths = jax.device_get(completion_lengths_per_seq)
-            if jax.process_index() == 0:
-                print(f"DEBUG: Logging {len(decoded_text)} generations to WandB table")
+        if self.log_table is not None and jax.process_index() == 0:
+            cur_step = int(jax.device_get(state.step))
+            # Build local-only host arrays to avoid cross-host device_get
+            def _to_local_host(x):
+                if isinstance(x, jax.Array):
+                    try:
+                        is_addr = getattr(x, "is_fully_addressable", None)
+                        if callable(is_addr) and is_addr():
+                            return jax.device_get(x)
+                    except Exception:
+                        pass
+                    shards = getattr(x, "addressable_shards", None)
+                    if shards:
+                        local = jnp.concatenate([s.data for s in shards], axis=0)
+                        return jax.device_get(local)
+                return x
+            local_completion_ids = _to_local_host(completion_ids)
+            local_comp_lens = _to_local_host(completion_lengths_per_seq)
+            decoded_text = self.processing_class.batch_decode(local_completion_ids)
+            individual_lengths = local_comp_lens
+            print(f"DEBUG: WandB table logging EVERY STEP - step {cur_step}")
+            print(f"DEBUG: Logging {len(decoded_text)} generations to WandB table")
+            if len(decoded_text) > 0:
                 print(f"DEBUG: Sample generation (first 100 chars): {decoded_text[0][:100]}...")
-                print(f"DEBUG: Individual lengths: {individual_lengths}")
+            print(f"DEBUG: Individual lengths: {individual_lengths}")
             for text, length in zip(decoded_text, individual_lengths, strict=False):
                 self.log_table.add_data(text, generation_time, float(length), cur_step)
-            if jax.process_index() == 0:
-                print(f"DEBUG: Calling wandb.log with table containing {len(self.log_table.data)} rows")
-                wandb.log({"generations": self.log_table}, step=cur_step)
-                print("DEBUG: WandB log call completed")
+            print(f"DEBUG: Calling wandb.log with table containing {len(self.log_table.data)} rows")
+            wandb.log({"generations": self.log_table}, step=cur_step)
+            print("DEBUG: WandB log call completed")
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
@@ -782,12 +795,12 @@ class GRPOTrainer(Trainer):
         # This is necessary because the training step expects empty_sharding on inputs
         # and arrays from generation/computation may have device sharding that conflicts
         return {
-            "prompt_ids": jax.device_get(prompt_ids),
-            "prompt_mask": jax.device_get(prompt_mask),
-            "completion_ids": jax.device_get(completion_ids),
-            "completion_mask": jax.device_get(completion_mask),
-            "ref_per_token_logps": jax.device_get(ref_per_token_logps),
-            "advantages": jax.device_get(advantages),
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "ref_per_token_logps": ref_per_token_logps,
+            "advantages": advantages,
         }, processed_metrics_dict    
     
     def on_step_end(
