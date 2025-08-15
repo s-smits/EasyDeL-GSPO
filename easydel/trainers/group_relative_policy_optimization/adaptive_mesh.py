@@ -354,7 +354,7 @@ def get_adaptive_sharding_spec(
             num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
     
     # Get mesh dimensions
-    dp, fsdp, _, tp, _ = calculate_optimal_mesh_dims(
+    dp, fsdp, _, tp, sp = calculate_optimal_mesh_dims(
         total_batch_size, 8, num_devices,
         force_tensor_parallel=force_tensor_parallel,
         force_data_parallel=force_data_parallel,
@@ -371,9 +371,10 @@ def get_adaptive_sharding_spec(
     if fsdp > 1 and total_batch_size % (dp * fsdp) == 0:
         batch_spec.append('fsdp')
     
-    # Sequence dimension sharding
-    if tp > 1:
-        seq_spec.append('tp')
+    # Sequence dimension sharding: for input tensors prefer sequence-parallel ('sp') axis
+    # Inputs should not be sharded over the tensor-parallel axis ('tp').
+    if sp > 1:
+        seq_spec.append('sp')
     
     # Create final spec
     if not batch_spec:

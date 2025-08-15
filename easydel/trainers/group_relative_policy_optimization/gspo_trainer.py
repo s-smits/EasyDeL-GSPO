@@ -17,6 +17,7 @@ from __future__ import annotations
 import typing as tp
 
 from easydel.infra.base_module import EasyDeLBaseModule
+from eformer.escale import with_sharding_constraint
 from easydel.infra.base_state import EasyDeLState
 from easydel.infra.utils import ProcessingClassType
 from easydel.utils.helpers import get_logger
@@ -134,6 +135,9 @@ class GSPOTrainer(GRPOTrainer):
                     generation_config=generation_config,
                 ).sequences
                 
+                # Re-constrain inputs to the step partition spec for downstream ops
+                input_ids = with_sharding_constraint(input_ids, self.arguments.step_partition_spec)
+                attention_mask = with_sharding_constraint(attention_mask, self.arguments.step_partition_spec)
                 return sequences, input_ids, attention_mask
 
         self.generate_function = ejit(
