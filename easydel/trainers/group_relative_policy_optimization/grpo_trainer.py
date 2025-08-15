@@ -329,6 +329,49 @@ class GRPOTrainer(Trainer):
             mesh=self.model.mesh,
             spec=self.arguments.step_partition_spec,
         )
+    
+    def get_batch_shardings(self):
+        """
+        Create proper sharding specifications for each tensor in the batch.
+        Handles mixed-rank tensor collections properly.
+        """
+        mesh = self.model.mesh
+        base_spec = self.arguments.step_partition_spec
+        
+        # If no sharding needed
+        if base_spec is None or base_spec == PartitionSpec():
+            empty_spec = PartitionSpec()
+            return {
+                "prompt_ids": NamedSharding(mesh=mesh, spec=empty_spec),
+                "prompt_mask": NamedSharding(mesh=mesh, spec=empty_spec),
+                "completion_ids": NamedSharding(mesh=mesh, spec=empty_spec),
+                "completion_mask": NamedSharding(mesh=mesh, spec=empty_spec),
+                "ref_per_token_logps": NamedSharding(mesh=mesh, spec=empty_spec),
+                "advantages": NamedSharding(mesh=mesh, spec=empty_spec),
+            }
+        
+        # Extract batch dimension from base spec
+        batch_dim = base_spec[0] if len(base_spec) > 0 else None
+        seq_dim = base_spec[1] if len(base_spec) > 1 else None
+        
+        # For 1D tensors (advantages), only use batch dimension
+        # If batch_dim is a tuple like ('dp', 'fsdp'), use just the first element
+        if isinstance(batch_dim, tuple) and len(batch_dim) > 0:
+            batch_dim_1d = batch_dim[0]
+        else:
+            batch_dim_1d = batch_dim
+        
+        spec_1d = PartitionSpec(batch_dim_1d) if batch_dim_1d else PartitionSpec()
+        spec_2d = base_spec
+        
+        return {
+            "prompt_ids": NamedSharding(mesh=mesh, spec=spec_2d),
+            "prompt_mask": NamedSharding(mesh=mesh, spec=spec_2d),
+            "completion_ids": NamedSharding(mesh=mesh, spec=spec_2d),
+            "completion_mask": NamedSharding(mesh=mesh, spec=spec_2d),
+            "ref_per_token_logps": NamedSharding(mesh=mesh, spec=spec_2d),
+            "advantages": NamedSharding(mesh=mesh, spec=spec_1d),
+        }
 
     def configure_functions(self) -> TrainerConfigureFunctionOutput:
         """
@@ -415,10 +458,13 @@ class GRPOTrainer(Trainer):
         )
 
         static_argnames = (2, 3, 4, 5, 6, 7, 8)
+        
+        # Get batch-aware shardings for mixed-rank tensors
+        batch_shardings = self.get_batch_shardings()
 
         sharded_training_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, self.step_sharding),
+            in_shardings=(self.state_shardings, batch_shardings),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -436,7 +482,7 @@ class GRPOTrainer(Trainer):
 
         sharded_evaluation_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, self.step_sharding),
+            in_shardings=(self.state_shardings, batch_shardings),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )
