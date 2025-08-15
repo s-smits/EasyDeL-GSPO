@@ -431,16 +431,17 @@ class GRPOTrainer(Trainer):
                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
-        # Use empty sharding for flexibility - the actual sharding is handled in preprocessing
-        
+        # Allow input sharding of token ids and masks to pass through (we re-constrain inside the fn)
+        # This avoids mismatches like: pjit expects replicated but arg is sharded as ('dp','tp')
+
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
             static_argnames=("graphdef",),
             in_shardings=(
                 self.model_state.shardings.graphstate,
                 self.model_state.shardings.graphother,
-                empty_sharding,
-                empty_sharding,
+                None,
+                None,
             ),
             out_shardings=empty_sharding,
         )
