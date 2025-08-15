@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import jax
 from jax.sharding import PartitionSpec
 from easydel.utils.helpers import get_logger
@@ -46,8 +47,15 @@ def calculate_optimal_mesh_dims(
         Tuple of (dp, fsdp, ep, tp, sp) dimensions
     """
     if num_devices is None:
-        num_devices = jax.device_count()
-    num_workers = jax.process_count()
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            # Fall back to env hints or single device to avoid backend init in child processes
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+    try:
+        num_workers = jax.process_count()
+    except Exception:
+        num_workers = int(os.getenv("JAX_PROCESS_COUNT", "1"))
     # On TPU v4, devices commonly come as multiples of 8 per worker (megacore).
     # If TPU v4-32 is expected but only 16 devices are visible due to 2 chips per worker,
     # still compute logical dp/tp using total devices across workers.
@@ -199,7 +207,10 @@ def _auto_calculate_mesh_dims(
 ) -> tuple[int, int, int, int, int]:
     """Auto-calculate optimal mesh dimensions based on hardware and workload."""
     
-    num_workers = jax.process_count()
+    try:
+        num_workers = jax.process_count()
+    except Exception:
+        num_workers = int(os.getenv("JAX_PROCESS_COUNT", "1"))
     
     # Special handling for common TPU configurations
     if tpu_type == "v4" and ((num_devices == 32 and num_workers == 4) or (num_devices == 16 and num_workers == 4)):
@@ -337,7 +348,10 @@ def get_adaptive_sharding_spec(
         PartitionSpec for input sharding
     """
     if num_devices is None:
-        num_devices = jax.device_count()
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
     
     # Get mesh dimensions
     dp, fsdp, _, tp, _ = calculate_optimal_mesh_dims(
@@ -391,7 +405,10 @@ def get_adaptive_step_partition_spec(
         PartitionSpec for step partitioning
     """
     if num_devices is None:
-        num_devices = jax.device_count()
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
     
     # Get mesh dimensions
     dp, fsdp, _, tp, sp = calculate_optimal_mesh_dims(
@@ -452,6 +469,32 @@ def validate_mesh_config(
             f"Data parallel dim ({dp}) exceeds batch size ({total_batch_size}). "
             f"This may cause inefficiency."
         )
+    
+    # Multi-worker specific validations
+    try:
+        num_workers = jax.process_count()
+    except Exception:
+        num_workers = int(os.getenv("JAX_PROCESS_COUNT", "1"))
+    if num_workers > 1:
+        logger.info(
+            f"Multi-worker mesh validation: {num_workers} workers, "
+            f"dp={dp}, fsdp={fsdp}, tp={tp}, total_devices={num_devices}"
+        )
+        
+        # Validate that batch size is divisible by data parallel dimensions
+        if total_batch_size % dp != 0:
+            logger.warning(
+                f"Batch size ({total_batch_size}) not divisible by dp ({dp}). "
+                f"This may cause uneven data distribution across workers."
+            )
+        
+        # Check if we have sufficient devices per worker for tensor parallelism
+        devices_per_worker = num_devices // num_workers
+        if tp > devices_per_worker:
+            logger.warning(
+                f"Tensor parallel dim ({tp}) exceeds devices per worker ({devices_per_worker}). "
+                f"TP will span across workers, which may reduce performance."
+            )
     
     return True
 

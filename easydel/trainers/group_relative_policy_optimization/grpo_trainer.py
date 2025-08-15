@@ -87,7 +87,7 @@ class GRPOTrainer(Trainer):
         assert processing_class is not None, "processing_class must be specified to tokenize a DPO dataset."
 
         # Apply adaptive mesh configuration before storing arguments
-        from .adaptive_mesh import get_adaptive_step_partition_spec
+        from .adaptive_mesh import get_adaptive_step_partition_spec, validate_mesh_config, calculate_optimal_mesh_dims
         _step_sig = inspect.signature(get_adaptive_step_partition_spec)
         _step_kwargs = dict(
             total_batch_size=arguments.total_batch_size,
@@ -97,6 +97,23 @@ class GRPOTrainer(Trainer):
         if 'force_data_parallel' in _step_sig.parameters:
             _step_kwargs['force_data_parallel'] = arguments.force_data_parallel
         adaptive_step_spec = get_adaptive_step_partition_spec(**_step_kwargs)
+        
+        # Validate mesh configuration for multi-worker training
+        if arguments.force_tensor_parallel is not None or arguments.force_data_parallel is not None:
+            mesh_kwargs = dict(
+                total_batch_size=arguments.total_batch_size,
+                num_return_sequences=arguments.num_return_sequences,
+                force_tensor_parallel=arguments.force_tensor_parallel,
+                force_data_parallel=arguments.force_data_parallel,
+                mini_batch_size=arguments.mini_batch_size,
+            )
+            dp, fsdp, ep, tp, sp = calculate_optimal_mesh_dims(**mesh_kwargs)
+            try:
+                num_devices = jax.device_count()
+            except Exception:
+                import os
+                num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+            validate_mesh_config(dp, fsdp, tp, num_devices, arguments.total_batch_size)
         
         # Override step_partition_spec if it would cause dimension mismatch or using TP
         should_override = (

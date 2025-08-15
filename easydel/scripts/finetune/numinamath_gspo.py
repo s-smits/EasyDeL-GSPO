@@ -80,14 +80,13 @@ class RunTimeConfig:
             self.sharding_axis = tuple(map(int, self.sharding_axis.split(",")))
 
 
-parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
-gspo_config, runtime_config = parser.parse_args_into_dataclasses()
-
-runtime_config: RunTimeConfig
-gspo_config: ed.GSPOConfig
-
-
 def main():
+    parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
+    gspo_config, runtime_config = parser.parse_args_into_dataclasses()
+
+    runtime_config: RunTimeConfig
+    gspo_config: ed.GSPOConfig
+
     # Print arguments once per process without initializing JAX backend at import-time
     try:
         print("Training Arguments\n----------------------")

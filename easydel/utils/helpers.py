@@ -103,11 +103,21 @@ class LazyLogger:
         if self._logger is not None:
             return
 
-        try:
-            if jax.process_index() > 0:
-                self._level = logging.WARNING
-        except RuntimeError:
-            pass
+        # Prefer environment hint to avoid forcing TPU backend init in child processes
+        env_idx = os.getenv("JAX_PROCESS_INDEX")
+        if env_idx is not None:
+            try:
+                if int(env_idx) > 0:
+                    self._level = logging.WARNING
+            except Exception:
+                pass
+        else:
+            try:
+                if jax.process_index() > 0:
+                    self._level = logging.WARNING
+            except Exception:
+                # Avoid initializing JAX backends in processes where TPU is unavailable
+                pass
 
         logger = logging.getLogger(self._name)
         logger.propagate = False

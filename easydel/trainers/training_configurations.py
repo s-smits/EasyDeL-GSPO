@@ -78,6 +78,51 @@ def get_safe_arr(xs):
 AVAILABLE_BACKENDS: list[str] = ["cpu", "gpu", "tpu", None]
 
 
+# --- Safe JAX helpers to avoid initializing TPU in child processes ---
+def _safe_int_from_env(var_name: str, default: int | None) -> int | None:
+    val = os.getenv(var_name)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except Exception:
+        return default
+
+
+def _safe_process_index() -> int:
+    """Best-effort process index without forcing JAX backend init.
+
+    Priority:
+      1) JAX_PROCESS_INDEX env var
+      2) jax.process_index() (guarded)
+      3) default 0
+    """
+    env_idx = _safe_int_from_env("JAX_PROCESS_INDEX", None)
+    if env_idx is not None:
+        return env_idx
+    try:
+        return jax.process_index()
+    except Exception:
+        return 0
+
+
+def _safe_process_count() -> int:
+    """Best-effort process count without forcing JAX backend init.
+
+    Priority:
+      1) JAX_PROCESS_COUNT env var
+      2) jax.process_count() (guarded)
+      3) default 1
+    """
+    env_cnt = _safe_int_from_env("JAX_PROCESS_COUNT", None)
+    if env_cnt is not None:
+        return env_cnt
+    try:
+        return jax.process_count()
+    except Exception:
+        return 1
+
+
 @auto_pytree
 class TrainingArguments:
     auto_shard_states: bool = field(
@@ -138,11 +183,11 @@ class TrainingArguments:
     )
     grain_shard_index: int | None = field(
         default=None,
-        metadata={"help": "sharding index to be used for grain dataloaders in both train and eval steps."},
+        metadata={"help": "sharding index to be used for grain dataloaders in both train and eval steps. If None, auto-detects from jax.process_index()."},
     )
     grain_shard_count: int | None = field(
         default=None,
-        metadata={"help": "sharding count to be used for grain dataloaders in both train and eval steps."},
+        metadata={"help": "sharding count to be used for grain dataloaders in both train and eval steps. If None, auto-detects from jax.process_count()."},
     )
     gradient_accumulation_steps: int = field(
         default=1,
@@ -419,7 +464,7 @@ class TrainingArguments:
 
     @functools.cached_property
     def is_process_zero(self):
-        return jax.process_index() == 0
+        return _safe_process_index() == 0
 
     def __post_init__(self):
         """
@@ -448,8 +493,29 @@ class TrainingArguments:
         Sets up JAX distributed training based on the chosen backend and sharding configuration.
         Determines the number of available devices and sets up the device mesh.
         """
-
-        JaxDistributedConfig.initialize(self.jax_distributed_config)
+        try:
+            JaxDistributedConfig.initialize(self.jax_distributed_config)
+        except Exception as e:
+            logger.info(f"Skipping JAX distributed initialization in this process: {e}")
+        
+        # Auto-configure grain dataset sharding for multi-worker training
+        if self.grain_shard_index is None:
+            self.grain_shard_index = _safe_process_index()
+        if self.grain_shard_count is None:
+            self.grain_shard_count = _safe_process_count()
+            
+        # Log multi-worker configuration
+        if _safe_process_count() > 1:
+            logger.info(
+                f"Multi-worker training detected: {_safe_process_count()} workers, "
+                f"this is worker {_safe_process_index()}, "
+                f"grain shard {self.grain_shard_index}/{self.grain_shard_count}"
+            )
+        else:
+            logger.info(
+                f"Dataset sharding configured for {_safe_process_count()} workers: "
+                f"shard_index={self.grain_shard_index}, shard_count={self.grain_shard_count}"
+            )
 
     def _setup_optimizer(self):
         """
