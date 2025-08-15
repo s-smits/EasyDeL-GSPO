@@ -411,7 +411,7 @@ class GRPOTrainer(Trainer):
         
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
-            out_shardings=(empty_sharding, step_sharding, step_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
@@ -447,9 +447,9 @@ class GRPOTrainer(Trainer):
                     attention_mask=attention_mask,
                     generation_config=generation_config,
                 ).sequences
-                # Make sure we return inputs re-constrained to the step partition spec
-                input_ids = with_sharding_constraint(input_ids, self.arguments.step_partition_spec)
-                attention_mask = with_sharding_constraint(attention_mask, self.arguments.step_partition_spec)
+                # Return inputs re-constrained to the input sharding spec to allow repeated calls
+                input_ids = with_sharding_constraint(input_ids, adaptive_spec)
+                attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
