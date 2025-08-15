@@ -165,9 +165,6 @@ class GSPOTrainer(GRPOTrainer):
         mesh = self.model.mesh
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
-        # Get batch-aware shardings for mixed-rank tensors (from parent class)
-        batch_shardings = self.get_batch_shardings()
-
         # GSPO-specific training step static arguments (add importance_sampling_level and epsilon)
         self._train_shared_fn_static_args = (
             self.num_generations,
@@ -185,7 +182,7 @@ class GSPOTrainer(GRPOTrainer):
 
         sharded_training_step_function = ejit(
             gspo_step,
-            in_shardings=(self.state_shardings, batch_shardings),
+            in_shardings=(self.state_shardings, empty_sharding),
             out_shardings=(self.state_shardings, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
@@ -206,7 +203,7 @@ class GSPOTrainer(GRPOTrainer):
 
         sharded_evaluation_step_function = ejit(
             gspo_step,
-            in_shardings=(self.state_shardings, batch_shardings),
+            in_shardings=(self.state_shardings, empty_sharding),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )
