@@ -760,8 +760,7 @@ class GRPOTrainer(Trainer):
                 self.log_table.add_data(text, generation_time, float(length), cur_step)
             if jax.process_index() == 0:
                 print(f"DEBUG: Calling wandb.log with table containing {len(self.log_table.data)} rows")
-            wandb.log({"generations": self.log_table}, step=cur_step)
-            if jax.process_index() == 0:
+                wandb.log({"generations": self.log_table}, step=cur_step)
                 print("DEBUG: WandB log call completed")
 
         # i don't care who you are and what you do.
@@ -779,13 +778,15 @@ class GRPOTrainer(Trainer):
             else:
                 processed_metrics_dict[key] = value
                 
+        # Ensure all arrays are moved to host memory (unsharded) before returning
+        # This is necessary because the training step expects empty_sharding on inputs
         return {
-            "prompt_ids": prompt_ids,
-            "prompt_mask": prompt_mask,
-            "completion_ids": completion_ids,
-            "completion_mask": completion_mask,
-            "ref_per_token_logps": ref_per_token_logps,
-            "advantages": advantages,
+            "prompt_ids": jax.device_get(prompt_ids),
+            "prompt_mask": jax.device_get(prompt_mask),
+            "completion_ids": jax.device_get(completion_ids),
+            "completion_mask": jax.device_get(completion_mask),
+            "ref_per_token_logps": jax.device_get(ref_per_token_logps),
+            "advantages": jax.device_get(advantages),
         }, processed_metrics_dict    
     
     def on_step_end(
