@@ -780,35 +780,117 @@ class GRPOTrainer(Trainer):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
             metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None and jax.process_index() == 0:
-            cur_step = int(jax.device_get(state.step))
-            # Build local-only host arrays to avoid cross-host device_get
-            def _to_local_host(x):
-                if isinstance(x, jax.Array):
+            try:
+                cur_step = int(jax.device_get(state.step))
+            except Exception as e:
+                print(f"DEBUG: Failed to get step: {e}")
+                cur_step = 0
+
+            def _to_local_host(x, name="array"):
+                """Safely extract local host data with multiple fallback strategies."""
+                if not isinstance(x, jax.Array):
+                    return x
+
+                # Try 1: Fully addressable (replicated/single-device)
+                try:
+                    if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
+                        result = jax.device_get(x)
+                        print(f"Try with method: jax.device_get(x) worked for {name}")
+                        return result
+                except Exception as e:
+                    print(f"DEBUG: {name} fully addressable extraction failed: {e}")
+
+                # Try 2: Get first local shard (partial data is better than crash)
+                try:
+                    shards = x.addressable_shards
+                    if shards and len(shards) > 0:
+                        local_data = jax.device_get(shards[0].data)
+                        print(f"DEBUG: {name} using first shard only, shape={local_data.shape}")
+                        print(f"Try with method: jax.device_get(shards[0].data) worked for {name}")
+                        return local_data
+                except Exception as e:
+                    print(f"DEBUG: {name} shard extraction failed: {e}")
+
+                # Try 3: Use allgather for complete data (expensive but complete)
+                try:
+                    from jax.experimental import multihost_utils
+                    gathered = multihost_utils.process_allgather(x, tiled=False)
+                    local_data = jax.device_get(gathered)
+                    print(f"DEBUG: {name} used allgather, shape={local_data.shape}")
+                    print(f"Try with method: multihost_utils.process_allgather(x, tiled=False) worked for {name}")
+                    return local_data
+                except Exception as e:
+                    print(f"DEBUG: {name} allgather failed: {e}")
+
+                # Last resort: Return empty array
+                print(f"WARNING: {name} extraction failed, returning empty")
+                print(f"Try with method: returning jnp.array([]) for {name}")
+                return jnp.array([])
+
+            # Extract with fallbacks
+            local_completion_ids = _to_local_host(completion_ids, "completion_ids")
+            local_comp_lens = _to_local_host(completion_lengths_per_seq, "lengths")
+
+            # Decode with error handling
+            try:
+                if len(local_completion_ids) > 0:
+                    decoded_text = self.processing_class.batch_decode(local_completion_ids)
+                    print("Try with method: self.processing_class.batch_decode(local_completion_ids) worked")
+                else:
+                    decoded_text = []
+            except Exception as e:
+                print(f"DEBUG: Decode failed: {e}")
+                print("Try with method: self.processing_class.batch_decode(local_completion_ids) failed")
+                decoded_text = []
+
+            # Handle lengths
+            try:
+                if isinstance(local_comp_lens, jnp.ndarray) and local_comp_lens.size > 0:
+                    individual_lengths = local_comp_lens
+                    print("Try with method: using local_comp_lens as individual_lengths worked")
+                else:
+                    individual_lengths = [0] * len(decoded_text)
+                    print("Try with method: using [0] * len(decoded_text) for individual_lengths worked")
+            except Exception as e:
+                print(f"DEBUG: Lengths extraction failed: {e}")
+                print("Try with method: using [] for individual_lengths")
+                individual_lengths = []
+
+            # Log with error handling
+            print(f"DEBUG: WandB logging - step {cur_step}, {len(decoded_text)} items")
+
+            try:
+                n_items = min(len(decoded_text), len(individual_lengths))
+                for i in range(n_items):
                     try:
-                        is_addr = getattr(x, "is_fully_addressable", None)
-                        if callable(is_addr) and is_addr():
-                            return jax.device_get(x)
-                    except Exception:
-                        pass
-                    shards = getattr(x, "addressable_shards", None)
-                    if shards:
-                        # Prefer returning the first local shard to avoid cross-device concat
-                        return jax.device_get(shards[0].data)
-                return x
-            local_completion_ids = _to_local_host(completion_ids)
-            local_comp_lens = _to_local_host(completion_lengths_per_seq)
-            decoded_text = self.processing_class.batch_decode(local_completion_ids)
-            individual_lengths = local_comp_lens
-            print(f"DEBUG: WandB table logging EVERY STEP - step {cur_step}")
-            print(f"DEBUG: Logging {len(decoded_text)} generations to WandB table")
-            if len(decoded_text) > 0:
-                print(f"DEBUG: Sample generation (first 100 chars): {decoded_text[0][:100]}...")
-            print(f"DEBUG: Individual lengths: {individual_lengths}")
-            for text, length in zip(decoded_text, individual_lengths, strict=False):
-                self.log_table.add_data(text, generation_time, float(length), cur_step)
-            print(f"DEBUG: Calling wandb.log with table containing {len(self.log_table.data)} rows")
-            wandb.log({"generations": self.log_table}, step=cur_step)
-            print("DEBUG: WandB log call completed")
+                        length_val = float(individual_lengths[i]) if i < len(individual_lengths) else 0.0
+                        self.log_table.add_data(decoded_text[i], generation_time, length_val, cur_step)
+                        print(f"Try with method: self.log_table.add_data(decoded_text[{i}], generation_time, {length_val}, {cur_step}) worked")
+                    except Exception as e:
+                        print(f"DEBUG: Failed to add row {i}: {e}")
+                        # Add placeholder
+                        try:
+                            self.log_table.add_data("[decode failed]", generation_time, 0.0, cur_step)
+                            print("Try with method: self.log_table.add_data('[decode failed]', generation_time, 0.0, cur_step) worked")
+                        except Exception as e2:
+                            print(f"DEBUG: Fallback add_data failed: {e2}")
+            except Exception as e:
+                print(f"DEBUG: Table population failed: {e}")
+                print("Try with method: Table population failed")
+
+            # Log to WandB
+            try:
+                if hasattr(self.log_table, 'data') and len(self.log_table.data) > 0:
+                    wandb.log({"generations": self.log_table}, step=cur_step)
+                    print("DEBUG: WandB log completed")
+                    print("Try with method: wandb.log({'generations': self.log_table}, step=cur_step) worked")
+                else:
+                    print("DEBUG: WandB table empty, skipping")
+                    print("Try with method: WandB table empty, skipping")
+            except Exception as e:
+                print(f"DEBUG: WandB log failed: {e}")
+                print("Try with method: wandb.log({'generations': self.log_table}, step=cur_step) failed")
+                # Don't crash training over logging
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
