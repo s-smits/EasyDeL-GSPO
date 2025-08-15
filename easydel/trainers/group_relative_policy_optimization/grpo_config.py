@@ -137,6 +137,15 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    rollout_chunk_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Chunk size for processing rollouts to reduce memory usage during generation. "
+            "If None or <= 0, defaults to min(2, num_return_sequences). Larger values use more memory "
+            "but may be faster, while smaller values reduce memory usage."
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
