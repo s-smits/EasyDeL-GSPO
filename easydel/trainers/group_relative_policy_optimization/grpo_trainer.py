@@ -365,8 +365,9 @@ class GRPOTrainer(Trainer):
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
+            static_argnums=(3,),
         )
-        def generate(state: EasyDeLState, input_ids, attention_mask):
+        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
             module = state.model
 
             with module.mesh:
@@ -389,7 +390,7 @@ class GRPOTrainer(Trainer):
                     eos_token_id=self.eos_token_id,  # EasyDeL will stop naturally when these tokens are generated
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
-                    num_return_sequences=self.num_generations,
+                    num_return_sequences=num_return_sequences,
                     do_sample=True,
                     use_cache=False,
                 )
@@ -505,38 +506,72 @@ class GRPOTrainer(Trainer):
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
             
-            with capture_time() as generation_time_fn:
-                sequences, prompt_ids, prompt_mask = jax.block_until_ready(
-                    self.generate_function(state, prompt_ids, prompt_mask)
-                )
-                
-            generation_time = generation_time_fn()
-            # Cross-host barrier to keep hosts in program lockstep after generation
-            try:
-                jax.experimental.multihost_utils.sync_global_devices("after_generate")
-            except Exception:
-                pass
-            
-            prompt_completion_ids = sequences
-            completion_ids = prompt_completion_ids[..., prompt_ids.shape[-1] :]
-            completion_mask = self._make_attn_mask(completion_ids)
-            ridmask = prompt_mask.repeat(self.num_generations, 0)
+            # Chunked generation and reference log-prob computation to reduce peak memory
+            rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
+            if rollout_chunk_size is None or rollout_chunk_size <= 0:
+                rollout_chunk_size = min(2, int(self.num_generations))
 
-            with capture_time() as token_logps_time_fn:
-                # Call compute_refmodel_logps without explicit sharding constraints
-                full_mask = jnp.concatenate([ridmask, completion_mask], -1)
-                ref_per_token_logps = self.compute_refmodel_logps(
-                    self.ref_state.graphstate,
-                    self.ref_state.graphother,
-                    prompt_completion_ids,
-                    full_mask,
-                )
-            token_logps_time = token_logps_time_fn()
-            # Cross-host barrier to keep hosts in program lockstep after ref logps
-            try:
-                jax.experimental.multihost_utils.sync_global_devices("after_ref_logps")
-            except Exception:
-                pass
+            sequences_chunks = []
+            completion_ids_chunks = []
+            completion_mask_chunks = []
+            ref_logps_chunks = []
+            comp_len_chunks = []
+            generation_time = 0.0
+            token_logps_time = 0.0
+
+            base_prompt_len = prompt_ids.shape[-1]
+            nrs_remaining = int(self.num_generations)
+            while nrs_remaining > 0:
+                cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
+                with capture_time() as generation_time_fn:
+                    seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
+                        self.generate_function(state, prompt_ids, prompt_mask, cur_nrs)
+                    )
+                generation_time += float(generation_time_fn())
+
+                # Cross-host barrier to keep hosts in program lockstep after each chunk generation
+                try:
+                    jax.experimental.multihost_utils.sync_global_devices("after_generate_chunk")
+                except Exception:
+                    pass
+
+                # Extract completions for this chunk and build masks
+                prompt_completion_ids_chunk = seq_chunk
+                completion_ids_chunk = prompt_completion_ids_chunk[..., base_prompt_len:]
+                completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
+                ridmask_chunk = prompt_mask.repeat(cur_nrs, 0)
+
+                with capture_time() as token_logps_time_fn:
+                    full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
+                    ref_logps_chunk = self.compute_refmodel_logps(
+                        self.ref_state.graphstate,
+                        self.ref_state.graphother,
+                        prompt_completion_ids_chunk,
+                        full_mask_chunk,
+                    )
+                token_logps_time += float(token_logps_time_fn())
+
+                # Barrier after each chunked ref logps computation
+                try:
+                    jax.experimental.multihost_utils.sync_global_devices("after_ref_logps_chunk")
+                except Exception:
+                    pass
+
+                # Accumulate
+                sequences_chunks.append(prompt_completion_ids_chunk)
+                completion_ids_chunks.append(completion_ids_chunk)
+                completion_mask_chunks.append(completion_mask_chunk)
+                ref_logps_chunks.append(ref_logps_chunk)
+                comp_len_chunks.append(completion_mask_chunk.sum(-1))
+
+                nrs_remaining -= cur_nrs
+
+            # Concatenate accumulated chunks
+            prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
+            completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
+            completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
+            ref_per_token_logps = jnp.concatenate(ref_logps_chunks, axis=0)
+            completion_lengths_per_seq = jnp.concatenate(comp_len_chunks, axis=0)
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
