@@ -148,6 +148,12 @@ def gspo_step(
             clipped_fraction = jnp.mean(((jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask).astype(jnp.float32))
             mean_ratio = jnp.mean(ratio * completion_mask) / jnp.mean(completion_mask)
 
+        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
+        from ._fn import _sequence_average, compute_two_sample_stats_1d
+        seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
+        seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
+        dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
+
         # Compute advantage statistics for progress bar
         advantage_median_abs = jnp.median(jnp.abs(advantages))
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
@@ -165,6 +171,7 @@ def gspo_step(
                 "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
                 # Convert string to numeric value for JAX compatibility
                 "importance_sampling_level_seq": jnp.float32(1.0 if importance_sampling_level == "sequence" else 0.0),
+                **dist_stats,
             },
         )
 

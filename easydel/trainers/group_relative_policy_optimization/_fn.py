@@ -30,6 +30,117 @@ from ..training_utils import make_assertions_and_get_sizes, minibatch_call, upda
 RewardFunc = tp.Union[EasyDeLState, tp.Callable[[list, list], list[float]]]  # noqa
 
 
+def _compute_quantile_grid_stats(x: jnp.ndarray, y: jnp.ndarray, num_quantiles: int = 41) -> dict:
+    """
+    Compute quantile-based distances between two 1D samples using fixed quantile grid.
+
+    Returns a dict containing:
+      - qq_l2: Mean squared difference between quantile functions
+      - w1: Approximate Wasserstein-1 distance via |Qx - Qy| integrated over p
+    """
+    # Ensure float32 for numerical stability
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+
+    # Use interior quantiles to reduce tail noise; grid in (0,1)
+    probs = jnp.linspace(0.02, 0.98, num_quantiles, dtype=jnp.float32)
+    qx = jnp.quantile(x, probs, method="linear")
+    qy = jnp.quantile(y, probs, method="linear")
+
+    diff = qx - qy
+    qq_l2 = jnp.mean(diff * diff)
+    # Trapezoidal rule to integrate |Qx - Qy| over p in [0,1]
+    absdiff = jnp.abs(diff)
+    w1 = jnp.trapz(absdiff, probs)
+    return {"qq_l2": qq_l2, "w1": w1}
+
+
+def _ks_statistic_approx(x: jnp.ndarray, y: jnp.ndarray, grid_size: int = 129) -> jnp.ndarray:
+    """
+    Approximate two-sample Kolmogorov–Smirnov statistic on a fixed value grid.
+    Uses an evenly spaced grid between min and max of pooled samples to avoid dynamic shapes.
+    """
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+    vmin = jnp.minimum(jnp.min(x), jnp.min(y))
+    vmax = jnp.maximum(jnp.max(x), jnp.max(y))
+    # Handle degenerate case to avoid NaNs
+    vmax = jnp.where(jnp.equal(vmin, vmax), vmin + 1e-6, vmax)
+    grid = jnp.linspace(vmin, vmax, grid_size, dtype=jnp.float32)
+
+    # Empirical CDFs on the grid via broadcasting
+    Fx = jnp.mean((x[:, None] <= grid[None, :]).astype(jnp.float32), axis=0)
+    Fy = jnp.mean((y[:, None] <= grid[None, :]).astype(jnp.float32), axis=0)
+    return jnp.max(jnp.abs(Fx - Fy))
+
+
+def _epps_singleton_stat(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    """
+    Epps–Singleton-style statistic using a small set of frequencies, avoiding complex dtypes.
+    T = sum_k [(Ex cos(t_k X) - Ey cos(t_k Y))^2 + (Ex sin(t_k X) - Ey sin(t_k Y))^2]
+    """
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+    ts = jnp.asarray([0.5, 1.0, 2.0], dtype=jnp.float32)
+
+    def _stat_for_t(t):
+        cx = jnp.mean(jnp.cos(t * x))
+        sx = jnp.mean(jnp.sin(t * x))
+        cy = jnp.mean(jnp.cos(t * y))
+        sy = jnp.mean(jnp.sin(t * y))
+        return (cx - cy) ** 2 + (sx - sy) ** 2
+
+    vals = jax.vmap(_stat_for_t)(ts)
+    return jnp.sum(vals)
+
+
+def _sequence_average(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute per-sequence average over valid tokens using a binary mask.
+    Returns a 1D array of shape [num_sequences].
+    """
+    # Sum over sequence axis then divide by valid lengths (avoid divide-by-zero)
+    lengths = jnp.maximum(jnp.sum(mask, axis=1), 1.0)
+    summed = jnp.sum(values * mask, axis=1)
+    return summed / lengths
+
+
+def compute_two_sample_stats_1d(x: jnp.ndarray, y: jnp.ndarray) -> dict[str, jnp.ndarray]:
+    """
+    Compute a suite of lightweight, distribution-free two-sample statistics for 1D samples.
+
+    Returned keys:
+      - dist/ks: Kolmogorov–Smirnov sup |F1 - F2|
+      - dist/w1: Wasserstein-1 via quantile approximation
+      - dist/qq_l2: L2 between quantile functions
+      - dist/es: Epps–Singleton statistic
+    """
+    results: dict[str, jnp.ndarray] = {}
+    try:
+        qstats = _compute_quantile_grid_stats(x, y, num_quantiles=41)
+        results["dist/w1"] = qstats["w1"]
+        results["dist/qq_l2"] = qstats["qq_l2"]
+    except Exception:
+        # Best-effort: skip quantile-based metrics
+        pass
+    try:
+        ks = _ks_statistic_approx(x, y, grid_size=129)
+        results["dist/ks"] = ks
+    except Exception:
+        # Skip KS if grid/CDF fails
+        pass
+    try:
+        es = _epps_singleton_stat(x, y)
+        results["dist/es"] = es
+    except Exception:
+        # Skip ES if trig/means fail
+        pass
+    # Ensure at least one metric is present to avoid empty dicts in logging
+    if not results:
+        results = {"dist/qq_l2": jnp.array(0.0, dtype=jnp.float32)}
+    return results
+
+
 def get_per_token_logps(model, input_ids, attention_mask, prompt_length):
     """
     Get per-token log probabilities using the model outputs.
@@ -126,6 +237,11 @@ def grpo_step(
         advantage_median_abs = jnp.median(jnp.abs(advantages))
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
         
+        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
+        seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
+        seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
+        dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
+
         return loss, LossMetrics(
             loss=loss,
             accuracy=1,
@@ -135,6 +251,7 @@ def grpo_step(
                 "advantages_mean": jnp.mean(advantages),
                 "advantage_median_abs": advantage_median_abs,
                 "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
+                **dist_stats,
             },
         )
 
