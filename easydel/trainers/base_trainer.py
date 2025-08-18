@@ -1390,4 +1390,11 @@ class BaseTrainer(BaseTrainerProtocol):
             update_size = 0 if step == 0 else self.arguments.log_steps
             pbar.update(update_size)
         if step % self.arguments.report_steps == 0:
-            self.arguments.log_metrics(metrics=metrics, step=step)
+            if getattr(self.arguments, "log_logprobs_metrics", True):
+                self.arguments.log_metrics(metrics=metrics, step=step)
+            else:
+                # Strip distribution diagnostics if user disabled them
+                filtered = {k: v for k, v in metrics.items() if not (k.startswith("dist/") or 
+                                                                     k.startswith("train/dist/") or 
+                                                                     k.startswith("eval/dist/"))}
+                self.arguments.log_metrics(metrics=filtered, step=step)

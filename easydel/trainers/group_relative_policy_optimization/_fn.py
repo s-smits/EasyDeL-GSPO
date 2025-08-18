@@ -122,11 +122,13 @@ def compute_two_sample_stats_1d(x: jnp.ndarray, y: jnp.ndarray) -> dict[str, jnp
         results["dist/qq_l2"] = qstats["qq_l2"]
     except Exception:
         # Best-effort: skip quantile-based metrics
+        print("Warning: Quantile-based metrics failed")
         pass
     try:
         ks = _ks_statistic_approx(x, y, grid_size=129)
         results["dist/ks"] = ks
     except Exception:
+        print("Warning: KS statistic approximation failed")
         # Skip KS if grid/CDF fails
         pass
     try:
@@ -134,6 +136,7 @@ def compute_two_sample_stats_1d(x: jnp.ndarray, y: jnp.ndarray) -> dict[str, jnp
         results["dist/es"] = es
     except Exception:
         # Skip ES if trig/means fail
+        print("Warning: ES statistic failed")
         pass
     # Ensure at least one metric is present to avoid empty dicts in logging
     if not results:

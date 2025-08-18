@@ -233,6 +233,10 @@ class TrainingArguments:
         default=10,
         metadata={"help": "Log metrics every X steps."},
     )
+    log_logprobs_metrics: bool = field(
+        default=True,
+        metadata={"help": "Whether to log logprobs metrics."},
+    )
     loss_config: LossConfig | None = field(
         default=None,
         metadata={"help": "Configuration for the loss function."},
