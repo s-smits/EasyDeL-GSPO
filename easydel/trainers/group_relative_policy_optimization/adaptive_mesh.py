@@ -131,22 +131,18 @@ def plan_adaptive_mesh(
     ep = 1
     sp = 1  # simplified planner: avoid SP
 
-    # Step spec: DP (+FSDP when evenly divisible), TP on sequence if used
+    # Step spec: DP on batch; TP on sequence if used. Do NOT shard batch over FSDP.
     step_batch_parts = []
     if dp > 1 and (total_batch_size % dp == 0):
         step_batch_parts.append("dp")
-    if fsdp > 1 and (total_batch_size % (dp * fsdp) == 0):
-        step_batch_parts.append("fsdp")
     step_batch = None if not step_batch_parts else (step_batch_parts[0] if len(step_batch_parts) == 1 else tuple(step_batch_parts))
     step_seq = "tp" if tp > 1 else None
     step_spec = PartitionSpec(step_batch, step_seq)
 
-    # Input spec: avoid TP; keep only DP (+FSDP) when cleanly divisible
+    # Input spec: avoid TP; keep only DP on batch. Replicate across FSDP.
     in_batch_parts = []
     if dp > 1 and (total_batch_size % dp == 0):
         in_batch_parts.append("dp")
-    if fsdp > 1 and (total_batch_size % (dp * fsdp) == 0):
-        in_batch_parts.append("fsdp")
     in_batch = None if not in_batch_parts else (in_batch_parts[0] if len(in_batch_parts) == 1 else tuple(in_batch_parts))
     in_spec = PartitionSpec(in_batch, None)
 
