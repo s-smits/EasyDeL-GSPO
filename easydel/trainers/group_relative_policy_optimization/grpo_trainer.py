@@ -899,18 +899,8 @@ class GRPOTrainer(Trainer):
                 except Exception as e:
                     print(f"DEBUG: {name} shard extraction failed: {e}")
 
-                # Try 3: Use allgather for complete data (expensive but complete)
-                try:
-                    from jax.experimental import multihost_utils
-                    gathered = multihost_utils.process_allgather(x, tiled=False)
-                    local_data = jax.device_get(gathered)
-                    print(f"DEBUG: {name} used allgather, shape={local_data.shape}")
-                    print(f"Try with method: multihost_utils.process_allgather(x, tiled=False) worked for {name}")
-                    return local_data
-                except Exception as e:
-                    print(f"DEBUG: {name} allgather failed: {e}")
-
-                # Last resort: Return empty array
+                # Avoid cross-host collectives here since only process 0 runs this block
+                # Last resort: Return empty array (do not allgather)
                 print(f"WARNING: {name} extraction failed, returning empty")
                 print(f"Try with method: returning jnp.array([]) for {name}")
                 return jnp.array([])
