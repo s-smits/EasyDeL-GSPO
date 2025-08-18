@@ -159,14 +159,8 @@ def gspo_step(
             clipped_fraction = jnp.mean(((jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask).astype(jnp.float32))
             mean_ratio = jnp.mean(ratio * completion_mask) / jnp.mean(completion_mask)
 
-        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
-        from ._fn import _sequence_average, compute_two_sample_stats_1d
-        if getattr(loss_config, "log_logprobs_metrics", True):
-            seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
-            seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
-            dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
-        else:
-            dist_stats = {}
+        # Skip logging of logprob-difference diagnostics to avoid host/device divergence
+        dist_stats = {}
 
         # Compute advantage statistics for progress bar
         advantage_median_abs = jnp.median(jnp.abs(advantages))
@@ -176,18 +170,13 @@ def gspo_step(
             loss=loss,
             accuracy=1,
             other_metrics={
-                **({
-                    "mean_kl": mean_kl,
-                    "mean_ratio": mean_ratio,
-                    "clipped_fraction": clipped_fraction,
-                    "ref_per_token_logps": jnp.mean(ref_per_token_logps),
-                } if getattr(loss_config, "log_logprobs_metrics", True) else {}),
+                "mean_ratio": mean_ratio,
+                "clipped_fraction": clipped_fraction,
                 "advantages_mean": jnp.mean(advantages),
                 "advantage_median_abs": advantage_median_abs,
                 "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
                 # Convert string to numeric value for JAX compatibility
                 "importance_sampling_level_seq": jnp.float32(1.0 if importance_sampling_level == "sequence" else 0.0),
-                **dist_stats,
             },
         )
 

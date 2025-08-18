@@ -107,41 +107,9 @@ def _sequence_average(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
 
 def compute_two_sample_stats_1d(x: jnp.ndarray, y: jnp.ndarray) -> dict[str, jnp.ndarray]:
     """
-    Compute a suite of lightweight, distribution-free two-sample statistics for 1D samples.
-
-    Returned keys:
-      - dist/ks: Kolmogorov–Smirnov sup |F1 - F2|
-      - dist/w1: Wasserstein-1 via quantile approximation
-      - dist/qq_l2: L2 between quantile functions
-      - dist/es: Epps–Singleton statistic
+    Simplified comparison: report only mean difference to avoid heavy host/device work.
     """
-    results: dict[str, jnp.ndarray] = {}
-    try:
-        qstats = _compute_quantile_grid_stats(x, y, num_quantiles=41)
-        results["dist/w1"] = qstats["w1"]
-        results["dist/qq_l2"] = qstats["qq_l2"]
-    except Exception:
-        # Best-effort: skip quantile-based metrics
-        print("Warning: Quantile-based metrics failed")
-        pass
-    try:
-        ks = _ks_statistic_approx(x, y, grid_size=129)
-        results["dist/ks"] = ks
-    except Exception:
-        print("Warning: KS statistic approximation failed")
-        # Skip KS if grid/CDF fails
-        pass
-    try:
-        es = _epps_singleton_stat(x, y)
-        results["dist/es"] = es
-    except Exception:
-        # Skip ES if trig/means fail
-        print("Warning: ES statistic failed")
-        pass
-    # Ensure at least one metric is present to avoid empty dicts in logging
-    if not results:
-        results = {"dist/qq_l2": jnp.array(0.0, dtype=jnp.float32)}
-    return results
+    return {"dist/mean_delta": jnp.mean(x) - jnp.mean(y)}
 
 
 def get_per_token_logps(model, input_ids, attention_mask, prompt_length):
@@ -252,12 +220,7 @@ def grpo_step(
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
         
         # Distributional comparison of policy vs reference (sequence-averaged logprobs)
-        if log_logprobs_metrics:
-            seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
-            seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
-            dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
-        else:
-            dist_stats = {}
+        dist_stats = {}
 
         # Assemble metrics
         other_items = {
@@ -265,12 +228,7 @@ def grpo_step(
             "advantage_median_abs": advantage_median_abs,
             "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
         }
-        if log_logprobs_metrics:
-            other_items.update({
-                "mean_kl": mean_kl,
-                "ref_per_token_logps": jnp.mean(ref_per_token_logps),
-            })
-            other_items.update(dist_stats)
+        # Skip logprob diagnostics for stability
 
         return loss, LossMetrics(
             loss=loss,
