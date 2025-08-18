@@ -246,18 +246,44 @@ class GRPOTrainer(Trainer):
     @cached_property
     def eos_token_id(self) -> list[int]:
         eos_ids = []
+        # 1) Start with EOS from the primary processing class/tokenizer
         if isinstance(self.processing_class, ProcessorMixin):
-            proc_eos_token_id = self.processing_class.tokenizer.eos_token_id
+            tokenizer = self.processing_class.tokenizer
+            proc_eos_token_id = tokenizer.eos_token_id
         else:
-            proc_eos_token_id = self.processing_class.eos_token_id
+            tokenizer = self.processing_class
+            proc_eos_token_id = getattr(self.processing_class, "eos_token_id", None)
+
         if isinstance(proc_eos_token_id, int):
             proc_eos_token_id = [proc_eos_token_id]
-        eos_ids = eos_ids + proc_eos_token_id
+        if isinstance(proc_eos_token_id, (list, tuple)):
+            eos_ids.extend([t for t in proc_eos_token_id if t is not None])
+
+        # 2) Include common Qwen end tokens if the tokenizer knows them
+        special_tokens = [
+            "<|im_end|>",
+            "<|endoftext|>",
+        ]
+        convert_fn = getattr(tokenizer, "convert_tokens_to_ids", None)
+        unk_id = getattr(tokenizer, "unk_token_id", None)
+        if callable(convert_fn):
+            for tok in special_tokens:
+                try:
+                    tid = convert_fn(tok)
+                except Exception:
+                    tid = None
+                if tid is not None and (unk_id is None or tid != unk_id):
+                    eos_ids.append(tid)
+
+        # 3) Merge any EOS ids present in model.generation_config (if available)
         if hasattr(self.model, "generation_config"):
             conf_eos = self.model.generation_config.eos_token_id
             if isinstance(conf_eos, int):
                 conf_eos = [conf_eos]
-            eos_ids = eos_ids + conf_eos
+            if isinstance(conf_eos, (list, tuple)):
+                eos_ids.extend([t for t in conf_eos if t is not None])
+
+        # Return unique list
         return list(set(eos_ids))
 
     def _prepare_dataset(

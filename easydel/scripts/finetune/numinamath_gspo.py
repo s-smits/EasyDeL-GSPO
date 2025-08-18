@@ -158,34 +158,7 @@ def main():
         partition_axis=ed.PartitionAxis(),
     )
 
-    # Configure proper EOS tokens for Qwen models to fix generation stopping
-    if hasattr(model, 'generation_config'):
-        # Get EOS tokens from processor
-        eos_tokens = []
-        if hasattr(processor, 'eos_token_id') and processor.eos_token_id is not None:
-            eos_tokens.append(processor.eos_token_id)
-        
-        # Add common Qwen end tokens
-        special_tokens = [
-            "<|im_end|>",
-            "<|endoftext|>",
-        ]
-        
-        for token_str in special_tokens:
-            token_id = processor.convert_tokens_to_ids(token_str)
-            if token_id is not None and token_id != processor.unk_token_id:
-                eos_tokens.append(token_id)
-        
-        # Remove duplicates and None values
-        eos_tokens = list(set([t for t in eos_tokens if t is not None]))
-        
-        if eos_tokens:
-            model.generation_config.eos_token_id = eos_tokens
-            print(f"Configured EOS tokens: {eos_tokens}")
-        else:
-            print("Warning: No valid EOS tokens found")
-    else:
-        print("Warning: Model has no generation_config")
+    # EOS selection is centralized in the Trainer; no script-level overrides needed.
 
     def format_reward(completions, **kwargs):
         """Reward function that checks if the completion has a specific format."""

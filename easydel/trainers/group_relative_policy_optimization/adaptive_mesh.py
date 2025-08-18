@@ -206,21 +206,6 @@ def calculate_optimal_mesh_dims(
     return (dp, fsdp, 1, tp, 1)
 
 
-    # Removed: TPU-type specific heuristics — simplified planner doesn't need them
-
-
-    # Removed: complex auto heuristics — replaced by simple DP-first sizing
-
-
-    # Removed: device-specific optimizers
-
-
-    # Removed: device-specific optimizers
-
-
-    # Removed: device-specific optimizers
-
-
 def get_adaptive_sharding_spec(
     total_batch_size: int,
     num_devices: int = None,
@@ -242,12 +227,6 @@ def get_adaptive_sharding_spec(
             num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
     
     # Use the centralized planner
-    try:
-        if num_devices is None:
-            num_devices = jax.device_count()
-    except Exception:
-        num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
-
     plan = plan_adaptive_mesh(
         total_batch_size=total_batch_size,
         num_return_sequences=num_return_sequences,
@@ -280,12 +259,6 @@ def get_adaptive_step_partition_spec(
             num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
     
     # Use the centralized planner
-    try:
-        if num_devices is None:
-            num_devices = jax.device_count()
-    except Exception:
-        num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
-
     plan = plan_adaptive_mesh(
         total_batch_size=total_batch_size,
         num_return_sequences=num_return_sequences,
@@ -311,6 +284,3 @@ def validate_mesh_config(
             f"dp({dp}) exceeds batch size({total_batch_size}); this may be inefficient."
         )
     return True
-
-
-    # Removed: example CLI block to keep module minimal
