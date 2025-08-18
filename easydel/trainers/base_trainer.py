@@ -112,6 +112,7 @@ class BaseTrainer(BaseTrainerProtocol):
         if self.arguments.track_memory and self.arguments.track_memory > 0:
             self._initialize_memory_tracking()
 
+    @classmethod
     def load_trainer_state(
         cls,
         load_directory: str | os.PathLike,
@@ -914,10 +915,13 @@ class BaseTrainer(BaseTrainerProtocol):
 
                 checkpoint_files.sort(key=get_mtime)
 
-                if self.arguments.save_total_limit == 0:
+                stl = self.arguments.save_total_limit
+                if stl is None:
+                    return
+                if stl == 0:
                     _do_dele = checkpoint_files
                 else:
-                    _do_dele = checkpoint_files[: -self.arguments.save_total_limit]
+                    _do_dele = checkpoint_files[: -int(stl)]
                 for old_save_directory in _do_dele:
                     try:
                         _remove_directory_recursive(old_save_directory)
@@ -1080,10 +1084,10 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         save_directory: str | None = None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None = None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None = None,
         to_torch: bool = False,
-        easystate_to_huggingface_model_kwargs: dict | None = None,
-        torch_save_pretrained_kwargs: dict | None = None,
+        easystate_to_huggingface_model_kwargs: dict[str, tp.Any] | None = None,
+        torch_save_pretrained_kwargs: dict[str, tp.Any] | None = None,
     ):
         save_directory = save_directory or self.arguments.get_path()
         save_directory = EasyPath(save_directory)
@@ -1105,8 +1109,8 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         save_directory: str | os.PathLike,
-        easystate_to_huggingface_model_kwargs: dict | None = None,
-        torch_save_pretrained_kwargs: dict | None = None,
+        easystate_to_huggingface_model_kwargs: dict[str, tp.Any] | None = None,
+        torch_save_pretrained_kwargs: dict[str, tp.Any] | None = None,
     ):
         easystate_to_huggingface_model_kwargs = easystate_to_huggingface_model_kwargs or {}
         torch_save_pretrained_kwargs = torch_save_pretrained_kwargs or {}
@@ -1298,7 +1302,7 @@ class BaseTrainer(BaseTrainerProtocol):
             batch = next(data_iter)
 
         # Remove specified ids from batch if needed
-        for id_to_pop in self.arguments.ids_to_pop_from_dataset:
+        for id_to_pop in (self.arguments.ids_to_pop_from_dataset or ()): 
             _ = batch.pop(id_to_pop, None)
 
         return batch, data_iter
@@ -1389,7 +1393,7 @@ class BaseTrainer(BaseTrainerProtocol):
             pbar.set_postfix(**display_metrics)
             update_size = 0 if step == 0 else self.arguments.log_steps
             pbar.update(update_size)
-        if step % self.arguments.report_steps == 0 and self._can_log_metrics:
+        if step % self.arguments.report_steps == 0 and self.arguments.can_log_metrics:
             # Minimal logging path; strip distribution diagnostics by default when disabled
             if getattr(self.arguments, "log_logprobs_metrics", True):
                 self.arguments.log_metrics(metrics=metrics, step=step)
