@@ -109,17 +109,25 @@ _import_structure = {
         "VisualDatasetInform",
     ],
     "inference": [
+        "EngineRequest",
+        "EngineRequestStatus",
+        "FunctionCallFormat",
+        "FunctionCallFormatter",
         "InferenceApiRouter",
+        "JitableSamplingParams",
         "SamplingParams",
+        "eSurge",
+        "eSurgeApiServer",
+        "eSurgeRunner",
+        "vDriver",
+        "vEngine",
         "vInference",
         "vInferenceApiServer",
         "vInferenceConfig",
         "vInferencePreCompileConfig",
-        "vDriver",
-        "vEngine",
         "vSurge",
-        "vSurgeRequest",
         "vSurgeApiServer",
+        "vSurgeRequest",
         "vWhisperInference",
         "vWhisperInferenceConfig",
     ],
@@ -519,8 +527,16 @@ _import_structure = {
 if _tp.TYPE_CHECKING:
     from . import utils
     from .inference import (
+        EngineRequest,
+        EngineRequestStatus,
+        FunctionCallFormat,
+        FunctionCallFormatter,
         InferenceApiRouter,
+        JitableSamplingParams,
         SamplingParams,
+        eSurge,
+        eSurgeApiServer,
+        eSurgeRunner,
         vDriver,
         vEngine,
         vInference,
@@ -943,7 +959,7 @@ else:
         extra_objects={"__version__": __version__},
     )
 
-    _targeted_versions = ["0.0.48"]
+    _targeted_versions = ["0.0.50"]
 
     from eformer import __version__ as _eform_version
 

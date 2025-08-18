@@ -20,6 +20,8 @@ import typing as tp
 import warnings
 from copy import deepcopy
 
+import huggingface_hub
+import huggingface_hub.errors
 import jax
 import jax.extend
 import jax.tree_util
@@ -61,7 +63,7 @@ CHAT_TEMPLATE_NAME = "chat_template.json"
 GENERATION_CONFIG_NAME = "generation_config.json"
 MODEL_CARD_NAME = "modelcard.json"
 
-CANDIDATE_FILENAMES = [SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, ED_SAFE_WEIGHTS_INDEX_NAME]
+CANDIDATE_FILENAMES = [SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, ED_SAFE_WEIGHTS_INDEX_NAME, FLAX_WEIGHTS_NAME]
 
 
 class EasyBridgeMixin(PushToHubMixin):
@@ -577,7 +579,7 @@ class EasyBridgeMixin(PushToHubMixin):
                                 )
                                 filename = cand
                                 break
-                            except FileNotFoundError:
+                            except (FileNotFoundError, huggingface_hub.errors.EntryNotFoundError):
                                 continue
 
                         if resolved_archive_file is None:

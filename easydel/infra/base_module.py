@@ -24,6 +24,7 @@ from typing import Self
 
 import chex
 import flax
+import flax.nnx
 import flax.struct
 import jax
 import jax.extend
@@ -92,14 +93,21 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
         precision: lax.PrecisionLike,
         rngs: nn.Rngs,
     ):
-        """Initializes the EasyDeLBaseModule.
+        """Initialize the EasyDeLBaseModule.
+
+        Sets up the base module with configuration and data types.
+        Subclasses should call this in their __init__ method.
 
         Args:
-            config (EasyDeLBaseConfig): The model configuration.
-            dtype (jnp.dtype): The data type for computation.
-            param_dtype (jnp.dtype): The data type for parameters.
-            precision (jax.lax.PrecisionLike): The numerical precision.
-            rngs (nn.Rngs): The random number generators.
+            config: Model configuration with architecture parameters.
+            dtype: Data type for computations (e.g., float32, bfloat16).
+            param_dtype: Data type for model parameters.
+            precision: Precision setting for JAX operations.
+            rngs: Random number generators for initialization.
+
+        Note:
+            This method should be called by all subclasses to properly
+            initialize the base functionality.
         """
         self.config: BaseConf = config
         self.dtype: jnp.dtype = dtype
@@ -613,11 +621,8 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
 
         def _map(path, val: nn.VariableState):
             if val.value is not None and path in _shard_keys:
-                try:
-                    val.value = sharding_fns[path](val.value)
-                except TypeError:
-                    path = map(str, path)
-                    warnings.warn(f"couldn't shard/gather {'.'.join(path)}", stacklevel=1)
+                fn = sharding_fns[path]
+                val.value = fn(val.value)
             return val
 
         state.update(state.map(_map))
@@ -846,7 +851,11 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
             )
         return self
 
-    def to_state(self, state_class: type[EasyDeLState] | None = None) -> EasyDeLState:
+    def to_state(
+        self,
+        state_class: type[EasyDeLState] | None = None,
+        partition_rules: PartitionLike | None = None,
+    ) -> EasyDeLState:
         """
         Converts the current module instance into an `EasyDeLState` object.
 
@@ -860,17 +869,13 @@ class EasyDeLBaseModule(nn.Module, BaseModuleProtocol, EasyBridgeMixin, EasyGene
             from easydel.infra.base_state import EasyDeLState
 
             state_class = EasyDeLState
-
-        @partial(jax.jit, donate_argnums=(1, 2), static_argnums=(0,))
-        def _create_state(gstruct, gstate, gother):
-            return state_class.create(
-                step=0,
-                model=self.merge_module(gstruct, gstate, gother),
-            )
-
-        state = _create_state(*self.split_module())
-        state_class = state.model
-        return state
+        gstruct, gstate, gother = self.split_module()
+        return state_class.create(
+            step=0,
+            graphdef=gstruct,
+            graphstate=gstate,
+            graphother=gother,
+        )
 
     def to_torch(self, **kwargs):
         """
