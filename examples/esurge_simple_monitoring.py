@@ -201,7 +201,7 @@ async def production_monitoring_example():
                 "prometheus": "http://localhost:8000/metrics"
             }
         
-        def generate(self, prompts, sampling_params=None):
+        async def generate(self, prompts, sampling_params=None):
             # Simulate generation
             await asyncio.sleep(0.1)
             return [f"Generated response for: {prompt[:20]}..." for prompt in prompts]
