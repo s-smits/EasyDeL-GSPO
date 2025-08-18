@@ -782,6 +782,13 @@ class GRPOTrainer(Trainer):
             grouped_comp_time = grouped_comp_time_fn()
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
+        # Robust termination ratios: detect EOS presence directly in completions.
+        # Works even when pad_token_id == eos_token_id because sequences that ended early are padded with EOS.
+        eos_found = jnp.isin(
+            completion_ids, jnp.asarray(self.eos_token_id).reshape(-1)
+        ).any(axis=1)
+        eos_stop_rate = jnp.mean(eos_found.astype(jnp.float32))
+        no_eos_maxlen_rate = jnp.float32(1.0) - eos_stop_rate
         
         # Simplified debug output to prevent TPU coordination issues
         if jax.process_index() == 0:
@@ -790,12 +797,33 @@ class GRPOTrainer(Trainer):
                 print(f"DEBUG: Step {step_val} - Generation time: {generation_time:.1f}s")
                 print(f"  Rewards: shape={rewards.shape}")
                 # Skip complex array operations that can cause coordination issues
+                # Termination diagnostics: how often did generation stop by EOS vs max length?
+                try:
+                    eos_found = jnp.isin(completion_ids, jnp.asarray(self.eos_token_id).reshape(-1)).any(axis=1)
+                    eos_frac = float(jnp.mean(eos_found.astype(jnp.float32)).item())
+                except Exception as _e:
+                    eos_frac = -1.0
+                try:
+                    comp_len = completion_mask.sum(-1)
+                    maxlen_hits = (comp_len >= self.arguments.max_completion_length).astype(jnp.float32)
+                    maxlen_frac = float(jnp.mean(maxlen_hits).item())
+                    avg_len = float(jnp.mean(comp_len).item())
+                    med_len = float(jnp.median(comp_len).item())
+                except Exception as _e:
+                    maxlen_frac, avg_len, med_len = -1.0, -1.0, -1.0
+                print(
+                    "DEBUG(stop): eos_frac=%.3f maxlen_frac=%.3f avg_len=%.1f median_len=%.1f max_new=%d"
+                    % (eos_frac, maxlen_frac, avg_len, med_len, int(self.arguments.max_completion_length))
+                )
             except Exception as e:
                 print(f"DEBUG: Basic check failed - {e}")
             
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),
             "completion_length": completion_length,
+            # Explicit termination diagnostics each step
+            "termination/eos_stop_rate": eos_stop_rate,
+            "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
             "grouped_comp_time": grouped_comp_time,
             "rewarding_time": rewarding_time,
             "token_logps_time": token_logps_time,
