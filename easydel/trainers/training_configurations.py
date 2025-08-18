@@ -502,11 +502,27 @@ class TrainingArguments:
         except Exception as e:
             logger.info(f"Skipping JAX distributed initialization in this process: {e}")
         
-        # Auto-configure grain dataset sharding for multi-worker training
-        if self.grain_shard_index is None:
-            self.grain_shard_index = _safe_process_index()
-        if self.grain_shard_count is None:
-            self.grain_shard_count = _safe_process_count()
+        # Auto-configure dataset sharding:
+        # - If mesh dims exist, shard by DP only (replicate across FSDP)
+        # - Otherwise, shard per process
+        if self.grain_shard_index is None or self.grain_shard_count is None:
+            proc_idx = _safe_process_index()
+            proc_cnt = _safe_process_count()
+
+            dp = None
+            mesh_dims = getattr(self, "mesh_dims", None)
+            if isinstance(mesh_dims, (tuple, list)) and len(mesh_dims) >= 1:
+                try:
+                    dp = int(mesh_dims[0])
+                except Exception:
+                    dp = None
+
+            if dp and dp > 0:
+                self.grain_shard_count = dp
+                self.grain_shard_index = proc_idx % dp
+            else:
+                self.grain_shard_index = proc_idx if self.grain_shard_index is None else self.grain_shard_index
+                self.grain_shard_count = proc_cnt if self.grain_shard_count is None else self.grain_shard_count
             
         # Log multi-worker configuration
         if _safe_process_count() > 1:

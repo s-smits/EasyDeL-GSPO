@@ -666,11 +666,7 @@ class GRPOTrainer(Trainer):
                         pass
                 generation_time += float(generation_time_fn())
 
-                # Cross-host barrier to keep hosts in program lockstep after each chunk generation
-                try:
-                    jax.experimental.multihost_utils.sync_global_devices("after_generate_chunk")
-                except Exception:
-                    pass
+                # Avoid explicit cross-host barriers here; rely on pjit collectives only
 
                 # Extract completions for this chunk and build masks
                 prompt_completion_ids_chunk = seq_chunk
@@ -688,11 +684,7 @@ class GRPOTrainer(Trainer):
                     )
                 token_logps_time += float(token_logps_time_fn())
 
-                # Barrier after each chunked ref logps computation
-                try:
-                    jax.experimental.multihost_utils.sync_global_devices("after_ref_logps_chunk")
-                except Exception:
-                    pass
+                # Avoid explicit cross-host barriers here; rely on pjit collectives only
 
                 # Accumulate
                 sequences_chunks.append(prompt_completion_ids_chunk)
