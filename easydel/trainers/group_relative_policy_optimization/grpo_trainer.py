@@ -424,25 +424,25 @@ class GRPOTrainer(Trainer):
             dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
             fsdp_size = mesh_shape.get("fsdp", 1) if hasattr(mesh_shape, "get") else 1
             
-            # Total data parallel workers
-            total_dp = dp_size * fsdp_size
+            # Total data-parallel workers (exclude FSDP from rollout sharding)
+            total_dp = dp_size
             
             # Compute per-process rollouts target (ceil division)
-            per_process_target = max(1, (self.arguments.rollouts_per_step + total_dp - 1) // total_dp)
+            rps = int(self.arguments.rollouts_per_step) if self.arguments.rollouts_per_step is not None else 0
+            per_process_target = max(1, (rps + total_dp - 1) // total_dp)
             
             # Derive num_return_sequences to meet the target (ceil division)
             target_nrs = max(1, (per_process_target + self.arguments.total_batch_size - 1) // self.arguments.total_batch_size)
             
-            # Update num_return_sequences if not explicitly set by user
-            if self.arguments.rollouts_per_prompt is None and self.arguments.completions_per_prompt is None:
-                self.arguments.num_return_sequences = target_nrs
-                self.num_generations = target_nrs
-                
-                if jax.process_index() == 0:
-                    logger.info(
-                        f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
-                        f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
-                    )
+            # Update num_return_sequences directly (aliases removed)
+            self.arguments.num_return_sequences = target_nrs
+            self.num_generations = target_nrs
+
+            if jax.process_index() == 0:
+                logger.info(
+                    f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
+                    f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
+                )
 
         # Use adaptive sharding based on batch size and tensor parallelism
         from .adaptive_mesh import get_adaptive_sharding_spec
@@ -535,9 +535,10 @@ class GRPOTrainer(Trainer):
             self.arguments.step_partition_spec,
             self.arguments.gradient_accumulation_steps,
             True,  # is_train
+            getattr(self.arguments, "log_logprobs_metrics", True),
         )
 
-        static_argnames = (2, 3, 4, 5, 6, 7, 8)
+        static_argnames = (2, 3, 4, 5, 6, 7, 8, 9)
         
         sharded_training_step_function = ejit(
             grpo_step,
@@ -884,8 +885,8 @@ class GRPOTrainer(Trainer):
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(prompt_ids.shape[0] * self.num_generations),
             "rollouts/chunk_size": float(rollout_chunk_size),
-            "rollouts/tp_size": float(tp_size) if 'tp_size' in locals() else 1.0,
-            "rollouts/auto_one_per_tp": float(1.0 if ('tp_size' in locals() and tp_size > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
+            "rollouts/tp_size": float(locals().get('tp_size', 1) or 1),
+            "rollouts/auto_one_per_tp": float(1.0 if ((locals().get('tp_size', 1) or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,

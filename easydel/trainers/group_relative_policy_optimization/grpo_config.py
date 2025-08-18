@@ -103,15 +103,22 @@ class GRPOConfig(TrainingArguments):
             "Global total ≈ that × data_parallel_processes (if >1)."
         },
     )
-
-    # Backward-compatible aliases for clearer semantics
-    completions_per_prompt: int | None = field(
+    rollouts_per_step: int | None = field(
         default=None,
         metadata={
-            "help": "Alias for num_return_sequences. If provided, overrides num_return_sequences. "
-            "Represents how many completions are generated per prompt per process."
+            "help": "Target total rollouts per global step across all data-parallel workers. "
+            "Automatically derives num_return_sequences from DP and total_batch_size."
         },
     )
+    rollout_chunk_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Chunk size for processing rollouts to reduce memory usage during generation. "
+            "If None or <= 0, defaults to min(2, num_return_sequences). Larger values use more memory "
+            "but may be faster, while smaller values reduce memory usage. Does not change total rollouts."
+        },
+    )
+
 
     top_p: float = field(
         default=0.95,
@@ -147,23 +154,8 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
-    rollout_chunk_size: int | None = field(
-        default=None,
-        metadata={
-            "help": "Chunk size for processing rollouts to reduce memory usage during generation. "
-            "If None or <= 0, defaults to min(2, num_return_sequences). Larger values use more memory "
-            "but may be faster, while smaller values reduce memory usage. Does not change total rollouts."
-        },
-    )
 
-    # Backward-compatible alias for rollout_chunk_size
-    completions_chunk_size: int | None = field(
-        default=None,
-        metadata={
-            "help": "Alias for rollout_chunk_size. If provided, overrides rollout_chunk_size. "
-            "Controls how many completions are generated per chunk per prompt."
-        },
-    )
+    # Note: use num_return_sequences, rollouts_per_step, and rollout_chunk_size as the primary knobs
 
     # Memory-optimized microbatching: process one completion per prompt per microbatch
     microbatch_one_completion: bool = field(
@@ -174,33 +166,12 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
-    # High-level rollout targets
-    rollouts_per_prompt: int | None = field(
-        default=None,
-        metadata={
-            "help": "High-level alias to set the number of completions per prompt (maps to num_return_sequences)."
-        },
-    )
-    rollouts_per_step: int | None = field(
-        default=None,
-        metadata={
-            "help": "Target total rollouts per global step across all data-parallel workers. "
-            "Automatically derives num_return_sequences from DP and total_batch_size."
-        },
-    )
 
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
         
-        # Apply aliases with gentle override semantics
-        if self.rollouts_per_prompt is not None:
-            self.num_return_sequences = int(max(1, self.rollouts_per_prompt))
-        if self.completions_per_prompt is not None:
-            # Prefer the clearer alias if user set it
-            self.num_return_sequences = int(self.completions_per_prompt)
-        if self.completions_chunk_size is not None:
-            self.rollout_chunk_size = int(self.completions_chunk_size)
+        # No aliasing: prefer explicit num_return_sequences and rollout_chunk_size
 
         # If enabled, only tune rollout chunking for minimal generation memory
         if self.microbatch_one_completion:

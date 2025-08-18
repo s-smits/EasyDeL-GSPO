@@ -194,6 +194,7 @@ def grpo_step(
     partition_spec: PartitionSpec | None = None,
     gradient_accumulation_steps: int = 1,
     is_training: bool = True,
+    log_logprobs_metrics: bool = True,
 ) -> tp.Union[tuple[EasyDeLState, LossMetrics], LossMetrics]:
     # Determine batch size, minibatch size, and enforce partition spec.
     batch_size, minibatch_size, partition_spec = make_assertions_and_get_sizes(
@@ -251,21 +252,30 @@ def grpo_step(
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
         
         # Distributional comparison of policy vs reference (sequence-averaged logprobs)
-        seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
-        seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
-        dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
+        if log_logprobs_metrics:
+            seq_mean_policy = _sequence_average(per_token_logps, completion_mask)
+            seq_mean_ref = _sequence_average(ref_per_token_logps, completion_mask)
+            dist_stats = compute_two_sample_stats_1d(seq_mean_policy, seq_mean_ref)
+        else:
+            dist_stats = {}
+
+        # Assemble metrics
+        other_items = {
+            "advantages_mean": jnp.mean(advantages),
+            "advantage_median_abs": advantage_median_abs,
+            "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
+        }
+        if log_logprobs_metrics:
+            other_items.update({
+                "mean_kl": mean_kl,
+                "ref_per_token_logps": jnp.mean(ref_per_token_logps),
+            })
+            other_items.update(dist_stats)
 
         return loss, LossMetrics(
             loss=loss,
             accuracy=1,
-            other_metrics={
-                "mean_kl": mean_kl,
-                "ref_per_token_logps": jnp.mean(ref_per_token_logps),
-                "advantages_mean": jnp.mean(advantages),
-                "advantage_median_abs": advantage_median_abs,
-                "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
-                **dist_stats,
-            },
+            other_metrics=other_items,
         )
 
     # Compute gradients and metrics across minibatches.
