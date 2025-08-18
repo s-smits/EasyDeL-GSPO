@@ -915,13 +915,10 @@ class BaseTrainer(BaseTrainerProtocol):
 
                 checkpoint_files.sort(key=get_mtime)
 
-                stl = self.arguments.save_total_limit
-                if stl is None:
-                    return
-                if stl == 0:
+                if self.arguments.save_total_limit == 0:
                     _do_dele = checkpoint_files
                 else:
-                    _do_dele = checkpoint_files[: -int(stl)]
+                    _do_dele = checkpoint_files[: -int(self.arguments.save_total_limit)]
                 for old_save_directory in _do_dele:
                     try:
                         _remove_directory_recursive(old_save_directory)
@@ -1257,8 +1254,8 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         exception: Exception,
-        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
+        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
     ):
         """Handle training interruption gracefully."""
         if isinstance(exception, KeyboardInterrupt):
@@ -1302,7 +1299,7 @@ class BaseTrainer(BaseTrainerProtocol):
             batch = next(data_iter)
 
         # Remove specified ids from batch if needed
-        for id_to_pop in (self.arguments.ids_to_pop_from_dataset or ()): 
+        for id_to_pop in (self.arguments.ids_to_pop_from_dataset or []):
             _ = batch.pop(id_to_pop, None)
 
         return batch, data_iter
