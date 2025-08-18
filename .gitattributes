@@ -1,0 +1,6 @@
+*.py merge=union
+*.md merge=union
+*.toml merge=union
+*.yml merge=union
+*.yaml merge=union
+*.txt merge=union
