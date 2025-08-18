@@ -27,7 +27,7 @@ echo ""
 python easydel/scripts/finetune/numinamath_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
   --total_batch_size 4 \
-  --rollouts_per_step 64 \
+  --num_return_sequences 8 \
   --num_train_epochs 1 \
   --max_prompt_length 512 \
   --max_completion_length 1024 \

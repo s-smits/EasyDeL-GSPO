@@ -397,35 +397,18 @@ class GRPOTrainer(Trainer):
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
-        # Handle rollouts_per_step if specified
-        if getattr(self.arguments, 'rollouts_per_step', None) is not None:
-            # Now that mesh is configured, we can compute the actual DP size
-            mesh_shape = getattr(mesh, "shape", {})
-            dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-            fsdp_size = mesh_shape.get("fsdp", 1) if hasattr(mesh_shape, "get") else 1
-            
-            # Total data-parallel workers (exclude FSDP from rollout sharding)
-            total_dp = dp_size
-            
-            # Compute per-process rollouts target (ceil division)
-            rps = int(self.arguments.rollouts_per_step) if self.arguments.rollouts_per_step is not None else 0
-            per_process_target = max(1, (rps + total_dp - 1) // total_dp)
-            
-            # Derive num_return_sequences to meet the target (ceil division)
-            target_nrs = max(1, (per_process_target + self.arguments.total_batch_size - 1) // self.arguments.total_batch_size)
-            
-            # Update num_return_sequences directly (aliases removed)
-            self.arguments.num_return_sequences = target_nrs
-            self.num_generations = target_nrs
-
+        # Derive rollouts_per_step from num_return_sequences if not provided
+        mesh_shape = getattr(mesh, "shape", {})
+        dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+        total_dp = dp_size
+        if getattr(self.arguments, 'rollouts_per_step', None) is None:
+            derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+            self.arguments.rollouts_per_step = int(derived_rps)
             if jax.process_index() == 0:
-                per_process = int(self.arguments.total_batch_size) * int(target_nrs)
-                global_total = int(total_dp) * per_process
                 logger.info(
-                    f"Rollout configuration: num_return_sequences={target_nrs}, "
-                    f"rollouts_per_step={self.arguments.rollouts_per_step}, "
-                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}, "
-                    f"per_process_rollouts={per_process}, global_rollouts={global_total}"
+                    f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
+                    f"derived rollouts_per_step={self.arguments.rollouts_per_step}, "
+                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}"
                 )
 
         # Use adaptive sharding based on batch size and tensor parallelism
