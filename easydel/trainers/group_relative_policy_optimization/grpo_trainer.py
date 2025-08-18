@@ -599,6 +599,7 @@ class GRPOTrainer(Trainer):
             completion_mask_chunks = []
             ref_logps_chunks = []
             comp_len_chunks = []
+            cur_nrs_chunks = []  # Track chunk sizes to enable correct reordering later
             generation_time = 0.0
             token_logps_time = 0.0
 
@@ -639,6 +640,7 @@ class GRPOTrainer(Trainer):
                 completion_mask_chunks.append(completion_mask_chunk)
                 ref_logps_chunks.append(ref_logps_chunk)
                 comp_len_chunks.append(completion_mask_chunk.sum(-1))
+                cur_nrs_chunks.append(cur_nrs)
 
                 nrs_remaining -= cur_nrs
 
@@ -650,12 +652,31 @@ class GRPOTrainer(Trainer):
                 ref_per_token_logps = ref_logps_chunks[0]
                 completion_lengths_per_seq = comp_len_chunks[0]
             else:
-                # Debug output removed to prevent host divergence
-                prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
-                completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
-                completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
-                ref_per_token_logps = jnp.concatenate(ref_logps_chunks, axis=0)
-                completion_lengths_per_seq = jnp.concatenate(comp_len_chunks, axis=0)
+                # When generation is chunked across num_return_sequences, the natural concatenation
+                # order is [for each chunk c: for each prompt b: for each gen in chunk] along axis 0.
+                # Advantage computation expects [for each prompt b: all gens across chunks] ordering.
+                # We therefore reorder to (prompt-major, then generation) before downstream use.
+                num_prompts_local = prompt_ids.shape[0]
+
+                def _reorder_from_chunks(chunks: list[jax.Array], is_scalar: bool = False):
+                    # chunks: list of arrays with shape (cur_nrs_i * B, ...)
+                    # Return: array with shape (B * sum(cur_nrs_i), ...), ordered by prompt-major
+                    reshaped = []
+                    for arr, k in zip(chunks, cur_nrs_chunks, strict=False):
+                        # Reshape (k * B, ...) -> (B, k, ...)
+                        new_shape = (num_prompts_local, k) + tuple(arr.shape[1:])
+                        reshaped.append(jnp.reshape(arr, new_shape))
+                    # Concat across generation axis -> (B, total_k, ...)
+                    by_prompt = jnp.concatenate(reshaped, axis=1)
+                    # Flatten back to (B * total_k, ...)
+                    flat_shape = (by_prompt.shape[0] * by_prompt.shape[1],) + tuple(by_prompt.shape[2:])
+                    return jnp.reshape(by_prompt, flat_shape)
+
+                prompt_completion_ids = _reorder_from_chunks(sequences_chunks)
+                completion_ids = _reorder_from_chunks(completion_ids_chunks)
+                completion_mask = _reorder_from_chunks(completion_mask_chunks)
+                ref_per_token_logps = _reorder_from_chunks(ref_logps_chunks)
+                completion_lengths_per_seq = _reorder_from_chunks(comp_len_chunks)
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
@@ -703,6 +724,17 @@ class GRPOTrainer(Trainer):
                             # Print compactly: one line per query
                             for qi, arr in enumerate(grouped):
                                 logger.info(f"query_{qi}_lengths: {arr}")
+                            # If all per-query arrays are identical, this suggests duplicated prompts or identical RNG streams
+                            try:
+                                if num_queries > 1:
+                                    as_tuples = {tuple(x) for x in grouped}
+                                    if len(as_tuples) == 1:
+                                        logger.warning(
+                                            "All per-query completion length patterns are identical. "
+                                            "This often indicates duplicated prompts in the local batch or repeated RNG streams across queries."
+                                        )
+                            except Exception:
+                                pass
                         else:
                             logger.info(
                                 f"completion_token_lengths (n={len(lengths_list)}): min={min(lengths_list)}, max={max(lengths_list)}, "
@@ -712,6 +744,17 @@ class GRPOTrainer(Trainer):
                         logger.info("completion_token_lengths: []")
                 except Exception as e:
                     logger.warning(f"Failed to print completion lengths: {e}")
+                # Additionally, show prompt diagnostics to detect accidental duplication
+                try:
+                    # Only log short prefixes and uniqueness to avoid massive logs
+                    prompt_prefixes = [p[:64].replace("\n", " ") for p in prompts]
+                    unique_prompt_count = len(set(prompts))
+                    logger.info(
+                        f"prompt_diagnostics: queries={len(prompts)}, unique={unique_prompt_count}; "
+                        f"prefixes={prompt_prefixes}"
+                    )
+                except Exception:
+                    pass
             
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
@@ -791,6 +834,12 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 # Non-fatal; fall back to local metrics
                 logger.warning(f"Global reward aggregation failed; using local metrics. Error: {e}")
+            # Also compute global mean for the sum-of-rewards metric
+            try:
+                global_rewards_sum = jnp.sum(global_rewards_per_func, axis=1)
+                global_mean_reward_per_completion = jnp.mean(global_rewards_sum)
+            except Exception:
+                global_mean_reward_per_completion = jnp.mean(rewards)
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         # Robust termination ratios: detect EOS presence directly in completions.
@@ -818,14 +867,23 @@ class GRPOTrainer(Trainer):
             prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
 
         # Reward diagnostics with explicit denominators to clarify granularity
-        per_completion_mean_reward = jnp.mean(rewards, -1)
+        per_completion_mean_reward = jnp.mean(rewards)
         num_prompts_local = int(prompt_ids.shape[0])
         num_completions_local = int(num_prompts_local * self.num_generations)
+        # Estimate DP size from the device mesh to report expected global denominators
+        try:
+            mesh_shape = getattr(self.model.mesh, "shape", {})
+            dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+        except Exception:
+            dp_size = 1
         metrics_dict = {
             "rewards": per_completion_mean_reward,  # mean per completion (local)
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/denominator/completions_local": float(num_completions_local),
             "reward/denominator/prompts_local": float(num_prompts_local),
+            "reward/mean_per_completion_global": global_mean_reward_per_completion,
+            "reward/denominator/completions_global": float(num_completions_local * dp_size),
+            "reward/denominator/prompts_global": float(num_prompts_local * dp_size),
             "completion_length": completion_length,
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
@@ -842,29 +900,39 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
-        # Add per-reward metrics with both per-completion and per-prompt means
+        # Add per-reward metrics following TRL's approach for better clarity
         for i, reward_func in enumerate(self.reward_funcs):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
             try:
-                local_mean = jnp.mean(rewards_per_func[:, i])
-                per_prompt_means = jnp.mean(
-                    rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
-                )
-                local_mean_of_prompt_means = jnp.mean(per_prompt_means)
-                # Optional global aggregation when multi-host
+                # TRL-style per-reward-function metrics with global aggregation
                 try:
                     if jax.process_count() > 1:
                         gathered = jax.experimental.multihost_utils.process_allgather(rewards_per_func[:, i])
                         global_vals = jnp.reshape(gathered, (-1,))
                         global_mean = jnp.mean(global_vals)
+                        global_std = jnp.std(global_vals)
                     else:
-                        global_mean = local_mean
+                        global_mean = jnp.mean(rewards_per_func[:, i])
+                        global_std = jnp.std(rewards_per_func[:, i])
                 except Exception:
-                    global_mean = local_mean
-                metrics_dict[f"reward/{_name}/mean_per_completion_local"] = local_mean
-                metrics_dict[f"reward/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
-                metrics_dict[f"reward/{_name}/mean_per_completion_global"] = global_mean
+                    global_mean = jnp.mean(rewards_per_func[:, i])
+                    global_std = jnp.std(rewards_per_func[:, i])
+                
+                # TRL-compatible reward function metrics
+                metrics_dict[f"rewards/{_name}/mean"] = global_mean
+                metrics_dict[f"rewards/{_name}/std"] = global_std
+                
+                # Additional granularity metrics for debugging
+                local_mean = jnp.mean(rewards_per_func[:, i])
+                per_prompt_means = jnp.mean(
+                    rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
+                )
+                local_mean_of_prompt_means = jnp.mean(per_prompt_means)
+                metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
+                metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
+                metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
             except Exception:
+                # Fallback for backward compatibility
                 metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None and jax.process_index() == 0:
             try:
