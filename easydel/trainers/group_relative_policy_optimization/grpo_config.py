@@ -98,8 +98,18 @@ class GRPOConfig(TrainingArguments):
     num_return_sequences: int = field(
         default=4,
         metadata={
-            "help": "The number of sequences to return for each input prompt. Used during sampling to "
-            "generate multiple completions per prompt."
+            "help": "Number of completions generated per prompt per process. "
+            "Total rollouts per process per step = total_batch_size × num_return_sequences. "
+            "Global total ≈ that × data_parallel_processes (if >1)."
+        },
+    )
+
+    # Backward-compatible aliases for clearer semantics
+    completions_per_prompt: int | None = field(
+        default=None,
+        metadata={
+            "help": "Alias for num_return_sequences. If provided, overrides num_return_sequences. "
+            "Represents how many completions are generated per prompt per process."
         },
     )
 
@@ -142,7 +152,16 @@ class GRPOConfig(TrainingArguments):
         metadata={
             "help": "Chunk size for processing rollouts to reduce memory usage during generation. "
             "If None or <= 0, defaults to min(2, num_return_sequences). Larger values use more memory "
-            "but may be faster, while smaller values reduce memory usage."
+            "but may be faster, while smaller values reduce memory usage. Does not change total rollouts."
+        },
+    )
+
+    # Backward-compatible alias for rollout_chunk_size
+    completions_chunk_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Alias for rollout_chunk_size. If provided, overrides rollout_chunk_size. "
+            "Controls how many completions are generated per chunk per prompt."
         },
     )
 
@@ -150,6 +169,13 @@ class GRPOConfig(TrainingArguments):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
         
+        # Apply aliases with gentle override semantics
+        if self.completions_per_prompt is not None:
+            # Prefer the clearer alias if user set it
+            self.num_return_sequences = int(self.completions_per_prompt)
+        if self.completions_chunk_size is not None:
+            self.rollout_chunk_size = int(self.completions_chunk_size)
+
         # Validate tensor parallelism configuration
         if self.force_tensor_parallel is not None:
             if self.force_tensor_parallel < 1:

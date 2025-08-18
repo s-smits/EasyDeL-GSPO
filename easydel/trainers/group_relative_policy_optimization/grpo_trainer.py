@@ -821,6 +821,9 @@ class GRPOTrainer(Trainer):
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),
             "completion_length": completion_length,
+            # Rollout accounting to clarify totals
+            "rollouts/completions_per_prompt": float(self.num_generations),
+            "rollouts/total_per_process": float(prompt_ids.shape[0] * self.num_generations),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
