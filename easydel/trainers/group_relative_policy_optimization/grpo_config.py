@@ -207,21 +207,9 @@ class GRPOConfig(TrainingArguments):
             # Generate one completion per chunk to bound peak KV/logit memory
             self.rollout_chunk_size = 1
 
-        # If user set a global target for rollouts per step, derive num_return_sequences
-        if self.rollouts_per_step is not None:
-            try:
-                # Best-effort DP detection without forcing backend init
-                from .training_configurations import _safe_process_count  # type: ignore
-                dp = int(max(1, _safe_process_count()))
-            except Exception:
-                dp = 1
-            per_process_target = max(1, int((self.rollouts_per_step + dp - 1) // dp))  # ceil div
-            # Derive nrs so that total_batch_size * nrs >= per_process_target
-            nrs = int(max(1, (per_process_target + self.total_batch_size - 1) // self.total_batch_size))
-            self.num_return_sequences = nrs
-            # If user wants microbatch-per-completion, set accum steps implicitly
-            if self.microbatch_one_completion:
-                self.gradient_accumulation_steps = nrs
+        # Note: rollouts_per_step will be handled by the trainer after mesh planning
+        # We can't properly compute num_return_sequences here because we don't know 
+        # the final DP size until after adaptive mesh planning
 
         # Validate tensor parallelism configuration
         if self.force_tensor_parallel is not None:

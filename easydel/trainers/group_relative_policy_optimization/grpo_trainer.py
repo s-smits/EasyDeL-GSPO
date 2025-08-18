@@ -96,6 +96,8 @@ class GRPOTrainer(Trainer):
         )
         if 'force_data_parallel' in _step_sig.parameters:
             _step_kwargs['force_data_parallel'] = arguments.force_data_parallel
+        if 'rollouts_per_step' in _step_sig.parameters and getattr(arguments, 'rollouts_per_step', None):
+            _step_kwargs['rollouts_per_step'] = arguments.rollouts_per_step
         adaptive_step_spec = get_adaptive_step_partition_spec(**_step_kwargs)
         
         # Validate mesh configuration for multi-worker training
@@ -414,6 +416,33 @@ class GRPOTrainer(Trainer):
         mesh = self.model.mesh
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+        
+        # Handle rollouts_per_step if specified
+        if getattr(self.arguments, 'rollouts_per_step', None) is not None:
+            # Now that mesh is configured, we can compute the actual DP size
+            mesh_shape = getattr(mesh, "shape", {})
+            dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            fsdp_size = mesh_shape.get("fsdp", 1) if hasattr(mesh_shape, "get") else 1
+            
+            # Total data parallel workers
+            total_dp = dp_size * fsdp_size
+            
+            # Compute per-process rollouts target (ceil division)
+            per_process_target = max(1, (self.arguments.rollouts_per_step + total_dp - 1) // total_dp)
+            
+            # Derive num_return_sequences to meet the target (ceil division)
+            target_nrs = max(1, (per_process_target + self.arguments.total_batch_size - 1) // self.arguments.total_batch_size)
+            
+            # Update num_return_sequences if not explicitly set by user
+            if self.arguments.rollouts_per_prompt is None and self.arguments.completions_per_prompt is None:
+                self.arguments.num_return_sequences = target_nrs
+                self.num_generations = target_nrs
+                
+                if jax.process_index() == 0:
+                    logger.info(
+                        f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
+                        f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
+                    )
 
         # Use adaptive sharding based on batch size and tensor parallelism
         from .adaptive_mesh import get_adaptive_sharding_spec

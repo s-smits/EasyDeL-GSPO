@@ -168,6 +168,26 @@ class GSPOTrainer(GRPOTrainer):
         mesh = self.model.mesh
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
+        # Handle rollouts_per_step if specified (same logic as GRPO)
+        if getattr(self.arguments, 'rollouts_per_step', None) is not None:
+            mesh_shape = getattr(mesh, "shape", {})
+            dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            fsdp_size = mesh_shape.get("fsdp", 1) if hasattr(mesh_shape, "get") else 1
+            
+            total_dp = dp_size * fsdp_size
+            per_process_target = max(1, (self.arguments.rollouts_per_step + total_dp - 1) // total_dp)
+            target_nrs = max(1, (per_process_target + self.arguments.total_batch_size - 1) // self.arguments.total_batch_size)
+            
+            if self.arguments.rollouts_per_prompt is None and self.arguments.completions_per_prompt is None:
+                self.arguments.num_return_sequences = target_nrs
+                self.num_generations = target_nrs
+                
+                if jax.process_index() == 0:
+                    logger.info(
+                        f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
+                        f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
+                    )
+        
         # GSPO-specific training step static arguments (add importance_sampling_level and epsilon)
         # Allow gradient accumulation to be driven by config (incl. microbatch_one_completion)
         self._train_shared_fn_static_args = (
