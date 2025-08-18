@@ -165,6 +165,15 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Memory-optimized microbatching: process one completion per prompt per microbatch
+    microbatch_one_completion: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, set gradient_accumulation_steps = num_return_sequences so each microbatch holds one completion per prompt. "
+            "Also defaults completions_chunk_size (rollout_chunk_size) to 1 for lowest generation memory."
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
@@ -175,6 +184,18 @@ class GRPOConfig(TrainingArguments):
             self.num_return_sequences = int(self.completions_per_prompt)
         if self.completions_chunk_size is not None:
             self.rollout_chunk_size = int(self.completions_chunk_size)
+
+        # If enabled, tune accum and chunking for minimal memory
+        if self.microbatch_one_completion:
+            # Ensure we accumulate exactly over completions
+            try:
+                nrs = int(self.num_return_sequences)
+            except Exception:
+                nrs = 1
+            if nrs > 0:
+                self.gradient_accumulation_steps = nrs
+            # Generate one completion per chunk to bound peak KV/logit memory
+            self.rollout_chunk_size = 1
 
         # Validate tensor parallelism configuration
         if self.force_tensor_parallel is not None:

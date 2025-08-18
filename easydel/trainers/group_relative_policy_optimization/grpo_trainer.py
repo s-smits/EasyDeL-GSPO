@@ -665,19 +665,26 @@ class GRPOTrainer(Trainer):
 
                 nrs_remaining -= cur_nrs
 
-            # Concatenate accumulated chunks
-            if jax.process_index() == 0:
-                try:
-                    print("DEBUG(cat): num seq chunks=", len(sequences_chunks))
-                    if len(completion_ids_chunks) > 0:
-                        print("DEBUG(cat): shard ids[0] sharding=", getattr(completion_ids_chunks[0], "sharding", None))
-                except Exception:
-                    pass
-            prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
-            completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
-            completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
-            ref_per_token_logps = jnp.concatenate(ref_logps_chunks, axis=0)
-            completion_lengths_per_seq = jnp.concatenate(comp_len_chunks, axis=0)
+            # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
+            if len(sequences_chunks) == 1:
+                prompt_completion_ids = sequences_chunks[0]
+                completion_ids = completion_ids_chunks[0]
+                completion_mask = completion_mask_chunks[0]
+                ref_per_token_logps = ref_logps_chunks[0]
+                completion_lengths_per_seq = comp_len_chunks[0]
+            else:
+                if jax.process_index() == 0:
+                    try:
+                        print("DEBUG(cat): num seq chunks=", len(sequences_chunks))
+                        if len(completion_ids_chunks) > 0:
+                            print("DEBUG(cat): shard ids[0] sharding=", getattr(completion_ids_chunks[0], "sharding", None))
+                    except Exception:
+                        pass
+                prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
+                completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
+                completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
+                ref_per_token_logps = jnp.concatenate(ref_logps_chunks, axis=0)
+                completion_lengths_per_seq = jnp.concatenate(comp_len_chunks, axis=0)
             prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
@@ -690,6 +697,7 @@ class GRPOTrainer(Trainer):
             # Calculate completion lengths before rewards
             completion_lengths_per_seq = completion_mask.sum(-1)  # Length per sequence
             
+            # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
                 dtype="f4",
@@ -824,6 +832,7 @@ class GRPOTrainer(Trainer):
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(prompt_ids.shape[0] * self.num_generations),
+            "rollouts/chunk_size": float(rollout_chunk_size),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,

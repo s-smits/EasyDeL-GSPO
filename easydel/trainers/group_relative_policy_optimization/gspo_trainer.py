@@ -167,6 +167,7 @@ class GSPOTrainer(GRPOTrainer):
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
         # GSPO-specific training step static arguments (add importance_sampling_level and epsilon)
+        # Allow gradient accumulation to be driven by config (incl. microbatch_one_completion)
         self._train_shared_fn_static_args = (
             self.num_generations,
             self.arguments.beta,
