@@ -601,7 +601,13 @@ class GRPOTrainer(Trainer):
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
             if rollout_chunk_size is None or rollout_chunk_size <= 0:
-                rollout_chunk_size = min(2, int(self.num_generations))
+                # Auto: if TP>1, generate one completion per chunk (per TP group) to minimize memory
+                try:
+                    mesh_shape = getattr(self.model.mesh, "shape", {})
+                    tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+                except Exception:
+                    tp_size = 1
+                rollout_chunk_size = 1 if tp_size and tp_size > 1 else min(2, int(self.num_generations))
 
             sequences_chunks = []
             completion_ids_chunks = []
@@ -826,6 +832,20 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 print(f"DEBUG: Basic check failed - {e}")
             
+        # Ensure all batch tensors share the same leading dimension for downstream minibatching
+        # Repeat prompts to match completions if needed
+        if prompt_ids.shape[0] * self.num_generations == completion_ids.shape[0]:
+            prompt_ids_rep = prompt_ids.repeat(self.num_generations, 0)
+            prompt_mask_rep = prompt_mask.repeat(self.num_generations, 0)
+        elif prompt_ids.shape[0] == completion_ids.shape[0]:
+            prompt_ids_rep = prompt_ids
+            prompt_mask_rep = prompt_mask
+        else:
+            # Fallback: try to infer repeat factor
+            repeat_factor = max(1, completion_ids.shape[0] // max(1, prompt_ids.shape[0]))
+            prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
+            prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
+
         metrics_dict = {
             "rewards": jnp.mean(rewards, -1),
             "completion_length": completion_length,
@@ -833,6 +853,8 @@ class GRPOTrainer(Trainer):
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(prompt_ids.shape[0] * self.num_generations),
             "rollouts/chunk_size": float(rollout_chunk_size),
+            "rollouts/tp_size": float(tp_size) if 'tp_size' in locals() else 1.0,
+            "rollouts/auto_one_per_tp": float(1.0 if ('tp_size' in locals() and tp_size > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
@@ -977,8 +999,8 @@ class GRPOTrainer(Trainer):
         # This is necessary because the training step expects empty_sharding on inputs
         # and arrays from generation/computation may have device sharding that conflicts
         return {
-            "prompt_ids": prompt_ids,
-            "prompt_mask": prompt_mask,
+            "prompt_ids": prompt_ids_rep,
+            "prompt_mask": prompt_mask_rep,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
             "ref_per_token_logps": ref_per_token_logps,

@@ -220,13 +220,18 @@ def grpo_step(
             minibatch["advantages"],
         )
 
-        # Align shapes: if prompt_ids already matched completion batch, avoid extra repeat
-        if prompt_ids.shape[0] == completion_ids.shape[0]:
-            input_ids = jnp.concatenate([prompt_ids, completion_ids], axis=1)
-            attention_mask = jnp.concatenate([prompt_mask, completion_mask], axis=1)
+        # Repeat prompts to match completions if needed so leading dims align
+        if prompt_ids.shape[0] != completion_ids.shape[0]:
+            # Expect completion_ids batch = prompt_ids batch × num_generations
+            repeat_factor = completion_ids.shape[0] // prompt_ids.shape[0]
+            prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
+            prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
         else:
-            input_ids = jnp.concatenate([prompt_ids.repeat(num_generations, 0), completion_ids], axis=1)
-            attention_mask = jnp.concatenate([prompt_mask.repeat(num_generations, 0), completion_mask], axis=1)
+            prompt_ids_rep = prompt_ids
+            prompt_mask_rep = prompt_mask
+
+        input_ids = jnp.concatenate([prompt_ids_rep, completion_ids], axis=1)
+        attention_mask = jnp.concatenate([prompt_mask_rep, completion_mask], axis=1)
 
         per_token_logps = get_per_token_logps(module, input_ids, attention_mask, prompt_ids.shape[-1])
 

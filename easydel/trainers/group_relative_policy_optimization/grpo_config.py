@@ -185,15 +185,8 @@ class GRPOConfig(TrainingArguments):
         if self.completions_chunk_size is not None:
             self.rollout_chunk_size = int(self.completions_chunk_size)
 
-        # If enabled, tune accum and chunking for minimal memory
+        # If enabled, only tune rollout chunking for minimal generation memory
         if self.microbatch_one_completion:
-            # Ensure we accumulate exactly over completions
-            try:
-                nrs = int(self.num_return_sequences)
-            except Exception:
-                nrs = 1
-            if nrs > 0:
-                self.gradient_accumulation_steps = nrs
             # Generate one completion per chunk to bound peak KV/logit memory
             self.rollout_chunk_size = 1
 

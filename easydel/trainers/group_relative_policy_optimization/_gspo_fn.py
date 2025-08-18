@@ -90,8 +90,19 @@ def gspo_step(
             minibatch["advantages"],
         )
 
-        input_ids = jnp.concatenate([prompt_ids.repeat(num_generations, 0), completion_ids], axis=1)
-        attention_mask = jnp.concatenate([prompt_mask.repeat(num_generations, 0), completion_mask], axis=1)
+        # Repeat prompts to match completions if needed so leading dims align
+        if prompt_ids.shape[0] != completion_ids.shape[0]:
+            repeat_factor = completion_ids.shape[0] // prompt_ids.shape[0]
+            prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
+            prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
+            print(f'currently repeating {repeat_factor} times with shape {prompt_ids_rep.shape} and {completion_ids.shape}')
+        else:
+            prompt_ids_rep = prompt_ids
+            prompt_mask_rep = prompt_mask
+            print(f'no need to repeat with shape {prompt_ids_rep.shape} and {completion_ids.shape}')
+
+        input_ids = jnp.concatenate([prompt_ids_rep, completion_ids], axis=1)
+        attention_mask = jnp.concatenate([prompt_mask_rep, completion_mask], axis=1)
 
         per_token_logps = get_per_token_logps(module, input_ids, attention_mask, prompt_ids.shape[-1])
         ref_per_token_logps = minibatch["ref_per_token_logps"]
