@@ -25,7 +25,7 @@ echo ""
 
 # Run training with proper flags
 python easydel/scripts/finetune/numinamath_gspo.py \
-  --repo_id "Qwen/Qwen3-0.6B" \
+  --repo_id "Qwen/Qwen3-1.7B" \
   --total_batch_size 4 \
   --num_return_sequences 8 \
   --num_train_epochs 1 \
@@ -40,7 +40,6 @@ python easydel/scripts/finetune/numinamath_gspo.py \
   --save_steps 50 \
   --evaluation_steps 100 \
   --do_eval false \
-  --warmup_steps 10 \
   --weight_decay 0.01 \
   --gradient_accumulation_steps 1 \
   --beta 0.04 \

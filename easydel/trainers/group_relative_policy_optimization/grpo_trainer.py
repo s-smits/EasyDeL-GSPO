@@ -667,6 +667,51 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards
             completion_lengths_per_seq = completion_mask.sum(-1)  # Length per sequence
+            # Host-side diagnostic: print per-rollout completion token lengths
+            if jax.process_index() == 0:
+                try:
+                    # Prefer fully addressable arrays
+                    if isinstance(completion_lengths_per_seq, jax.Array) and getattr(
+                        completion_lengths_per_seq, "is_fully_addressable", False
+                    ):
+                        _lens = jax.device_get(completion_lengths_per_seq)
+                    else:
+                        # Fallback to first local shard if available
+                        try:
+                            _shards = completion_lengths_per_seq.addressable_shards  # type: ignore[attr-defined]
+                            if _shards and len(_shards) > 0:
+                                _lens = jax.device_get(_shards[0].data)
+                            else:
+                                _lens = jax.device_get(completion_lengths_per_seq)
+                        except Exception:
+                            _lens = jax.device_get(completion_lengths_per_seq)
+                    _lens = jnp.asarray(_lens).astype(jnp.int32)
+                    lengths_list = [int(x) for x in list(_lens)]
+                    if lengths_list:
+                        # Try to group by num_generations so we print per-query arrays
+                        try:
+                            num_queries = int(prompt_ids.shape[0])
+                        except Exception:
+                            num_queries = len(lengths_list) // max(1, int(self.num_generations))
+                        r = int(self.num_generations)
+                        if r > 0 and len(lengths_list) % r == 0:
+                            grouped = [lengths_list[i * r : (i + 1) * r] for i in range(num_queries)]
+                            logger.info(
+                                f"per_query_completion_token_lengths: queries={num_queries}, rollouts_per_query={r}; "
+                                f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}"
+                            )
+                            # Print compactly: one line per query
+                            for qi, arr in enumerate(grouped):
+                                logger.info(f"query_{qi}_lengths: {arr}")
+                        else:
+                            logger.info(
+                                f"completion_token_lengths (n={len(lengths_list)}): min={min(lengths_list)}, max={max(lengths_list)}, "
+                                f"mean={sum(lengths_list)/len(lengths_list):.2f}; values={lengths_list}"
+                            )
+                    else:
+                        logger.info("completion_token_lengths: []")
+                except Exception as e:
+                    logger.warning(f"Failed to print completion lengths: {e}")
             
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
@@ -736,6 +781,16 @@ class GRPOTrainer(Trainer):
                     + 1e-4
                 )
             grouped_comp_time = grouped_comp_time_fn()
+            # Optionally aggregate rewards across processes to get true global means per step
+            global_rewards_per_func = rewards_per_func
+            try:
+                if jax.process_count() > 1:
+                    gathered = jax.experimental.multihost_utils.process_allgather(rewards_per_func)
+                    # Flatten leading gather dimension
+                    global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
+            except Exception as e:
+                # Non-fatal; fall back to local metrics
+                logger.warning(f"Global reward aggregation failed; using local metrics. Error: {e}")
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         # Robust termination ratios: detect EOS presence directly in completions.
@@ -762,12 +817,19 @@ class GRPOTrainer(Trainer):
             prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
             prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
 
+        # Reward diagnostics with explicit denominators to clarify granularity
+        per_completion_mean_reward = jnp.mean(rewards, -1)
+        num_prompts_local = int(prompt_ids.shape[0])
+        num_completions_local = int(num_prompts_local * self.num_generations)
         metrics_dict = {
-            "rewards": jnp.mean(rewards, -1),
+            "rewards": per_completion_mean_reward,  # mean per completion (local)
+            "reward/mean_per_completion": per_completion_mean_reward,
+            "reward/denominator/completions_local": float(num_completions_local),
+            "reward/denominator/prompts_local": float(num_prompts_local),
             "completion_length": completion_length,
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
-            "rollouts/total_per_process": float(prompt_ids.shape[0] * self.num_generations),
+            "rollouts/total_per_process": float(num_completions_local),
             "rollouts/chunk_size": float(rollout_chunk_size),
             "rollouts/tp_size": float(locals().get('tp_size', 1) or 1),
             "rollouts/auto_one_per_tp": float(1.0 if ((locals().get('tp_size', 1) or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
@@ -780,9 +842,30 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
+        # Add per-reward metrics with both per-completion and per-prompt means
         for i, reward_func in enumerate(self.reward_funcs):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
-            metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
+            try:
+                local_mean = jnp.mean(rewards_per_func[:, i])
+                per_prompt_means = jnp.mean(
+                    rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
+                )
+                local_mean_of_prompt_means = jnp.mean(per_prompt_means)
+                # Optional global aggregation when multi-host
+                try:
+                    if jax.process_count() > 1:
+                        gathered = jax.experimental.multihost_utils.process_allgather(rewards_per_func[:, i])
+                        global_vals = jnp.reshape(gathered, (-1,))
+                        global_mean = jnp.mean(global_vals)
+                    else:
+                        global_mean = local_mean
+                except Exception:
+                    global_mean = local_mean
+                metrics_dict[f"reward/{_name}/mean_per_completion_local"] = local_mean
+                metrics_dict[f"reward/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
+                metrics_dict[f"reward/{_name}/mean_per_completion_global"] = global_mean
+            except Exception:
+                metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None and jax.process_index() == 0:
             try:
                 cur_step = int(jax.device_get(state.step))
