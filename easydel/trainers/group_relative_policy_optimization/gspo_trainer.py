@@ -182,7 +182,7 @@ class GSPOTrainer(GRPOTrainer):
                 self.arguments.num_return_sequences = target_nrs
                 self.num_generations = target_nrs
                 
-                if jax.process_index() == 0:
+                if self.arguments.is_process_zero:
                     logger.info(
                         f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
                         f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
