@@ -181,9 +181,13 @@ class GSPOTrainer(GRPOTrainer):
             self.arguments.num_return_sequences = target_nrs
             self.num_generations = target_nrs
             if self.arguments.is_process_zero:
+                per_process = int(self.arguments.total_batch_size) * int(target_nrs)
+                global_total = int(total_dp) * per_process
                 logger.info(
-                    f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
-                    f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
+                    f"GSPO Rollout configuration: num_return_sequences={target_nrs}, "
+                    f"rollouts_per_step={self.arguments.rollouts_per_step}, "
+                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}, "
+                    f"per_process_rollouts={per_process}, global_rollouts={global_total}"
                 )
         
         # GSPO-specific training step static arguments (add importance_sampling_level and epsilon)

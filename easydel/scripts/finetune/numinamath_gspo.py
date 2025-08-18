@@ -113,23 +113,21 @@ def main():
     else:
         load_module = ed.AutoEasyDeLModelForCausalLM
 
-    # Use adaptive mesh configuration if tensor parallelism is specified
-    if gspo_config.force_tensor_parallel is not None:
-        from easydel.trainers.group_relative_policy_optimization.adaptive_mesh import calculate_optimal_mesh_dims
-
-        calculate_kwargs = dict(
-            total_batch_size=gspo_config.total_batch_size,
-            num_return_sequences=gspo_config.num_return_sequences,
-            force_tensor_parallel=gspo_config.force_tensor_parallel,
-            mini_batch_size=gspo_config.mini_batch_size,
-        )
-        # Backward-compatible: only pass force_data_parallel if the function supports it
-        if 'force_data_parallel' in inspect.signature(calculate_optimal_mesh_dims).parameters:
-            calculate_kwargs['force_data_parallel'] = gspo_config.force_data_parallel
-
-        optimal_dims = calculate_optimal_mesh_dims(**calculate_kwargs)
-        sharding_axis_dims = optimal_dims
-        print(f"Using adaptive mesh dims: {optimal_dims} (tp={gspo_config.force_tensor_parallel})")
+    # Configure adaptive mesh early if using tensor/data parallelism
+    if gspo_config.force_tensor_parallel is not None or gspo_config.force_data_parallel is not None:
+        from easydel.trainers.group_relative_policy_optimization.adaptive_mesh import configure_adaptive_mesh_inplace
+        
+        # This updates gspo_config in-place with mesh_dims, step_partition_spec, etc.
+        mesh_plan = configure_adaptive_mesh_inplace(gspo_config)
+        sharding_axis_dims = (mesh_plan.dp, mesh_plan.fsdp, mesh_plan.ep, mesh_plan.tp, mesh_plan.sp)
+        
+        # Also set sharding_axis_dims on the config for model loading
+        gspo_config.sharding_axis_dims = sharding_axis_dims
+        
+        print(f"Using adaptive mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, "
+              f"TP={mesh_plan.tp}, EP={mesh_plan.ep}, SP={mesh_plan.sp}")
+        print(f"Dataset will be sharded across {mesh_plan.dp} data-parallel workers")
+        print(f"Step partition spec: {mesh_plan.step_partition_spec}")
     else:
         sharding_axis_dims = runtime_config.sharding_axis
         print(f"Using default mesh dims: {runtime_config.sharding_axis}")

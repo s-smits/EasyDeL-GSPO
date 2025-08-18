@@ -461,7 +461,7 @@ class TrainingArguments:
         return jax.devices(self.offload_device_type)[self.offload_device_index]
 
     @property
-    def training_time_seconds(self) -> int:
+    def training_time_seconds(self) -> int | None:
         if self.training_time_limit is None:
             return None
         return self._time_to_seconds(self.training_time_limit)
@@ -622,10 +622,10 @@ class TrainingArguments:
         """
         if self.process_zero_is_admin:
             if self.is_process_zero:
-                return EasyPath(self.save_directory) / self.model_name
+                return tp.cast(EasyPathLike, EasyPath(self.save_directory) / (self.model_name or "model"))
             else:
-                return EasyPath("/dev/null")
-        return EasyPath(self.save_directory) / self.model_name
+                return tp.cast(EasyPathLike, EasyPath("/dev/null"))
+        return tp.cast(EasyPathLike, EasyPath(self.save_directory) / (self.model_name or "model"))
 
     def ensure_checkpoint_path(self):
         """
@@ -989,7 +989,7 @@ class TrainingArguments:
         """
         EasyPath(json_file_path).write_text(self.to_json_string())
 
-    def _get_save_directory(self, create: bool = True) -> EasyPathLike:
+    def _get_save_directory(self, create: bool = True) -> EasyPathLike | None:
         if self.process_zero_is_admin and not self.is_process_zero:
             return None
         if create:
@@ -1000,7 +1000,7 @@ class TrainingArguments:
         directory_name = f"run-{step}"
         savedir = self._get_save_directory(create=create)
         if savedir is None:
-            return EasyPath("/dev/null")
+            return tp.cast(EasyPathLike, EasyPath("/dev/null"))
         save_directory = savedir / directory_name
         if create:
             save_directory.mkdir(exist_ok=True, parents=True)

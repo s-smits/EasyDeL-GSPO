@@ -176,6 +176,7 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     num_return_sequences = getattr(arguments, "num_return_sequences", 1)
     force_tensor_parallel = getattr(arguments, "force_tensor_parallel", None)
     force_data_parallel = getattr(arguments, "force_data_parallel", None)
+    rollouts_per_step = getattr(arguments, "rollouts_per_step", None)
 
     try:
         num_devices = jax.device_count()
@@ -188,11 +189,18 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         num_devices=num_devices,
         force_tensor_parallel=force_tensor_parallel,
         force_data_parallel=force_data_parallel,
+        rollouts_per_step=rollouts_per_step,
     )
 
+    # Update arguments with computed mesh configuration
     setattr(arguments, "step_partition_spec", plan.step_partition_spec)
     setattr(arguments, "input_partition_spec", plan.input_partition_spec)
     setattr(arguments, "mesh_dims", (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp))
+    
+    # Update sharding axis dims to match mesh dims if present
+    if hasattr(arguments, "sharding_axis_dims"):
+        setattr(arguments, "sharding_axis_dims", (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp))
+    
     validate_mesh_config(plan.dp, plan.fsdp, plan.tp, num_devices, total_batch_size)
     return plan
 

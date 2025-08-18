@@ -87,48 +87,31 @@ class GRPOTrainer(Trainer):
         assert processing_class is not None, "processing_class must be specified to tokenize a DPO dataset."
 
         # Apply adaptive mesh configuration before storing arguments
-        from .adaptive_mesh import get_adaptive_step_partition_spec, validate_mesh_config, calculate_optimal_mesh_dims
-        _step_sig = inspect.signature(get_adaptive_step_partition_spec)
-        _step_kwargs = dict(
-            total_batch_size=arguments.total_batch_size,
-            force_tensor_parallel=arguments.force_tensor_parallel,
-            mini_batch_size=arguments.mini_batch_size,
-        )
-        if 'force_data_parallel' in _step_sig.parameters:
-            _step_kwargs['force_data_parallel'] = arguments.force_data_parallel
-        if 'rollouts_per_step' in _step_sig.parameters and getattr(arguments, 'rollouts_per_step', None):
-            _step_kwargs['rollouts_per_step'] = arguments.rollouts_per_step
-        adaptive_step_spec = get_adaptive_step_partition_spec(**_step_kwargs)
+        from .adaptive_mesh import configure_adaptive_mesh_inplace
         
-        # Validate mesh configuration for multi-worker training
+        # Configure mesh and update arguments in-place
         if arguments.force_tensor_parallel is not None or arguments.force_data_parallel is not None:
-            mesh_kwargs = dict(
-                total_batch_size=arguments.total_batch_size,
-                num_return_sequences=arguments.num_return_sequences,
-                force_tensor_parallel=arguments.force_tensor_parallel,
-                force_data_parallel=arguments.force_data_parallel,
-                mini_batch_size=arguments.mini_batch_size,
-            )
-            dp, fsdp, ep, tp, sp = calculate_optimal_mesh_dims(**mesh_kwargs)
+            mesh_plan = configure_adaptive_mesh_inplace(arguments)
+            
+            # Ensure dataset sharding aligns with DP only
             try:
-                num_devices = jax.device_count()
-            except Exception:
-                import os
-                num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
-            validate_mesh_config(dp, fsdp, tp, num_devices, arguments.total_batch_size)
-        
-        # Override step_partition_spec if it would cause dimension mismatch or using TP
-        should_override = (
-            (arguments.total_batch_size == 1 and arguments.step_partition_spec == PartitionSpec(("dp", "fsdp"), "sp")) or
-            (arguments.force_tensor_parallel is not None)
-        )
-        
-        if should_override:
-            logger.warning(
-                f"Overriding step_partition_spec from {arguments.step_partition_spec} to {adaptive_step_spec} "
-                f"for batch_size={arguments.total_batch_size}, tp={arguments.force_tensor_parallel}"
-            )
-            arguments.step_partition_spec = adaptive_step_spec
+                # Dataset should be sharded across DP workers only
+                arguments.grain_shard_count = mesh_plan.dp
+                arguments.grain_shard_index = jax.process_index() % mesh_plan.dp
+                
+                if jax.process_index() == 0:
+                    logger.info(
+                        f"Configured mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, "
+                        f"TP={mesh_plan.tp}, dataset shards={mesh_plan.dp}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to configure dataset sharding: {e}")
+                # Fallback to safe defaults
+                arguments.grain_shard_count = 1
+                arguments.grain_shard_index = 0
+        else:
+            # No forced parallelism, use default behavior
+            pass
         
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
@@ -219,11 +202,8 @@ class GRPOTrainer(Trainer):
         log_table = None
         if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
             log_table = wandb.Table(columns=["generations", "took", "length", "step"])
-            if jax.process_index() == 0:
-                print(f"DEBUG: Created WandB table - use_wandb:{self.arguments.use_wandb}, can_log_metrics:{self.arguments.can_log_metrics}, wandb_available:{wandb is not None}")
         else:
-            if jax.process_index() == 0:
-                print(f"DEBUG: WandB table NOT created - use_wandb:{self.arguments.use_wandb}, can_log_metrics:{self.arguments.can_log_metrics}, wandb_available:{wandb is not None}")
+            log_table = None
         self.log_table = log_table
 
         super().__init__(
@@ -285,8 +265,8 @@ class GRPOTrainer(Trainer):
             if isinstance(conf_eos, (list, tuple)):
                 eos_ids.extend([t for t in conf_eos if t is not None])
 
-        # Return unique list
-        return list(set(eos_ids))
+        # Return unique list with deterministic ordering
+        return sorted(set(eos_ids))
 
     def _prepare_dataset(
         self,
@@ -439,9 +419,13 @@ class GRPOTrainer(Trainer):
             self.num_generations = target_nrs
 
             if jax.process_index() == 0:
+                per_process = int(self.arguments.total_batch_size) * int(target_nrs)
+                global_total = int(total_dp) * per_process
                 logger.info(
-                    f"Set num_return_sequences={target_nrs} based on rollouts_per_step={self.arguments.rollouts_per_step} "
-                    f"(DP={total_dp}, batch_size={self.arguments.total_batch_size})"
+                    f"Rollout configuration: num_return_sequences={target_nrs}, "
+                    f"rollouts_per_step={self.arguments.rollouts_per_step}, "
+                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}, "
+                    f"per_process_rollouts={per_process}, global_rollouts={global_total}"
                 )
 
         # Use adaptive sharding based on batch size and tensor parallelism
@@ -477,13 +461,6 @@ class GRPOTrainer(Trainer):
             module = state.model
 
             with module.mesh:
-                if jax.process_index() == 0:
-                    try:
-                        print("DEBUG(gen): in ids", getattr(input_ids, "shape", None), "sharding=", getattr(input_ids, "sharding", None))
-                        print("DEBUG(gen): in mask", getattr(attention_mask, "shape", None), "sharding=", getattr(attention_mask, "sharding", None))
-                        print("DEBUG(gen): input_spec=", adaptive_spec, "step_spec=", self.arguments.step_partition_spec)
-                    except Exception:
-                        pass
                 input_ids = module.config.partition_manager.shard(
                     input_ids,
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
@@ -513,13 +490,6 @@ class GRPOTrainer(Trainer):
                     attention_mask=attention_mask,
                     generation_config=generation_config,
                 ).sequences
-                if jax.process_index() == 0:
-                    try:
-                        print("DEBUG(gen): out seq", getattr(sequences, "shape", None), "sharding=", getattr(sequences, "sharding", None))
-                        print("DEBUG(gen): post-partition ids", getattr(input_ids, "shape", None), "sharding=", getattr(input_ids, "sharding", None))
-                        print("DEBUG(gen): post-partition mask", getattr(attention_mask, "shape", None), "sharding=", getattr(attention_mask, "sharding", None))
-                    except Exception:
-                        pass
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
@@ -657,13 +627,7 @@ class GRPOTrainer(Trainer):
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs)
                     )
-                if jax.process_index() == 0:
-                    try:
-                        print("DEBUG(loop): cur_nrs=", cur_nrs)
-                        print("DEBUG(loop): ids", getattr(prompt_ids, "shape", None), "sharding=", getattr(prompt_ids, "sharding", None))
-                        print("DEBUG(loop): mask", getattr(prompt_mask, "shape", None), "sharding=", getattr(prompt_mask, "sharding", None))
-                    except Exception:
-                        pass
+                # Debug output removed to prevent host divergence in compiled code
                 generation_time += float(generation_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
@@ -703,13 +667,7 @@ class GRPOTrainer(Trainer):
                 ref_per_token_logps = ref_logps_chunks[0]
                 completion_lengths_per_seq = comp_len_chunks[0]
             else:
-                if jax.process_index() == 0:
-                    try:
-                        print("DEBUG(cat): num seq chunks=", len(sequences_chunks))
-                        if len(completion_ids_chunks) > 0:
-                            print("DEBUG(cat): shard ids[0] sharding=", getattr(completion_ids_chunks[0], "sharding", None))
-                    except Exception:
-                        pass
+                # Debug output removed to prevent host divergence
                 prompt_completion_ids = jnp.concatenate(sequences_chunks, axis=0)
                 completion_ids = jnp.concatenate(completion_ids_chunks, axis=0)
                 completion_mask = jnp.concatenate(completion_mask_chunks, axis=0)
@@ -766,28 +724,7 @@ class GRPOTrainer(Trainer):
                         ).logits[:, 0]
                     else:
                         in_prompts = prompts * self.num_generations
-                        if jax.process_index() == 0 and i == 0:  # Debug first reward function only
-                            print(f"DEBUG REWARD FUNCTION:")
-                            print(f"  Function: {getattr(reward_func, '__name__', 'unknown')}")
-                            print(f"  Prompts count: {len(in_prompts)}")
-                            print(f"  Completions type: {type(completions)}")
-                            print(f"  First completion type: {type(completions[0]) if completions else 'empty'}")
-                            if completions and len(completions) > 0:
-                                # Show FULL completion text to see the ending
-                                full_text = completions[0][0]["content"] if isinstance(completions[0], list) else completions[0]
-                                # print(f"  FULL completion text:\n{full_text}") don't display full completion text
-                                print(f"  Text ends with: ...{full_text[-100:]}")
-                                # Check pattern match
-                                import re
-                                pattern = r"^<think>.*?</think>\s*<answer>.*?</answer>$"
-                                match = re.match(pattern, full_text, re.DOTALL)
-                                print(f"  Pattern match: {match is not None}")
-                                if not match:
-                                    print(f"  Checking if has <think>: {'<think>' in full_text}")
-                                    print(f"  Checking if has </think>: {'</think>' in full_text}")
-                                    print(f"  Checking if has <answer>: {'<answer>' in full_text}")
-                                    print(f"  Checking if has </answer>: {'</answer>' in full_text}")
-                                print("="*50)
+                                    # Debug output removed to prevent host divergence
                         output_reward_func = reward_func(
                             prompts=in_prompts,
                             completions=completions,
@@ -796,9 +733,7 @@ class GRPOTrainer(Trainer):
                             completion_lengths=jax.device_get(completion_lengths_per_seq),
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
-                        if jax.process_index() == 0 and i == 0:  # Debug first reward function only
-                            print(f"  Reward output: {output_reward_func}")
-                            print(f"  Reward array: {rew}")
+                                    # Debug output removed to prevent host divergence
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             
@@ -828,33 +763,7 @@ class GRPOTrainer(Trainer):
         eos_stop_rate = jnp.mean(eos_found.astype(jnp.float32))
         no_eos_maxlen_rate = jnp.float32(1.0) - eos_stop_rate
         
-        # Simplified debug output to prevent TPU coordination issues
-        if jax.process_index() == 0:
-            try:
-                step_val = jax.device_get(state.step)
-                print(f"DEBUG: Step {step_val} - Generation time: {generation_time:.1f}s")
-                print(f"  Rewards: shape={rewards.shape}")
-                # Skip complex array operations that can cause coordination issues
-                # Termination diagnostics: how often did generation stop by EOS vs max length?
-                try:
-                    eos_found = jnp.isin(completion_ids, jnp.asarray(self.eos_token_id).reshape(-1)).any(axis=1)
-                    eos_frac = float(jnp.mean(eos_found.astype(jnp.float32)).item())
-                except Exception as _e:
-                    eos_frac = -1.0
-                try:
-                    comp_len = completion_mask.sum(-1)
-                    maxlen_hits = (comp_len >= self.arguments.max_completion_length).astype(jnp.float32)
-                    maxlen_frac = float(jnp.mean(maxlen_hits).item())
-                    avg_len = float(jnp.mean(comp_len).item())
-                    med_len = float(jnp.median(comp_len).item())
-                except Exception as _e:
-                    maxlen_frac, avg_len, med_len = -1.0, -1.0, -1.0
-                print(
-                    "DEBUG(stop): eos_frac=%.3f maxlen_frac=%.3f avg_len=%.1f median_len=%.1f max_new=%d"
-                    % (eos_frac, maxlen_frac, avg_len, med_len, int(self.arguments.max_completion_length))
-                )
-            except Exception as e:
-                print(f"DEBUG: Basic check failed - {e}")
+        # Debug output removed to prevent TPU coordination issues
             
         # Ensure all batch tensors share the same leading dimension for downstream minibatching
         # Repeat prompts to match completions if needed
@@ -894,8 +803,7 @@ class GRPOTrainer(Trainer):
         if self.log_table is not None and jax.process_index() == 0:
             try:
                 cur_step = int(jax.device_get(state.step))
-            except Exception as e:
-                print(f"DEBUG: Failed to get step: {e}")
+            except Exception:
                 cur_step = 0
 
             def _to_local_host(x, name="array"):
@@ -906,27 +814,20 @@ class GRPOTrainer(Trainer):
                 # Try 1: Fully addressable (replicated/single-device)
                 try:
                     if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
-                        result = jax.device_get(x)
-                        print(f"Try with method: jax.device_get(x) worked for {name}")
-                        return result
-                except Exception as e:
-                    print(f"DEBUG: {name} fully addressable extraction failed: {e}")
+                        return jax.device_get(x)
+                except Exception:
+                    pass
 
                 # Try 2: Get first local shard (partial data is better than crash)
                 try:
                     shards = x.addressable_shards
                     if shards and len(shards) > 0:
-                        local_data = jax.device_get(shards[0].data)
-                        print(f"DEBUG: {name} using first shard only, shape={local_data.shape}")
-                        print(f"Try with method: jax.device_get(shards[0].data) worked for {name}")
-                        return local_data
-                except Exception as e:
-                    print(f"DEBUG: {name} shard extraction failed: {e}")
+                        return jax.device_get(shards[0].data)
+                except Exception:
+                    pass
 
                 # Avoid cross-host collectives here since only process 0 runs this block
                 # Last resort: Return empty array (do not allgather)
-                print(f"WARNING: {name} extraction failed, returning empty")
-                print(f"Try with method: returning jnp.array([]) for {name}")
                 return jnp.array([])
 
             # Extract with fallbacks
@@ -937,29 +838,19 @@ class GRPOTrainer(Trainer):
             try:
                 if len(local_completion_ids) > 0:
                     decoded_text = self.processing_class.batch_decode(local_completion_ids)
-                    print("Try with method: self.processing_class.batch_decode(local_completion_ids) worked")
                 else:
                     decoded_text = []
-            except Exception as e:
-                print(f"DEBUG: Decode failed: {e}")
-                print("Try with method: self.processing_class.batch_decode(local_completion_ids) failed")
+            except Exception:
                 decoded_text = []
 
-            # Handle lengths
+                            # Handle lengths
             try:
                 if isinstance(local_comp_lens, jnp.ndarray) and local_comp_lens.size > 0:
                     individual_lengths = local_comp_lens
-                    print("Try with method: using local_comp_lens as individual_lengths worked")
                 else:
                     individual_lengths = [0] * len(decoded_text)
-                    print("Try with method: using [0] * len(decoded_text) for individual_lengths worked")
-            except Exception as e:
-                print(f"DEBUG: Lengths extraction failed: {e}")
-                print("Try with method: using [] for individual_lengths")
+            except Exception:
                 individual_lengths = []
-
-            # Log with error handling
-            print(f"DEBUG: WandB logging - step {cur_step}, {len(decoded_text)} items")
 
             try:
                 n_items = min(len(decoded_text), len(individual_lengths))
@@ -967,32 +858,22 @@ class GRPOTrainer(Trainer):
                     try:
                         length_val = float(individual_lengths[i]) if i < len(individual_lengths) else 0.0
                         self.log_table.add_data(decoded_text[i], generation_time, length_val, cur_step)
-                        print(f"Try with method: self.log_table.add_data(decoded_text[{i}], generation_time, {length_val}, {cur_step}) worked")
-                    except Exception as e:
-                        print(f"DEBUG: Failed to add row {i}: {e}")
+                    except Exception:
                         # Add placeholder
                         try:
                             self.log_table.add_data("[decode failed]", generation_time, 0.0, cur_step)
-                            print("Try with method: self.log_table.add_data('[decode failed]', generation_time, 0.0, cur_step) worked")
-                        except Exception as e2:
-                            print(f"DEBUG: Fallback add_data failed: {e2}")
-            except Exception as e:
-                print(f"DEBUG: Table population failed: {e}")
-                print("Try with method: Table population failed")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
             # Log to WandB
             try:
                 if hasattr(self.log_table, 'data') and len(self.log_table.data) > 0:
                     wandb.log({"generations": self.log_table}, step=cur_step)
-                    print("DEBUG: WandB log completed")
-                    print("Try with method: wandb.log({'generations': self.log_table}, step=cur_step) worked")
-                else:
-                    print("DEBUG: WandB table empty, skipping")
-                    print("Try with method: WandB table empty, skipping")
-            except Exception as e:
-                print(f"DEBUG: WandB log failed: {e}")
-                print("Try with method: wandb.log({'generations': self.log_table}, step=cur_step) failed")
+            except Exception:
                 # Don't crash training over logging
+                pass
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
