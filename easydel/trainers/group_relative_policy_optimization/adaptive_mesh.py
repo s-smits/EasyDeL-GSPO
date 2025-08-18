@@ -43,6 +43,7 @@ def plan_adaptive_mesh(
     force_tensor_parallel: int | None = None,
     force_data_parallel: int | None = None,
     mini_batch_size: int | None = None,  # kept for API compatibility; not used
+    rollouts_per_step: int | None = None,
 ) -> AdaptiveMeshPlan:
     """Single-source planner for common DP×TP cases.
 
@@ -59,6 +60,26 @@ def plan_adaptive_mesh(
             num_devices = jax.device_count()
         except Exception:
             num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+
+    # Optionally adjust DP to help satisfy a target rollouts_per_step
+    # Global rollouts per step ~= dp * total_batch_size * num_return_sequences
+    if rollouts_per_step is not None and rollouts_per_step > 0:
+        # Prefer increasing DP up to the devices limit to meet target
+        # dp_target = ceil(rollouts_per_step / (total_batch_size * num_return_sequences))
+        denom = max(1, total_batch_size * num_return_sequences)
+        dp_target = max(1, (rollouts_per_step + denom - 1) // denom)
+        # Clip by available devices and any force_* constraints
+        try:
+            avail = int(num_devices) if num_devices is not None else jax.device_count()
+        except Exception:
+            avail = 1
+        if force_tensor_parallel:
+            # Reserve tp, try to use remaining for dp
+            slots = max(1, avail // int(force_tensor_parallel))
+            force_data_parallel = min(slots, dp_target)
+        else:
+            # No TP constraint; allow dp up to dp_target
+            force_data_parallel = min(avail, dp_target)
 
     # Compute dp/tp/fsdp in a straightforward way
     if force_tensor_parallel and force_data_parallel:

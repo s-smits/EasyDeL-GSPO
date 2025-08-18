@@ -174,11 +174,28 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # High-level rollout targets
+    rollouts_per_prompt: int | None = field(
+        default=None,
+        metadata={
+            "help": "High-level alias to set the number of completions per prompt (maps to num_return_sequences)."
+        },
+    )
+    rollouts_per_step: int | None = field(
+        default=None,
+        metadata={
+            "help": "Target total rollouts per global step across all data-parallel workers. "
+            "Automatically derives num_return_sequences from DP and total_batch_size."
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
         
         # Apply aliases with gentle override semantics
+        if self.rollouts_per_prompt is not None:
+            self.num_return_sequences = int(max(1, self.rollouts_per_prompt))
         if self.completions_per_prompt is not None:
             # Prefer the clearer alias if user set it
             self.num_return_sequences = int(self.completions_per_prompt)
@@ -189,6 +206,22 @@ class GRPOConfig(TrainingArguments):
         if self.microbatch_one_completion:
             # Generate one completion per chunk to bound peak KV/logit memory
             self.rollout_chunk_size = 1
+
+        # If user set a global target for rollouts per step, derive num_return_sequences
+        if self.rollouts_per_step is not None:
+            try:
+                # Best-effort DP detection without forcing backend init
+                from .training_configurations import _safe_process_count  # type: ignore
+                dp = int(max(1, _safe_process_count()))
+            except Exception:
+                dp = 1
+            per_process_target = max(1, int((self.rollouts_per_step + dp - 1) // dp))  # ceil div
+            # Derive nrs so that total_batch_size * nrs >= per_process_target
+            nrs = int(max(1, (per_process_target + self.total_batch_size - 1) // self.total_batch_size))
+            self.num_return_sequences = nrs
+            # If user wants microbatch-per-completion, set accum steps implicitly
+            if self.microbatch_one_completion:
+                self.gradient_accumulation_steps = nrs
 
         # Validate tensor parallelism configuration
         if self.force_tensor_parallel is not None:

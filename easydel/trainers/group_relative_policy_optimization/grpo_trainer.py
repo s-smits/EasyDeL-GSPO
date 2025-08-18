@@ -425,6 +425,8 @@ class GRPOTrainer(Trainer):
         )
         if 'force_data_parallel' in _shard_sig.parameters:
             _shard_kwargs['force_data_parallel'] = self.arguments.force_data_parallel
+        if 'rollouts_per_step' in _shard_sig.parameters and getattr(self.arguments, 'rollouts_per_step', None):
+            _shard_kwargs['rollouts_per_step'] = self.arguments.rollouts_per_step
         adaptive_spec = get_adaptive_sharding_spec(**_shard_kwargs)
         input_sharding = NamedSharding(
             mesh=mesh,
