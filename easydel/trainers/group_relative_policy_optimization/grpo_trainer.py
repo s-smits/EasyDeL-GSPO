@@ -707,7 +707,18 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Host-side diagnostic: print per-rollout completion token lengths
+            # Prepare optional global lengths for logging: must be called on ALL processes
+            _global_lengths_for_logging = None
+            try:
+                if jax.process_count() > 1:
+                    _g = jax.experimental.multihost_utils.process_allgather(
+                        jnp.asarray(completion_lengths_per_seq, dtype=jnp.int32)
+                    )
+                    _global_lengths_for_logging = jnp.reshape(_g, (-1,))
+            except Exception:
+                _global_lengths_for_logging = None
+
+            # Host-side diagnostic: print per-rollout completion token lengths (process 0 prints)
             if jax.process_index() == 0:
                 try:
                     # Prefer fully addressable arrays
@@ -752,15 +763,10 @@ class GRPOTrainer(Trainer):
                                 logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {arr}")
                             
                             # Add global query logging to show all queries across all DP workers
-                            if jax.process_count() > 1:
-                                try:
-                                    # Gather completion lengths from all processes
-                                    all_lengths = jax.experimental.multihost_utils.process_allgather(
-                                        jnp.asarray(lengths_list, dtype=jnp.int32)
-                                    )
-                                    all_lengths_flat = jnp.reshape(all_lengths, (-1,))
+                            try:
+                                if _global_lengths_for_logging is not None:
+                                    all_lengths_flat = _global_lengths_for_logging
                                     all_lengths_list = [int(x) for x in all_lengths_flat]
-                                    
                                     total_global_queries = num_queries * jax.process_count()
                                     logger.info(
                                         f"GLOBAL completion_token_lengths: total_queries={total_global_queries}, "
@@ -768,7 +774,6 @@ class GRPOTrainer(Trainer):
                                         f"min={jnp.min(all_lengths_flat)}, max={jnp.max(all_lengths_flat)}, "
                                         f"mean={jnp.mean(all_lengths_flat):.2f}"
                                     )
-                                    
                                     # Show per-query breakdown for ALL queries globally
                                     for global_qi in range(total_global_queries):
                                         start = global_qi * r
@@ -776,9 +781,11 @@ class GRPOTrainer(Trainer):
                                         if start < len(all_lengths_list) and end <= len(all_lengths_list):
                                             process_id = global_qi // num_queries
                                             local_qi = global_qi % num_queries
-                                            logger.info(f"GLOBAL query_{global_qi}_lengths (process {process_id}, local query {local_qi}): {all_lengths_list[start:end]}")
-                                except Exception as e:
-                                    logger.debug(f"Could not gather global completion lengths for logging: {e}")
+                                            logger.info(
+                                                f"GLOBAL query_{global_qi}_lengths (process {process_id}, local query {local_qi}): {all_lengths_list[start:end]}"
+                                            )
+                            except Exception as e:
+                                logger.debug(f"Could not log global completion lengths: {e}")
                             
                             # If all per-query arrays are identical, this suggests duplicated prompts or identical RNG streams
                             try:

@@ -15,6 +15,7 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
+
 # Run training with proper flags
 python easydel/scripts/finetune/numinamath_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
