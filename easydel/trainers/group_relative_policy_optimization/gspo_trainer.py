@@ -247,4 +247,4 @@ class GSPOTrainer(GRPOTrainer):
             sharded_evaluation_step_function=sharded_evaluation_step_function,
             mesh=parent_result.mesh,
             checkpoint_manager=parent_result.checkpoint_manager,
-        ) 
+        )

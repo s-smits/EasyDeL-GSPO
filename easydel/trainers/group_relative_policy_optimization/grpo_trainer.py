@@ -698,8 +698,8 @@ class GRPOTrainer(Trainer):
             else:
                 completions = completions_text
 
-            # Calculate completion lengths before rewards
-            completion_lengths_per_seq = completion_mask.sum(-1)  # Length per sequence
+            # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
+            completion_lengths_per_seq = completion_mask.sum(-1)
             # Host-side diagnostic: print per-rollout completion token lengths
             if jax.process_index() == 0:
                 try:
@@ -822,19 +822,17 @@ class GRPOTrainer(Trainer):
             
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
-                advantages = (
-                    rewards
-                    - jnp.mean(
-                        rewards.reshape(-1, self.num_generations),
-                        axis=-1,
-                    ).repeat(self.num_generations, axis=0)
-                ) / (
-                    jnp.std(
-                        rewards.reshape(-1, self.num_generations),
-                        axis=-1,
-                    ).repeat(self.num_generations, axis=0)
-                    + 1e-4
-                )
+                # Robust, config-driven advantage normalization per prompt group
+                grouped_rewards = rewards.reshape(-1, self.num_generations)
+                group_means = jnp.mean(grouped_rewards, axis=-1, keepdims=True)
+                group_stds = jnp.std(grouped_rewards, axis=-1, keepdims=True)
+                eps = jnp.float32(getattr(self.arguments, "advantage_epsilon", 1e-6))
+                # Zero-out groups with very low variance to avoid spurious gradients
+                safe_stds = jnp.maximum(group_stds, eps)
+                normalized = (grouped_rewards - group_means) / safe_stds
+                zero_mask = (group_stds < eps).astype(normalized.dtype)
+                normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
+                advantages = normalized.reshape(-1)
             grouped_comp_time = grouped_comp_time_fn()
             # Optionally aggregate rewards across processes to get true global means per step
             global_rewards_per_func = rewards_per_func
@@ -852,6 +850,54 @@ class GRPOTrainer(Trainer):
                 global_mean_reward_per_completion = jnp.mean(global_rewards_sum)
             except Exception:
                 global_mean_reward_per_completion = jnp.mean(rewards)
+            # Compute success metrics (reward > 0) locally and globally
+            try:
+                successes_local = (rewards > 0).astype(jnp.int32)
+                success_count_comp_local = jnp.sum(successes_local)
+                total_comp_local = successes_local.shape[0]
+                success_rate_comp_local = success_count_comp_local / jnp.maximum(1, total_comp_local)
+
+                # Per-prompt pass@k (at least one success among num_return_sequences)
+                per_prompt_success = jnp.max(successes_local.reshape(-1, self.num_generations), axis=1)
+                pass_prompt_count_local = jnp.sum(per_prompt_success)
+                num_prompts_local = int(prompt_ids.shape[0])
+                pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
+
+                # Global completion success rate from gathered rewards
+                try:
+                    successes_global = (global_rewards_sum > 0).astype(jnp.int32)
+                    success_count_comp_global = jnp.sum(successes_global)
+                    total_comp_global = successes_global.shape[0]
+                    success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
+                except Exception:
+                    success_count_comp_global = success_count_comp_local
+                    total_comp_global = total_comp_local
+                    success_rate_comp_global = success_rate_comp_local
+
+                # Global pass@k via gathering counts across processes
+                pass_prompt_count_global = pass_prompt_count_local
+                num_prompts_global = jnp.array(float(num_prompts_local))
+                try:
+                    if jax.process_count() > 1:
+                        g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
+                        g_prompts = jax.experimental.multihost_utils.process_allgather(jnp.array(float(num_prompts_local), dtype=jnp.float32))
+                        pass_prompt_count_global = jnp.sum(g_pass)
+                        num_prompts_global = jnp.sum(g_prompts)
+                except Exception:
+                    pass
+                pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+            except Exception:
+                # Safe fallbacks
+                success_count_comp_local = jnp.array(0)
+                total_comp_local = jnp.array(1)
+                success_rate_comp_local = jnp.array(0.0)
+                success_count_comp_global = success_count_comp_local
+                total_comp_global = total_comp_local
+                success_rate_comp_global = success_rate_comp_local
+                pass_prompt_count_local = jnp.array(0)
+                pass_prompt_count_global = jnp.array(0)
+                pass_at_k_local = jnp.array(0.0)
+                pass_at_k_global = jnp.array(0.0)
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         # Robust termination ratios: detect EOS presence directly in completions.
@@ -889,13 +935,22 @@ class GRPOTrainer(Trainer):
         except Exception:
             dp_size = 1
         metrics_dict = {
-            "rewards": per_completion_mean_reward,  # mean per completion (local)
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/denominator/completions_local": float(num_completions_local),
             "reward/denominator/prompts_local": float(num_prompts_local),
             "reward/mean_per_completion_global": global_mean_reward_per_completion,
             "reward/denominator/completions_global": float(num_completions_local * dp_size),
             "reward/denominator/prompts_global": float(num_prompts_local * dp_size),
+            # Success metrics (reward > 0)
+            "reward/success_count_completions_local": float(success_count_comp_local),
+            "reward/success_rate_completions_local": float(success_rate_comp_local),
+            "reward/success_count_completions_global": float(success_count_comp_global),
+            "reward/success_rate_completions_global": float(success_rate_comp_global),
+            # Pass@k over prompts (at least one success among num_return_sequences)
+            "reward/success_count_prompts_local": float(pass_prompt_count_local),
+            "reward/pass_at_k_local": float(pass_at_k_local),
+            "reward/success_count_prompts_global": float(pass_prompt_count_global),
+            "reward/pass_at_k_global": float(pass_at_k_global),
             "completion_length": completion_length,
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
@@ -1021,6 +1076,31 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     # Don't crash training over logging
                     pass
+
+            # Immediately log a small set of lightweight generation/reward metrics every step
+            try:
+                if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
+                    # Keep these lightweight correctness and a few rollout/timing keys
+                    immediate_keys = [
+                        "reward/success_rate_completions_local",
+                        "reward/pass_at_k_local",
+                        "reward/mean_per_completion",
+                        "reward/mean_per_completion_global",
+                        "rollouts/completions_per_prompt",
+                        "rollouts/total_per_process",
+                        "termination/eos_stop_rate",
+                        "generation_time",
+                    ]
+                    to_log = {
+                        f"train/{k}": float(processed_metrics_dict[k])
+                        for k in immediate_keys
+                        if k in processed_metrics_dict and isinstance(processed_metrics_dict[k], (int, float))
+                    }
+                    if len(to_log) > 0:
+                        wandb.log(to_log, step=cur_step)
+            except Exception:
+                # Safe best-effort logging; never crash the step
+                pass
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...

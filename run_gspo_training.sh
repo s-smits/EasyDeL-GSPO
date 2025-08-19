@@ -28,9 +28,10 @@ python easydel/scripts/finetune/numinamath_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --total_batch_size 4 \
   --num_return_sequences 8 \
+  --rollout_chunk_size 8 \
   --num_train_epochs 1 \
   --max_prompt_length 512 \
-  --max_completion_length 3072 \
+  --max_completion_length 2560 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
