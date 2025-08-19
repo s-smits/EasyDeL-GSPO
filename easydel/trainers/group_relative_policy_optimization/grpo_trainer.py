@@ -594,19 +594,27 @@ class GRPOTrainer(Trainer):
     def _verify_prompt_uniqueness(self, prompts: list[str]) -> None:
         """Verify that prompts are unique across processes to detect sharding issues."""
         import hashlib
-        # Use full hash for better collision resistance
-        local_hashes = jnp.array([
-            int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % (2**63)
-            for p in prompts
-        ], dtype=jnp.int64)
-        
+        # Stable 32-bit hash to avoid int64 requirement on default JAX x32
+        local_hashes_np = np.fromiter(
+            (
+                int.from_bytes(
+                    hashlib.sha256(p.encode('utf-8', 'ignore')).digest()[:4],
+                    'little',
+                    signed=False,
+                )
+                for p in prompts
+            ),
+            dtype=np.uint32,
+        )
+        local_hashes = jnp.asarray(local_hashes_np, dtype=jnp.uint32)
+
         gathered = jax.experimental.multihost_utils.process_allgather(local_hashes)
-        # Simple deduplication: take first device per process
-        gathered = gathered.reshape(jax.process_count(), -1)[:, :len(prompts)].flatten()
-        
-        unique_count = len(jnp.unique(gathered))
-        total_count = len(gathered)
-        
+        # Flatten and compute uniqueness on host for robustness
+        flat = jnp.reshape(gathered, (-1,))
+        flat_np = np.asarray(jax.device_get(flat))
+        unique_count = int(np.unique(flat_np).size)
+        total_count = int(flat_np.size)
+
         if jax.process_index() == 0 and unique_count < total_count:
             logger.error(
                 f"CRITICAL: Dataset sharding failure detected! "
@@ -626,10 +634,10 @@ class GRPOTrainer(Trainer):
             gathered = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local).flatten())
             
             # Deduplicate: reshape to (processes, devices_per_process, data) and take first device
-            shape = (jax.process_count(), jax.local_device_count(), -1)
-            if gathered.size == np.prod(shape[:2]) * (gathered.size // np.prod(shape[:2])):
-                return gathered.reshape(shape)[:, 0, :].flatten()
-            return gathered.flatten()
+            try:
+                return gathered.reshape(jax.process_count(), jax.local_device_count(), -1)[:, 0, :].reshape(-1)
+            except Exception:
+                return gathered.reshape(-1)
         except Exception as e:
             logger.debug(f"Failed to gather array: {e}")
             return None
