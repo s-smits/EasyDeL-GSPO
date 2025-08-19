@@ -408,10 +408,12 @@ class GRPOTrainer(Trainer):
             derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
             self.arguments.rollouts_per_step = int(derived_rps)
             if jax.process_index() == 0:
+                per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+                global_total = int(total_dp) * per_process
                 logger.info(
                     f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                    f"derived rollouts_per_step={self.arguments.rollouts_per_step}, "
-                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}"
+                    f"derived_global_rollouts_per_step={self.arguments.rollouts_per_step}, "
+                    f"per_process_rollouts={per_process}, DP={total_dp}, batch_size={self.arguments.total_batch_size}"
                 )
 
         # Use adaptive sharding based on batch size and tensor parallelism
@@ -756,9 +758,16 @@ class GRPOTrainer(Trainer):
                         r = int(self.num_generations)
                         if r > 0 and len(lengths_list) % r == 0:
                             grouped = [lengths_list[i * r : (i + 1) * r] for i in range(num_queries)]
+                            # Clarify that these counts are per-process (local). Global prompts ~= DP * queries
+                            try:
+                                mesh_shape = getattr(self.model.mesh, "shape", {})
+                                dp_sz = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+                            except Exception:
+                                dp_sz = 1
                             logger.info(
-                                f"per_query_completion_token_lengths: queries={num_queries}, rollouts_per_query={r}; "
-                                f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}"
+                                f"per_query_completion_token_lengths (local): queries={num_queries}, rollouts_per_query={r}; "
+                                f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}; "
+                                f"approx_global_queries={num_queries*int(dp_sz)}"
                             )
                             # Print compactly: one line per query
                             for qi, arr in enumerate(grouped):
@@ -927,6 +936,29 @@ class GRPOTrainer(Trainer):
                 pass_at_k_global = jnp.array(0.0)
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
+        # Compute local and global completion length stats for logging/metrics
+        try:
+            lengths_local_arr = jnp.asarray(completion_lengths_per_seq)
+            lengths_local_min = jnp.min(lengths_local_arr)
+            lengths_local_max = jnp.max(lengths_local_arr)
+            lengths_local_mean = jnp.mean(lengths_local_arr)
+        except Exception:
+            lengths_local_min = jnp.array(0.0)
+            lengths_local_max = jnp.array(0.0)
+            lengths_local_mean = jnp.array(0.0)
+        # Default globals to local; override if we can gather
+        lengths_global_min = lengths_local_min
+        lengths_global_max = lengths_local_max
+        lengths_global_mean = lengths_local_mean
+        try:
+            if jax.process_count() > 1:
+                g_lens = jax.experimental.multihost_utils.process_allgather(lengths_local_arr)
+                g_lens = jnp.reshape(g_lens, (-1,))
+                lengths_global_min = jnp.min(g_lens)
+                lengths_global_max = jnp.max(g_lens)
+                lengths_global_mean = jnp.mean(g_lens)
+        except Exception:
+            pass
         # Robust termination ratios: detect EOS presence directly in completions.
         # Works even when pad_token_id == eos_token_id because sequences that ended early are padded with EOS.
         eos_found = jnp.isin(
@@ -979,9 +1011,20 @@ class GRPOTrainer(Trainer):
             "reward/success_count_prompts_global": float(pass_prompt_count_global),
             "reward/pass_at_k_global": float(pass_at_k_global),
             "completion_length": completion_length,
+            # Completion length stats (local/global)
+            "rollouts/lengths_local_min": lengths_local_min,
+            "rollouts/lengths_local_max": lengths_local_max,
+            "rollouts/lengths_local_mean": lengths_local_mean,
+            "rollouts/lengths_global_min": lengths_global_min,
+            "rollouts/lengths_global_max": lengths_global_max,
+            "rollouts/lengths_global_mean": lengths_global_mean,
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(num_completions_local),
+            "rollouts/total_global": float(num_completions_local * dp_size),
+            "rollouts/queries_per_process": float(num_prompts_local),
+            "rollouts/queries_global": float(num_prompts_local * dp_size),
+            "rollouts/derived_global_rollouts_per_step": float(getattr(self.arguments, "rollouts_per_step", num_completions_local * dp_size)),
             "rollouts/chunk_size": float(rollout_chunk_size),
             "rollouts/tp_size": float(locals().get('tp_size', 1) or 1),
             "rollouts/auto_one_per_tp": float(1.0 if ((locals().get('tp_size', 1) or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
@@ -994,6 +1037,19 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
+        # Convert metrics to plain floats early so we can safely log to WandB below
+        processed_metrics_dict = {}
+        for key, value in metrics_dict.items():
+            if hasattr(value, 'item'):
+                try:
+                    processed_metrics_dict[key] = float(value.item())
+                except Exception as e:
+                    logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")
+                    processed_metrics_dict[key] = 0.0
+            elif isinstance(value, (int, float)):
+                processed_metrics_dict[key] = float(value)
+            else:
+                processed_metrics_dict[key] = value
         # Add per-reward metrics following TRL's approach for better clarity
         for i, reward_func in enumerate(self.reward_funcs):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
@@ -1104,45 +1160,47 @@ class GRPOTrainer(Trainer):
                     # Don't crash training over logging
                     pass
 
-            # Immediately log a small set of lightweight generation/reward metrics every step
-            try:
-                if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
-                    # Keep these lightweight correctness and a few rollout/timing keys
-                    immediate_keys = [
-                        "reward/success_rate_completions_local",
-                        "reward/pass_at_k_local",
-                        "reward/mean_per_completion",
-                        "reward/mean_per_completion_global",
-                        "rollouts/completions_per_prompt",
-                        "rollouts/total_per_process",
-                        "termination/eos_stop_rate",
-                        "generation_time",
-                    ]
-                    to_log = {
-                        f"train/{k}": float(processed_metrics_dict[k])
-                        for k in immediate_keys
-                        if k in processed_metrics_dict and isinstance(processed_metrics_dict[k], (int, float))
-                    }
-                    if len(to_log) > 0:
-                        wandb.log(to_log, step=cur_step)
-            except Exception:
-                # Safe best-effort logging; never crash the step
-                pass
+        # Immediately log a small set of lightweight generation/reward metrics every step (process 0 only)
+        try:
+            if (
+                jax.process_index() == 0
+                and self.arguments.use_wandb
+                and self.arguments.can_log_metrics
+                and wandb is not None
+            ):
+                try:
+                    cur_step = int(jax.device_get(state.step))
+                except Exception:
+                    cur_step = 0
+                immediate_keys = [
+                    "reward/success_rate_completions_local",
+                    "reward/success_rate_completions_global",
+                    "reward/pass_at_k_local",
+                    "reward/pass_at_k_global",
+                    "reward/mean_per_completion",
+                    "reward/mean_per_completion_global",
+                    "rollouts/completions_per_prompt",
+                    "rollouts/total_per_process",
+                    "rollouts/total_global",
+                    "rollouts/lengths_local_mean",
+                    "rollouts/lengths_global_mean",
+                    "rollouts/derived_global_rollouts_per_step",
+                    "termination/eos_stop_rate",
+                    "generation_time",
+                ]
+                to_log = {
+                    f"train/{k}": float(processed_metrics_dict[k])
+                    for k in immediate_keys
+                    if k in processed_metrics_dict and isinstance(processed_metrics_dict[k], (int, float))
+                }
+                if len(to_log) > 0:
+                    wandb.log(to_log, step=cur_step)
+        except Exception:
+            # Safe best-effort logging; never crash the step
+            pass
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
-        # Convert JAX arrays to float for metrics dict to match return type
-        processed_metrics_dict = {}
-        for key, value in metrics_dict.items():
-            if hasattr(value, 'item'):  # JAX array or numpy array
-                try:
-                    processed_metrics_dict[key] = float(value.item())
-                except Exception as e:
-                    # If TPU halted, use a default value or skip the metric
-                    logger.warning(f"Failed to convert metric '{key}' to float: {e}")
-                    processed_metrics_dict[key] = 0.0  # Default fallback value
-            else:
-                processed_metrics_dict[key] = value
                 
         # Ensure all arrays are moved to host memory (unsharded) before returning
         # This is necessary because the training step expects empty_sharding on inputs
