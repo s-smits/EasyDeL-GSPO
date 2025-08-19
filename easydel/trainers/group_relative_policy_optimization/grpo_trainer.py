@@ -1089,8 +1089,10 @@ class GRPOTrainer(Trainer):
         try:
             mesh_shape = getattr(self.model.mesh, "shape", {})
             mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
         except Exception:
             mesh_dp = 1
+            tp_size = 1
         try:
             proc_count = jax.process_count()
         except Exception:
@@ -1132,7 +1134,6 @@ class GRPOTrainer(Trainer):
             "rollouts/derived_global_rollouts_per_step": derived_global_rollouts,
             "rollouts/chunk_size": float(rollout_chunk_size),
             "rollouts/tp_size": float(tp_size or 1),
-            "rollouts/auto_one_per_tp": float(1.0 if ((tp_size or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
