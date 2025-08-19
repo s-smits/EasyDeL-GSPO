@@ -715,39 +715,29 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Optional: all-gather for logging across devices and processes (disabled by default)
+            # Optional: all-gather for logging across processes (disabled by default)
             _global_lengths_for_logging = None
             _global_lengths_shaped = None
             if getattr(self.arguments, "log_global", False):
                 try:
-                    # 1) Collect all local device shards on this host/process
-                    local_parts: list[jnp.ndarray] = []
+                    # Build a de-duplicated local vector by reading one shard (avoids TP replication)
                     shards = getattr(completion_lengths_per_seq, "addressable_shards", None)
-                    if shards:
-                        for sh in shards:
-                            try:
-                                local_parts.append(jnp.asarray(jax.device_get(sh.data).reshape(-1), dtype=jnp.int32))
-                            except Exception:
-                                pass
-                    if not local_parts:
-                        try:
-                            local_parts = [jnp.asarray(jax.device_get(completion_lengths_per_seq).reshape(-1), dtype=jnp.int32)]
-                        except Exception:
-                            local_parts = []
-                    if local_parts:
-                        local_concat = jnp.concatenate(local_parts, axis=0)
-                        # 2) All-gather across processes (hosts)
-                        gathered = jax.experimental.multihost_utils.process_allgather(local_concat)
-                        all_lengths_flat = jnp.reshape(gathered, (-1,))
-                        _global_lengths_for_logging = all_lengths_flat
-                        # 3) Shape into (global_queries, r) for compact per-query display
-                        r = max(1, int(self.num_generations))
-                        total_completions_global = int(all_lengths_flat.size)
-                        total_queries_global = max(1, total_completions_global // r)
-                        try:
-                            _global_lengths_shaped = jnp.reshape(all_lengths_flat[: total_queries_global * r], (total_queries_global, r))
-                        except Exception:
-                            _global_lengths_shaped = None
+                    if shards and len(shards) > 0:
+                        _local = jnp.asarray(jax.device_get(shards[0].data).reshape(-1), dtype=jnp.int32)
+                    else:
+                        _local = jnp.asarray(jax.device_get(completion_lengths_per_seq).reshape(-1), dtype=jnp.int32)
+                    # All-gather one vector per process
+                    gathered = jax.experimental.multihost_utils.process_allgather(_local)
+                    all_lengths_flat = jnp.reshape(gathered, (-1,))
+                    _global_lengths_for_logging = all_lengths_flat
+                    # Shape into (global_queries, r) for compact per-query display
+                    r = max(1, int(self.num_generations))
+                    total_completions_global = int(all_lengths_flat.size)
+                    total_queries_global = max(1, total_completions_global // r)
+                    try:
+                        _global_lengths_shaped = jnp.reshape(all_lengths_flat[: total_queries_global * r], (total_queries_global, r))
+                    except Exception:
+                        _global_lengths_shaped = None
                 except Exception:
                     _global_lengths_for_logging = None
                     _global_lengths_shaped = None
@@ -810,10 +800,10 @@ class GRPOTrainer(Trainer):
                                             f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
                                             f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
                                         )
-                                        # Per-query global breakdown (compact): show first 8 queries
+                                        # Per-query global breakdown (compact): show first 16 queries
                                         try:
                                             if _global_lengths_shaped is not None:
-                                                max_q = min(8, int(_global_lengths_shaped.shape[0]))
+                                                max_q = min(16, int(_global_lengths_shaped.shape[0]))
                                                 for qi in range(max_q):
                                                     arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
                                                     logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
