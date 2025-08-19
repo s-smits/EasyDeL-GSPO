@@ -104,7 +104,7 @@ class GSPOTrainer(GRPOTrainer):
         )
         # step_sharding is not used further; rely on step_partition_spec from arguments
 
-        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
+        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
             module = state.model
 
             with module.mesh:
@@ -132,10 +132,14 @@ class GSPOTrainer(GRPOTrainer):
                     use_cache=False,
                 )
                 
+                # Build PRNG key from provided seed to ensure per-chunk diversity
+                import jax
+                prng_key = jax.random.PRNGKey(prng_seed)
                 sequences = module.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     generation_config=generation_config,
+                    prng_key=prng_key,
                 ).sequences
                 
                 # Re-constrain inputs to the step partition spec for downstream ops
@@ -145,7 +149,7 @@ class GSPOTrainer(GRPOTrainer):
 
         self.generate_function = ejit(
             generate,
-            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
