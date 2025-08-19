@@ -245,6 +245,12 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to log logprobs metrics."},
     )
+    verify_dataset_sharding: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, perform a one-time cross-process verification on step 0 to detect duplicate prompts across DP workers."
+        },
+    )
     loss_config: LossConfig | None = field(
         default=None,
         metadata={"help": "Configuration for the loss function."},

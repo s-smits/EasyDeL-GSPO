@@ -734,6 +734,47 @@ class GRPOTrainer(Trainer):
             else:
                 completions = completions_text
 
+            # One-time cross-process prompt duplication verification (first step only)
+            try:
+                if getattr(self.arguments, "verify_dataset_sharding", False):
+                    try:
+                        cur_step_check = int(jax.device_get(state.step))
+                    except Exception:
+                        cur_step_check = 0
+                    if cur_step_check == 0:
+                        # Hash prompts locally; avoid huge strings in allgather
+                        import hashlib
+                        def _h(s):
+                            try:
+                                return int(hashlib.sha1(s.encode('utf-8', 'ignore')).hexdigest()[:16], 16)
+                            except Exception:
+                                return 0
+                        local_hashes = jnp.asarray([_h(p) for p in prompts], dtype=jnp.int64)
+                        gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes)
+                        try:
+                            proc_cnt = max(1, int(jax.process_count()))
+                            local_dc = max(1, int(jax.local_device_count()))
+                            if gathered_hashes.shape[0] == proc_cnt * local_dc:
+                                gathered_hashes = jnp.reshape(gathered_hashes, (proc_cnt, local_dc, -1))
+                                per_process_hashes = gathered_hashes[:, 0, :]
+                                flat_hashes = jnp.reshape(per_process_hashes, (-1,))
+                            else:
+                                flat_hashes = jnp.reshape(gathered_hashes, (-1,))
+                        except Exception:
+                            flat_hashes = jnp.reshape(gathered_hashes, (-1,))
+                        # Count uniques; if duplicates exist across processes, warn loudly from proc 0
+                        try:
+                            uniq = jnp.unique(flat_hashes)
+                            if jax.process_index() == 0 and uniq.size < flat_hashes.size:
+                                logger.error(
+                                    f"CRITICAL: Duplicate prompts detected across processes on step 0: unique={int(uniq.size)} "
+                                    f"out of total={int(flat_hashes.size)}. Check dataset sharding/seeding."
+                                )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
             # Optional: all-gather for logging across processes (disabled by default)

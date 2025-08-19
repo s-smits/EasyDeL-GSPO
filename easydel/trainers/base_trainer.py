@@ -563,9 +563,21 @@ class BaseTrainer(BaseTrainerProtocol):
                 batch_size = self.evaluation_batch_size
                 shuffle = False
                 num_epochs = 1
+            # Validate/normalize shard indices
+            shard_index = int(self.arguments.grain_shard_index or 0)
+            shard_count = int(self.arguments.grain_shard_count or 1)
+            if shard_count <= 0:
+                shard_count = 1
+            if shard_index < 0 or shard_index >= shard_count:
+                # Clamp and warn
+                old_idx = shard_index
+                shard_index = shard_index % shard_count
+                logger.warning(
+                    f"Adjusted invalid shard_index={old_idx} to {shard_index} within [0,{shard_count})"
+                )
             shard_options = grain.ShardOptions(
-                shard_index=self.arguments.grain_shard_index,
-                shard_count=self.arguments.grain_shard_count,
+                shard_index=shard_index,
+                shard_count=shard_count,
                 drop_remainder=True,
             )
             
@@ -588,19 +600,22 @@ class BaseTrainer(BaseTrainerProtocol):
 
             if isinstance(dataset, IterableDataset):
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
+                # Per-process shuffle seed to decorrelate streams
+                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
-                    seed=self.arguments.shuffle_seed_train if is_train else 0,
+                    seed=seed,
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
             else:
                 data_source = grain.MapDataset.source(dataset)
+                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
-                    seed=self.arguments.shuffle_seed_train if is_train else 0,
+                    seed=seed,
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
