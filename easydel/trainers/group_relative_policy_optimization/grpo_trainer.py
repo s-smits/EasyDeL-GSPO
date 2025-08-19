@@ -726,9 +726,20 @@ class GRPOTrainer(Trainer):
                         _local = jnp.asarray(jax.device_get(shards[0].data).reshape(-1), dtype=jnp.int32)
                     else:
                         _local = jnp.asarray(jax.device_get(completion_lengths_per_seq).reshape(-1), dtype=jnp.int32)
-                    # All-gather one vector per process
+                    # All-gather across all processes; result commonly has leading dim = process_count * local_device_count
                     gathered = jax.experimental.multihost_utils.process_allgather(_local)
-                    all_lengths_flat = jnp.reshape(gathered, (-1,))
+                    try:
+                        proc_cnt = max(1, int(jax.process_count()))
+                        local_dc = max(1, int(jax.local_device_count()))
+                        if gathered.shape[0] == proc_cnt * local_dc:
+                            # Reshape to (process, local_device, len) and keep one device per process to avoid TP duplication
+                            gathered = jnp.reshape(gathered, (proc_cnt, local_dc, -1))
+                            per_process = gathered[:, 0, :]
+                            all_lengths_flat = jnp.reshape(per_process, (-1,))
+                        else:
+                            all_lengths_flat = jnp.reshape(gathered, (-1,))
+                    except Exception:
+                        all_lengths_flat = jnp.reshape(gathered, (-1,))
                     _global_lengths_for_logging = all_lengths_flat
                     # Shape into (global_queries, r) for compact per-query display
                     r = max(1, int(self.num_generations))
