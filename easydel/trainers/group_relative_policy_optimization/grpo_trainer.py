@@ -672,23 +672,7 @@ class GRPOTrainer(Trainer):
                 rollout_chunk_size = int(self.num_generations)
             # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
             rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
-            # Optionally cap by TP size for stability on large TPU meshes
-            tp_size = 1
-            try:
-                mesh_shape = getattr(self.model.mesh, "shape", {})
-                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-            except Exception:
-                tp_size = 1
-            try:
-                if getattr(self.arguments, "cap_rollout_chunk_to_tp", False):
-                    if tp_size and tp_size > 0 and rollout_chunk_size > int(tp_size):
-                        rollout_chunk_size = int(tp_size)
-                        if jax.process_index() == 0:
-                            logger.warning(
-                                f"rollout_chunk_size capped to TP size ({tp_size}) due to cap_rollout_chunk_to_tp=True"
-                            )
-            except Exception:
-                pass
+            # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
 
             sequences_chunks = []
             completion_ids_chunks = []
