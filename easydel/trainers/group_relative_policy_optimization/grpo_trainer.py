@@ -873,7 +873,7 @@ class GRPOTrainer(Trainer):
                         
                         # Check for suspicious patterns (FIX: use unique_local instead of grouped)
                         if num_queries > 1 and unique_local.shape[0] > 1:
-                            as_tuples = {tuple(x) for x in unique_local}
+                            as_tuples = {tuple(jax.device_get(x)) for x in unique_local}
                             if len(as_tuples) == 1:
                                 logger.warning(
                                     "All local per-query completion length patterns are identical. "
