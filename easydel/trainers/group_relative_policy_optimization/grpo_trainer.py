@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import typing as tp
 from functools import cached_property, partial
+import inspect
 
 import flax
 import flax.nnx
