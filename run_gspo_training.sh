@@ -15,7 +15,6 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-
 # Run training with proper flags
 python easydel/scripts/finetune/numinamath_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
@@ -28,8 +27,8 @@ python easydel/scripts/finetune/numinamath_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 2 \
   --log_logprobs_metrics false \
+  --log_global true \
   --log_steps 1 \
   --save_steps 50 \
   --evaluation_steps 100 \
@@ -41,5 +40,7 @@ python easydel/scripts/finetune/numinamath_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6
+
+#   --force_data_parallel 1 \
 
 echo "Training completed!"
