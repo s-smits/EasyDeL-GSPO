@@ -498,7 +498,12 @@ class GRPOTrainer(Trainer):
             True,  # is_train
         )
 
-        static_argnames = (2, 3, 4, 5, 6, 7, 8)
+        # Derive static arg indices robustly based on grpo_step signature
+        import inspect as _inspect
+        _sig = _inspect.signature(grpo_step)
+        _max_pos_index = len(_sig.parameters) - 1  # zero-based last positional index
+        _end = min(2 + len(self._train_shared_fn_static_args), _max_pos_index + 1)
+        static_argnames = tuple(range(2, _end))
         
         sharded_training_step_function = ejit(
             grpo_step,

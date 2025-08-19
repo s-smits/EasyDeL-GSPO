@@ -14,14 +14,6 @@ uv pip install -e . --quiet
 cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
-echo "Configuration:"
-echo "  - Rollouts per step: 64 (global across all workers)"
-echo "  - Batch size: 4 per worker"
-echo "  - Data parallel: 2"
-echo "  - Tensor parallel: 4"
-echo "  - Expected num_return_sequences: 8 (will be computed)"
-echo "  - Max completion length: 1024 tokens"
-echo ""
 
 # Run training with proper flags
 python easydel/scripts/finetune/numinamath_gspo.py \
