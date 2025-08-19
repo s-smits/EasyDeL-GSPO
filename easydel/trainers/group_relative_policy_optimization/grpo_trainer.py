@@ -775,10 +775,12 @@ class GRPOTrainer(Trainer):
                                 try:
                                     if _global_lengths_for_logging is not None:
                                         all_lengths_flat = _global_lengths_for_logging
-                                        total_global_queries = num_queries * max(1, jax.process_count())
+                                        # Derive counts from actual gathered data
+                                        total_completions_global = int(all_lengths_flat.size)
+                                        r = max(1, int(self.num_generations))
+                                        total_queries_global = total_completions_global // r
                                         logger.info(
-                                            f"GLOBAL completion_token_lengths: total_queries={total_global_queries}, "
-                                            f"total_completions={int(all_lengths_flat.shape[0])}, "
+                                            f"GLOBAL completion_token_lengths: queries={total_queries_global}, rollouts_per_query={r}, "
                                             f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
                                             f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
                                         )
