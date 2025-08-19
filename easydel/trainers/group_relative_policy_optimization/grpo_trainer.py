@@ -107,6 +107,11 @@ class GRPOTrainer(Trainer):
             # No forced parallelism, use default behavior
             pass
         
+        # Store mesh plan for validation
+        self._mesh_plan = getattr(self, '_mesh_plan', None) or (
+            configure_adaptive_mesh_inplace(arguments) if arguments.force_tensor_parallel or arguments.force_data_parallel else None
+        )
+        
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
         self.processing_class = processing_class
@@ -210,6 +215,15 @@ class GRPOTrainer(Trainer):
             dataset_eval=eval_dataset,
             data_collator=None,
         )
+        
+        # Validate mesh configuration matches forced arguments
+        if hasattr(self.model.mesh, 'shape') and arguments.force_data_parallel:
+            mesh_dp = getattr(self.model.mesh.shape, 'dp', 1)
+            if mesh_dp != arguments.force_data_parallel:
+                raise ValueError(
+                    f"Mesh DP={mesh_dp} doesn't match requested DP={arguments.force_data_parallel}. "
+                    f"Check adaptive mesh configuration."
+                )
 
     @cached_property
     def pad_token_id(self):
@@ -475,8 +489,23 @@ class GRPOTrainer(Trainer):
                     use_cache=False,
                 )
                 
-                # Build PRNG key from provided seed to ensure per-chunk diversity
-                prng_key = jax.random.PRNGKey(prng_seed)
+                # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
+                def _hash_u32(ids: jnp.ndarray) -> jnp.uint32:
+                    h = jnp.uint32(2166136261)
+                    def body(hh, x):
+                        hh = jnp.uint32((hh ^ jnp.uint32(x)) * jnp.uint32(16777619))
+                        return hh, None
+                    hh, _ = jax.lax.scan(body, h, ids.astype(jnp.uint32))
+                    return hh
+
+                base_key = jax.random.PRNGKey(prng_seed)
+                try:
+                    prompt_slice = input_ids[:, : self.arguments.max_prompt_length]
+                    ph = jax.vmap(_hash_u32)(prompt_slice)
+                    prng_key = jax.random.fold_in(base_key, int(jnp.bitwise_xor.reduce(ph.astype(jnp.uint32))))
+                except Exception:
+                    prng_key = base_key
+
                 sequences = module.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -604,125 +633,29 @@ class GRPOTrainer(Trainer):
         total_count = int(flat_np.size)
 
         if jax.process_index() == 0 and unique_count < total_count:
-            logger.error(
+            raise RuntimeError(
                 f"CRITICAL: Dataset sharding failure detected! "
                 f"Only {unique_count}/{total_count} unique prompts across {jax.process_count()} processes. "
                 f"This means processes are duplicating work. Check dataset sharding configuration."
             )
 
-    def _gather_deduplicated(self, array: jax.Array) -> jnp.ndarray | None:
-        """Gather array across processes, properly handling sharded arrays."""
-        try:
-            # Step 1: Gather ALL local shards to reconstruct the full local array
-            if hasattr(array, 'addressable_shards') and len(array.addressable_shards) > 0:
-                # Get all local shards
-                local_shards = []
-                for shard in array.addressable_shards:
-                    local_shards.append(jax.device_get(shard.data))
-                
-                # Determine how to concatenate based on the array's sharding
-                # For most cases with batch sharding, shards are split along axis 0
-                if len(local_shards) > 1:
-                    # Try to infer the concatenation axis from shard shapes
-                    # Usually for batch-sharded data, we concatenate along axis 0
-                    try:
-                        # Attempt concatenation along axis 0 (batch dimension)
-                        local_full = jnp.concatenate(local_shards, axis=0)
-                    except Exception:
-                        # If that fails, try flattening and concatenating
-                        local_full = jnp.concatenate([s.flatten() for s in local_shards])
-                else:
-                    local_full = local_shards[0]
-            else:
-                # Non-sharded or fully replicated array
-                local_full = jax.device_get(array)
-            
-            # Step 2: Gather across processes
-            gathered = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local_full))
-            
-            # Step 3: Handle the gathered shape
-            # With TP, the gathering might include duplicates from tensor parallel replicas
-            # The gathered shape should be (num_processes * local_size)
-            # No need for complex reshaping - just return the flattened gathered array
-            return gathered.reshape(-1) if gathered.ndim > 1 else gathered
-            
-        except Exception as e:
-            logger.debug(f"Failed to gather array: {e}")
-            return None
+    @staticmethod
+    def _to_local_flat(x: jax.Array) -> jnp.ndarray:
+        """Reconstruct full local array from all shards."""
+        if hasattr(x, 'addressable_shards') and x.addressable_shards:
+            parts = [jax.device_get(s.data) for s in x.addressable_shards]
+            return jnp.concatenate([p.flatten() for p in parts])
+        return jax.device_get(x).flatten()
 
-    def _gather_completion_lengths_global(self, completion_lengths_per_seq: jax.Array) -> tuple[jnp.ndarray | None, jnp.ndarray | None]:
-        """
-        Gather completion lengths across all processes for global logging.
-        Returns both the flat array and the reshaped per-query array.
-        """
-        try:
-            # Gather all local shards first
-            if hasattr(completion_lengths_per_seq, 'addressable_shards') and len(completion_lengths_per_seq.addressable_shards) > 0:
-                local_shards = []
-                for shard in completion_lengths_per_seq.addressable_shards:
-                    local_shards.append(jax.device_get(shard.data))
-                
-                # Concatenate local shards - for completion lengths, this is a 1D array
-                if len(local_shards) > 1:
-                    local_full = jnp.concatenate(local_shards, axis=0)
-                else:
-                    local_full = local_shards[0]
-            else:
-                local_full = jax.device_get(completion_lengths_per_seq)
-            
-            # Ensure it's 1D
-            local_full = local_full.flatten()
-            
-            # Gather across all processes
-            global_flat = jax.experimental.multihost_utils.process_allgather(local_full)
-            
-            # Reshape to (total_queries_global, num_return_sequences)
-            r = int(self.num_generations)
-            total_elements = int(global_flat.size)
-            
-            # With TP, we might have duplicates. Try to detect and handle them.
-            # If TP > 1, each TP replica has the same data, so we need to deduplicate
-            try:
-                tp_size = getattr(self.model.mesh.shape, 'tp', 1) if hasattr(self.model.mesh, 'shape') else 1
-                if tp_size > 1:
-                    # Reshape to (num_processes, elements_per_process) 
-                    # then take every tp_size'th process to deduplicate
-                    num_procs = jax.process_count()
-                    elements_per_proc = total_elements // num_procs
-                    reshaped = global_flat.reshape(num_procs, elements_per_proc)
-                    
-                    # Take one representative from each TP group
-                    # Assuming processes are ordered as [tp0_dp0, tp1_dp0, ..., tp0_dp1, tp1_dp1, ...]
-                    dp_size = num_procs // tp_size
-                    dedup_indices = [i * tp_size for i in range(dp_size)]
-                    global_dedup = reshaped[dedup_indices].flatten()
-                    
-                    # Now reshape to per-query format
-                    total_queries = global_dedup.size // r
-                    if total_queries * r == global_dedup.size:
-                        global_shaped = global_dedup[:total_queries * r].reshape(total_queries, r)
-                    else:
-                        global_shaped = None
-                else:
-                    # No TP, just reshape directly
-                    total_queries = total_elements // r
-                    if total_queries * r == total_elements:
-                        global_shaped = global_flat[:total_queries * r].reshape(total_queries, r)
-                    else:
-                        global_shaped = None
-            except Exception:
-                # Fallback: just try direct reshape
-                total_queries = total_elements // r
-                if total_queries * r == total_elements:
-                    global_shaped = global_flat[:total_queries * r].reshape(total_queries, r)
-                else:
-                    global_shaped = None
-            
-            return global_flat, global_shaped
-            
-        except Exception as e:
-            logger.debug(f"Failed to gather completion lengths globally: {e}")
-            return None, None
+    @staticmethod
+    def _gather_unique_rows(x: jax.Array, row_size: int) -> jnp.ndarray:
+        """Gather array across processes and deduplicate by row content."""
+        local_flat = GRPOTrainer._to_local_flat(x)
+        local_rows = local_flat.reshape(-1, row_size)
+        gathered = jax.experimental.multihost_utils.process_allgather(local_rows)
+        all_rows = gathered.reshape(-1, row_size)
+        unique_rows, idx = np.unique(np.asarray(jax.device_get(all_rows)), axis=0, return_index=True)
+        return jnp.asarray(unique_rows[np.argsort(idx)])
 
 
     def _preprocess_batch_input(
@@ -860,11 +793,19 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Global gathering for logging (if enabled)
+            # Global gathering for logging (if enabled) with TP dedupe by row-content
             _global_lengths_flat = None
             _global_lengths_shaped = None
             if getattr(self.arguments, "log_global", False):
-                _global_lengths_flat, _global_lengths_shaped = self._gather_completion_lengths_global(completion_lengths_per_seq)
+                try:
+                    r = int(self.num_generations)
+                    unique_rows = self._gather_unique_rows(completion_lengths_per_seq, r)
+                    _global_lengths_shaped = unique_rows
+                    _global_lengths_flat = jnp.ravel(_global_lengths_shaped)
+                except Exception as e:
+                    logger.debug(f"Failed to gather unique completion lengths: {e}")
+                    _global_lengths_flat = None
+                    _global_lengths_shaped = None
 
             # Host-side diagnostic: print per-rollout completion token lengths
             if jax.process_index() == 0:
@@ -920,14 +861,8 @@ class GRPOTrainer(Trainer):
                                 try:
                                     all_lengths_flat = _global_lengths_flat
                                     total_completions_global = int(all_lengths_flat.size)
-                                    
-                                    # Account for TP deduplication in the gathered data
-                                    if tp_sz > 1:
-                                        # If TP > 1, we've deduplicated so the actual global count is correct
-                                        effective_global_queries = total_completions_global // r
-                                    else:
-                                        # No TP, so global count is straightforward
-                                        effective_global_queries = total_completions_global // r
+                                    # Compute unique queries from shaped array directly
+                                    effective_global_queries = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else (total_completions_global // r)
                                     
                                     logger.info(
                                         f"GLOBAL completion_token_lengths: queries={effective_global_queries}, rollouts_per_query={r}, "
@@ -1040,8 +975,12 @@ class GRPOTrainer(Trainer):
             grouped_comp_time = grouped_comp_time_fn()
             # Optionally aggregate rewards across processes to get true global means per step
             if jax.process_count() > 1:
-                gathered_rewards = self._gather_deduplicated(rewards_per_func)
-                global_rewards_per_func = gathered_rewards.reshape(-1, rewards_per_func.shape[-1]) if gathered_rewards is not None else rewards_per_func
+                try:
+                    # Use the proper gathering method for rewards
+                    gathered_rewards = self._gather_unique_rows(rewards_per_func, rewards_per_func.shape[-1])
+                    global_rewards_per_func = gathered_rewards
+                except Exception:
+                    global_rewards_per_func = rewards_per_func
             else:
                 global_rewards_per_func = rewards_per_func
             # Also compute global mean for the sum-of-rewards metric
@@ -1077,11 +1016,12 @@ class GRPOTrainer(Trainer):
                 # Global pass@k via proper gathering
                 try:
                     if jax.process_count() > 1:
-                        gathered_per_prompt = self._gather_deduplicated(per_prompt_success.astype(jnp.float32))
-                        if gathered_per_prompt is not None:
+                        try:
+                            # Gather per-prompt success using the new method
+                            gathered_per_prompt = self._gather_unique_rows(per_prompt_success.astype(jnp.float32).reshape(-1, 1), 1)
                             pass_prompt_count_global = jnp.sum(gathered_per_prompt)
                             num_prompts_global = gathered_per_prompt.size
-                        else:
+                        except Exception:
                             g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
                             g_prompts = jax.experimental.multihost_utils.process_allgather(
                                 jnp.array(float(num_prompts_local), dtype=jnp.float32)

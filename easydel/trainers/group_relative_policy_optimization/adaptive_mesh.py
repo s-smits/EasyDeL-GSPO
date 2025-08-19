@@ -203,6 +203,31 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     
     validate_mesh_config(plan.dp, plan.fsdp, plan.tp, num_devices, total_batch_size)
 
+    # If the user forced DP larger than process_count but we don't implement intra-process DP sub-shards here,
+    # cap DP to process_count and recompute plan to avoid duplicated prompts.
+    try:
+        procs = jax.process_count()
+    except Exception:
+        procs = 1
+    if force_data_parallel and int(plan.dp) > int(procs):
+        logger.warning(
+            f"Requested DP={force_data_parallel} exceeds process_count={procs}; reducing DP to {procs}."
+        )
+        plan = plan_adaptive_mesh(
+            total_batch_size=total_batch_size,
+            num_return_sequences=num_return_sequences,
+            num_devices=num_devices,
+            force_tensor_parallel=force_tensor_parallel,
+            force_data_parallel=procs,
+            rollouts_per_step=rollouts_per_step,
+        )
+        # Update arguments with recomputed specs
+        setattr(arguments, "step_partition_spec", plan.step_partition_spec)
+        setattr(arguments, "input_partition_spec", plan.input_partition_spec)
+        setattr(arguments, "mesh_dims", (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp))
+        if hasattr(arguments, "sharding_axis_dims"):
+            setattr(arguments, "sharding_axis_dims", (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp))
+
     # Dataset sharding configuration
     # With TP, all TP replicas must see the same data
     # Only DP workers should have different data shards
