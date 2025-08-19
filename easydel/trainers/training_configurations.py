@@ -246,7 +246,7 @@ class TrainingArguments:
         metadata={"help": "Whether to log logprobs metrics."},
     )
     verify_dataset_sharding: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": "If True, perform a one-time cross-process verification on step 0 to detect duplicate prompts across DP workers."
         },

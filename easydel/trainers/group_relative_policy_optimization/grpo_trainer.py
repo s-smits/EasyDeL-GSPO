@@ -590,6 +590,49 @@ class GRPOTrainer(Trainer):
             )[:, None]
         ).astype(jnp.int32)
 
+    def _verify_prompt_uniqueness(self, prompts: list[str]) -> None:
+        """Verify that prompts are unique across processes to detect sharding issues."""
+        import hashlib
+        # Use full hash for better collision resistance
+        local_hashes = jnp.array([
+            int(hashlib.sha256(p.encode('utf-8')).hexdigest(), 16) % (2**63)
+            for p in prompts
+        ], dtype=jnp.int64)
+        
+        gathered = jax.experimental.multihost_utils.process_allgather(local_hashes)
+        # Simple deduplication: take first device per process
+        gathered = gathered.reshape(jax.process_count(), -1)[:, :len(prompts)].flatten()
+        
+        unique_count = len(jnp.unique(gathered))
+        total_count = len(gathered)
+        
+        if jax.process_index() == 0 and unique_count < total_count:
+            logger.error(
+                f"CRITICAL: Dataset sharding failure detected! "
+                f"Only {unique_count}/{total_count} unique prompts across {jax.process_count()} processes. "
+                f"This means processes are duplicating work. Check dataset sharding configuration."
+            )
+
+    def _gather_deduplicated(self, array: jax.Array) -> jnp.ndarray | None:
+        """Gather array across processes, deduplicating TP replicas."""
+        try:
+            # Get first shard to avoid TP duplication
+            if hasattr(array, 'addressable_shards'):
+                local = jax.device_get(array.addressable_shards[0].data)
+            else:
+                local = jax.device_get(array)
+            
+            gathered = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local).flatten())
+            
+            # Deduplicate: reshape to (processes, devices_per_process, data) and take first device
+            shape = (jax.process_count(), jax.local_device_count(), -1)
+            if gathered.size == np.prod(shape[:2]) * (gathered.size // np.prod(shape[:2])):
+                return gathered.reshape(shape)[:, 0, :].flatten()
+            return gathered.flatten()
+        except Exception as e:
+            logger.debug(f"Failed to gather array: {e}")
+            return None
+
 
     def _preprocess_batch_input(
         self,
@@ -608,6 +651,11 @@ class GRPOTrainer(Trainer):
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
             
+            # Verify sharding early to avoid wasted computation
+            if getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0:
+                prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                self._verify_prompt_uniqueness(prompts)
+
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
             # Default to generating all num_return_sequences at once when not set
@@ -725,7 +773,8 @@ class GRPOTrainer(Trainer):
                 completion_mask = _reorder_from_chunks(completion_mask_chunks)
                 ref_per_token_logps = _reorder_from_chunks(ref_logps_chunks)
                 completion_lengths_per_seq = _reorder_from_chunks(comp_len_chunks)
-            prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+            if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
+                prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
@@ -734,85 +783,18 @@ class GRPOTrainer(Trainer):
             else:
                 completions = completions_text
 
-            # One-time cross-process prompt duplication verification (first step only)
-            try:
-                if getattr(self.arguments, "verify_dataset_sharding", False):
-                    try:
-                        cur_step_check = int(jax.device_get(state.step))
-                    except Exception:
-                        cur_step_check = 0
-                    if cur_step_check == 0:
-                        # Hash prompts locally; avoid huge strings in allgather
-                        import hashlib
-                        def _h(s):
-                            try:
-                                return int(hashlib.sha1(s.encode('utf-8', 'ignore')).hexdigest()[:16], 16)
-                            except Exception:
-                                return 0
-                        local_hashes = jnp.asarray([_h(p) for p in prompts], dtype=jnp.int64)
-                        gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes)
-                        try:
-                            proc_cnt = max(1, int(jax.process_count()))
-                            local_dc = max(1, int(jax.local_device_count()))
-                            if gathered_hashes.shape[0] == proc_cnt * local_dc:
-                                gathered_hashes = jnp.reshape(gathered_hashes, (proc_cnt, local_dc, -1))
-                                per_process_hashes = gathered_hashes[:, 0, :]
-                                flat_hashes = jnp.reshape(per_process_hashes, (-1,))
-                            else:
-                                flat_hashes = jnp.reshape(gathered_hashes, (-1,))
-                        except Exception:
-                            flat_hashes = jnp.reshape(gathered_hashes, (-1,))
-                        # Count uniques; if duplicates exist across processes, warn loudly from proc 0
-                        try:
-                            uniq = jnp.unique(flat_hashes)
-                            if jax.process_index() == 0 and uniq.size < flat_hashes.size:
-                                logger.error(
-                                    f"CRITICAL: Duplicate prompts detected across processes on step 0: unique={int(uniq.size)} "
-                                    f"out of total={int(flat_hashes.size)}. Check dataset sharding/seeding."
-                                )
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
             # Optional: all-gather for logging across processes (disabled by default)
             _global_lengths_for_logging = None
             _global_lengths_shaped = None
             if getattr(self.arguments, "log_global", False):
-                try:
-                    # Build a de-duplicated local vector by reading one shard (avoids TP replication)
-                    shards = getattr(completion_lengths_per_seq, "addressable_shards", None)
-                    if shards and len(shards) > 0:
-                        _local = jnp.asarray(jax.device_get(shards[0].data).reshape(-1), dtype=jnp.int32)
-                    else:
-                        _local = jnp.asarray(jax.device_get(completion_lengths_per_seq).reshape(-1), dtype=jnp.int32)
-                    # All-gather across all processes; result commonly has leading dim = process_count * local_device_count
-                    gathered = jax.experimental.multihost_utils.process_allgather(_local)
-                    try:
-                        proc_cnt = max(1, int(jax.process_count()))
-                        local_dc = max(1, int(jax.local_device_count()))
-                        if gathered.shape[0] == proc_cnt * local_dc:
-                            # Reshape to (process, local_device, len) and keep one device per process to avoid TP duplication
-                            gathered = jnp.reshape(gathered, (proc_cnt, local_dc, -1))
-                            per_process = gathered[:, 0, :]
-                            all_lengths_flat = jnp.reshape(per_process, (-1,))
-                        else:
-                            all_lengths_flat = jnp.reshape(gathered, (-1,))
-                    except Exception:
-                        all_lengths_flat = jnp.reshape(gathered, (-1,))
-                    _global_lengths_for_logging = all_lengths_flat
-                    # Shape into (global_queries, r) for compact per-query display
-                    r = max(1, int(self.num_generations))
-                    total_completions_global = int(all_lengths_flat.size)
-                    total_queries_global = max(1, total_completions_global // r)
-                    try:
-                        _global_lengths_shaped = jnp.reshape(all_lengths_flat[: total_queries_global * r], (total_queries_global, r))
-                    except Exception:
-                        _global_lengths_shaped = None
-                except Exception:
-                    _global_lengths_for_logging = None
+                _global_lengths_for_logging = self._gather_deduplicated(completion_lengths_per_seq)
+                if _global_lengths_for_logging is not None:
+                    r = int(self.num_generations)
+                    total_queries = _global_lengths_for_logging.size // r
+                    _global_lengths_shaped = _global_lengths_for_logging[:total_queries * r].reshape(total_queries, r)
+                else:
                     _global_lengths_shaped = None
 
             # Host-side diagnostic: print per-rollout completion token lengths (process 0 prints)
@@ -989,32 +971,11 @@ class GRPOTrainer(Trainer):
                 advantages = normalized.reshape(-1)
             grouped_comp_time = grouped_comp_time_fn()
             # Optionally aggregate rewards across processes to get true global means per step
-            global_rewards_per_func = rewards_per_func
-            try:
-                if jax.process_count() > 1:
-                    # Deduplicate TP by reading a single local shard to host before allgather
-                    try:
-                        shards = rewards_per_func.addressable_shards  # type: ignore[attr-defined]
-                        if shards and len(shards) > 0:
-                            local_rewards = jnp.asarray(jax.device_get(shards[0].data))
-                        else:
-                            local_rewards = jnp.asarray(jax.device_get(rewards_per_func))
-                    except Exception:
-                        local_rewards = jnp.asarray(jax.device_get(rewards_per_func))
-                    gathered = jax.experimental.multihost_utils.process_allgather(local_rewards)
-                    try:
-                        proc_cnt = max(1, int(jax.process_count()))
-                        local_dc = max(1, int(jax.local_device_count()))
-                        if gathered.shape[0] == proc_cnt * local_dc:
-                            gathered = jnp.reshape(gathered, (proc_cnt, local_dc) + tuple(local_rewards.shape))
-                            per_process = gathered[:, 0, ...]
-                            global_rewards_per_func = jnp.reshape(per_process, (-1, rewards_per_func.shape[-1]))
-                        else:
-                            global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
-                    except Exception:
-                        global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
-            except Exception as e:
-                logger.warning(f"Global reward aggregation failed; using local metrics. Error: {e}")
+            if jax.process_count() > 1:
+                gathered_rewards = self._gather_deduplicated(rewards_per_func)
+                global_rewards_per_func = gathered_rewards.reshape(-1, rewards_per_func.shape[-1]) if gathered_rewards is not None else rewards_per_func
+            else:
+                global_rewards_per_func = rewards_per_func
             # Also compute global mean for the sum-of-rewards metric
             try:
                 global_rewards_sum = jnp.sum(global_rewards_per_func, axis=1)
@@ -1215,9 +1176,6 @@ class GRPOTrainer(Trainer):
                     else:
                         global_mean = jnp.mean(rewards_per_func[:, i])
                         global_std = jnp.std(rewards_per_func[:, i])
-                except Exception:
-                    global_mean = jnp.mean(rewards_per_func[:, i])
-                    global_std = jnp.std(rewards_per_func[:, i])
                 
                 # TRL-compatible reward function metrics
                 metrics_dict[f"rewards/{_name}/mean"] = global_mean
