@@ -1204,6 +1204,9 @@ class GRPOTrainer(Trainer):
                 # TRL-compatible reward function metrics
                 metrics_dict[f"rewards/{_name}/mean"] = global_mean
                 metrics_dict[f"rewards/{_name}/std"] = global_std
+                # Flat names for dashboards (e.g., "gsm8k/accuracy", "math/format_rate")
+                # Duplicate for convenience alongside the TRL-style names
+                metrics_dict[_name] = global_mean
                 
                 # Additional granularity metrics for debugging
                 local_mean = jnp.mean(rewards_per_func[:, i])
@@ -1326,6 +1329,17 @@ class GRPOTrainer(Trainer):
                     for k in immediate_keys
                     if k in processed_metrics_dict and isinstance(processed_metrics_dict[k], (int, float))
                 }
+                # Also log dataset-specific per-reward metrics if provided (e.g., gsm8k/accuracy, math/format_rate)
+                try:
+                    for rf in self.reward_funcs:
+                        _nm = getattr(rf, "__name__", None)
+                        if not _nm:
+                            continue
+                        val = processed_metrics_dict.get(_nm, None)
+                        if isinstance(val, (int, float)):
+                            to_log[f"train/{_nm}"] = float(val)
+                except Exception:
+                    pass
                 if len(to_log) > 0:
                     wandb.log(to_log, step=cur_step)
         except Exception:

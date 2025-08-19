@@ -9,21 +9,26 @@ export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
 echo "Setting up environment..."
 git pull origin main 2>/dev/null || true
 uv pip install -e . --quiet
+uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
 # Navigate to project directory
 cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-# Run training with proper flags
-python easydel/scripts/finetune/numinamath_gspo.py \
+# Run simplified GSPO training focused on GSM8K or MATH. Choose dataset via DATASET env var.
+# Example: DATASET=math ./run_gspo_training.sh
+DATASET=${DATASET:-gsm8k}
+
+python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
+  --dataset $DATASET \
   --total_batch_size 4 \
   --num_return_sequences 8 \
   --rollout_chunk_size 8 \
   --num_train_epochs 1 \
   --max_prompt_length 512 \
-  --max_completion_length 2560 \
+  --max_completion_length 1024 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
