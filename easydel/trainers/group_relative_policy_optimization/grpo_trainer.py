@@ -845,40 +845,40 @@ class GRPOTrainer(Trainer):
                         for qi, arr in enumerate(unique_local):
                             logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {[int(x) for x in arr]}")
                         
-                        # Log global statistics if enabled
-                            if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
-                                try:
-                                    all_lengths_flat = _global_lengths_flat
-                                    total_completions_global = int(all_lengths_flat.size)
-                                    # Compute unique queries from shaped array directly
-                                    effective_global_queries = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else (total_completions_global // r)
+                        # Log global statistics if enabled (FIX: unindent this block)
+                        if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
+                            try:
+                                all_lengths_flat = _global_lengths_flat
+                                total_completions_global = int(all_lengths_flat.size)
+                                # Compute unique queries from shaped array directly
+                                effective_global_queries = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else (total_completions_global // r)
+                                
+                                logger.info(
+                                    f"GLOBAL completion_token_lengths: queries={effective_global_queries}, rollouts_per_query={r}, "
+                                    f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
+                                    f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
+                                )
+                                
+                                # Per-query global breakdown
+                                if _global_lengths_shaped is not None:
+                                    max_queries_to_print = min(32, int(_global_lengths_shaped.shape[0]))  # Increased from 16
+                                    for qi in range(max_queries_to_print):
+                                        arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
+                                        logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
                                     
-                                    logger.info(
-                                        f"GLOBAL completion_token_lengths: queries={effective_global_queries}, rollouts_per_query={r}, "
-                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
-                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
-                                    )
-                                    
-                                    # Per-query global breakdown
-                                    if _global_lengths_shaped is not None:
-                                        max_queries_to_print = min(32, int(_global_lengths_shaped.shape[0]))  # Increased from 16
-                                        for qi in range(max_queries_to_print):
-                                            arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
-                                            logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
-                                        
-                                        if _global_lengths_shaped.shape[0] > max_queries_to_print:
-                                            logger.info(f"... ({_global_lengths_shaped.shape[0] - max_queries_to_print} more queries not shown)")
-                                except Exception as e:
-                                    logger.debug(f"Failed to log global statistics: {e}")
-                            
-                            # Check for suspicious patterns
-                            if num_queries > 1:
-                                as_tuples = {tuple(x) for x in grouped}
-                                if len(as_tuples) == 1:
-                                    logger.warning(
-                                        "All local per-query completion length patterns are identical. "
-                                        "This may indicate duplicated prompts or identical RNG streams."
-                                    )
+                                    if _global_lengths_shaped.shape[0] > max_queries_to_print:
+                                        logger.info(f"... ({_global_lengths_shaped.shape[0] - max_queries_to_print} more queries not shown)")
+                            except Exception as e:
+                                logger.debug(f"Failed to log global statistics: {e}")
+                        
+                        # Check for suspicious patterns (FIX: use unique_local instead of grouped)
+                        if num_queries > 1 and unique_local.shape[0] > 1:
+                            as_tuples = {tuple(x) for x in unique_local}
+                            if len(as_tuples) == 1:
+                                logger.warning(
+                                    "All local per-query completion length patterns are identical. "
+                                    "This may indicate duplicated prompts or identical RNG streams."
+                                )
                         
                 except Exception as e:
                     logger.warning(f"Failed to print completion lengths: {e}")
