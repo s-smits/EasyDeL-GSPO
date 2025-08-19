@@ -43,12 +43,31 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     - Compare last number with ground truth from decoded answer_ids.
     """
     # Ground truths are provided directly as strings in batch["answer"]
-    gt_list: List[str] = batch.get("answer", [])
-    if isinstance(gt_list, str):
-        gt_list = [gt_list]
+    gt_raw = batch.get("answer", [])
+    # Normalize container to Python list of strings
+    if isinstance(gt_raw, list):
+        gts = gt_raw
+    else:
+        try:
+            import numpy as np  # type: ignore
+            if isinstance(gt_raw, np.ndarray):
+                gts = gt_raw.tolist()
+            else:
+                gts = [gt_raw] if gt_raw is not None else []
+        except Exception:
+            gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
     # Replicate to match completions length (B * R)
-    repeat = (len(completions) // len(gt_list)) if gt_list else 1
-    gt_list = gt_list * max(1, repeat)
+    target = len(completions)
+    if len(gts) == 0:
+        gt_list: List[str] = [""] * target
+    elif len(gts) == target:
+        gt_list = gts
+    elif target % len(gts) == 0:
+        factor = target // len(gts)
+        gt_list = [x for x in gts for _ in range(factor)]
+    else:
+        times = (target + len(gts) - 1) // len(gts)
+        gt_list = (gts * times)[:target]
 
     rewards: List[float] = []
     for comp, gt in zip(completions, gt_list, strict=False):
