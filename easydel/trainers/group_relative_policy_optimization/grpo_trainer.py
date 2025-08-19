@@ -436,11 +436,11 @@ class GRPOTrainer(Trainer):
         )
         
         @ejit(
-            in_shardings=(self.state_shardings, input_sharding, input_sharding),
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
-        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int):
+        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
             module = state.model
 
             with module.mesh:
@@ -468,10 +468,13 @@ class GRPOTrainer(Trainer):
                     use_cache=False,
                 )
                 
+                # Build PRNG key from provided seed to ensure per-chunk diversity
+                prng_key = jax.random.PRNGKey(prng_seed)
                 sequences = module.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     generation_config=generation_config,
+                    prng_key=prng_key,
                 ).sequences
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
@@ -605,11 +608,19 @@ class GRPOTrainer(Trainer):
 
             base_prompt_len = prompt_ids.shape[-1]
             nrs_remaining = int(self.num_generations)
+            # Create a simple per-step base seed; fold in process index via the seed formula
+            try:
+                cur_step_int = int(jax.device_get(state.step))
+            except Exception:
+                cur_step_int = 0
+            chunk_idx = 0
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
+                    # Use a simple per-chunk seed; avoids JIT recompiles and ensures diversity across chunks
+                    per_chunk_seed = int(cur_step_int * 131071 + 4099 * jax.process_index() + chunk_idx)
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
-                        self.generate_function(state, prompt_ids, prompt_mask, cur_nrs)
+                        self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
                     )
                 # Debug output removed to prevent host divergence in compiled code
                 generation_time += float(generation_time_fn())
@@ -643,6 +654,7 @@ class GRPOTrainer(Trainer):
                 cur_nrs_chunks.append(cur_nrs)
 
                 nrs_remaining -= cur_nrs
+                chunk_idx += 1
 
             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
             if len(sequences_chunks) == 1:
