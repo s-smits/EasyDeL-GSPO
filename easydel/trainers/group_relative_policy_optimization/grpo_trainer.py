@@ -615,7 +615,23 @@ class GRPOTrainer(Trainer):
                 rollout_chunk_size = int(self.num_generations)
             # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
             rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
-            # TP does not constrain batch item count for PagedAttention KV caching; no TP ceiling
+            # Optionally cap by TP size for stability on large TPU meshes
+            tp_size = 1
+            try:
+                mesh_shape = getattr(self.model.mesh, "shape", {})
+                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+            except Exception:
+                tp_size = 1
+            try:
+                if getattr(self.arguments, "cap_rollout_chunk_to_tp", False):
+                    if tp_size and tp_size > 0 and rollout_chunk_size > int(tp_size):
+                        rollout_chunk_size = int(tp_size)
+                        if jax.process_index() == 0:
+                            logger.warning(
+                                f"rollout_chunk_size capped to TP size ({tp_size}) due to cap_rollout_chunk_to_tp=True"
+                            )
+            except Exception:
+                pass
 
             sequences_chunks = []
             completion_ids_chunks = []
@@ -935,11 +951,28 @@ class GRPOTrainer(Trainer):
             global_rewards_per_func = rewards_per_func
             try:
                 if jax.process_count() > 1:
-                    gathered = jax.experimental.multihost_utils.process_allgather(rewards_per_func)
-                    # Flatten leading gather dimension
-                    global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
+                    # Deduplicate TP by reading a single local shard to host before allgather
+                    try:
+                        shards = rewards_per_func.addressable_shards  # type: ignore[attr-defined]
+                        if shards and len(shards) > 0:
+                            local_rewards = jnp.asarray(jax.device_get(shards[0].data))
+                        else:
+                            local_rewards = jnp.asarray(jax.device_get(rewards_per_func))
+                    except Exception:
+                        local_rewards = jnp.asarray(jax.device_get(rewards_per_func))
+                    gathered = jax.experimental.multihost_utils.process_allgather(local_rewards)
+                    try:
+                        proc_cnt = max(1, int(jax.process_count()))
+                        local_dc = max(1, int(jax.local_device_count()))
+                        if gathered.shape[0] == proc_cnt * local_dc:
+                            gathered = jnp.reshape(gathered, (proc_cnt, local_dc) + tuple(local_rewards.shape))
+                            per_process = gathered[:, 0, ...]
+                            global_rewards_per_func = jnp.reshape(per_process, (-1, rewards_per_func.shape[-1]))
+                        else:
+                            global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
+                    except Exception:
+                        global_rewards_per_func = jnp.reshape(gathered, (-1, rewards_per_func.shape[-1]))
             except Exception as e:
-                # Non-fatal; fall back to local metrics
                 logger.warning(f"Global reward aggregation failed; using local metrics. Error: {e}")
             # Also compute global mean for the sum-of-rewards metric
             try:
@@ -976,8 +1009,17 @@ class GRPOTrainer(Trainer):
                 num_prompts_global = jnp.array(float(num_prompts_local))
                 try:
                     if jax.process_count() > 1:
+                        # Gather scalars uniformly; they are host values, no TP duplication expected
                         g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
                         g_prompts = jax.experimental.multihost_utils.process_allgather(jnp.array(float(num_prompts_local), dtype=jnp.float32))
+                        try:
+                            proc_cnt = max(1, int(jax.process_count()))
+                            local_dc = max(1, int(jax.local_device_count()))
+                            if g_pass.shape[0] == proc_cnt * local_dc:
+                                g_pass = jnp.reshape(g_pass, (proc_cnt, local_dc))[:, 0]
+                                g_prompts = jnp.reshape(g_prompts, (proc_cnt, local_dc))[:, 0]
+                        except Exception:
+                            pass
                         pass_prompt_count_global = jnp.sum(g_pass)
                         num_prompts_global = jnp.sum(g_prompts)
                 except Exception:
@@ -1059,6 +1101,8 @@ class GRPOTrainer(Trainer):
         except Exception:
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
+        # Use effective DP for global denominators and rollouts accounting
+        derived_global_rollouts = float(dp_size * num_prompts_local * self.num_generations)
         metrics_dict = {
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/denominator/completions_local": float(num_completions_local),
@@ -1090,10 +1134,10 @@ class GRPOTrainer(Trainer):
             "rollouts/total_global": float(num_completions_local * dp_size),
             "rollouts/queries_per_process": float(num_prompts_local),
             "rollouts/queries_global": float(num_prompts_local * dp_size),
-            "rollouts/derived_global_rollouts_per_step": float(getattr(self.arguments, "rollouts_per_step", num_completions_local * dp_size)),
+            "rollouts/derived_global_rollouts_per_step": derived_global_rollouts,
             "rollouts/chunk_size": float(rollout_chunk_size),
-            "rollouts/tp_size": float(locals().get('tp_size', 1) or 1),
-            "rollouts/auto_one_per_tp": float(1.0 if ((locals().get('tp_size', 1) or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
+            "rollouts/tp_size": float(tp_size or 1),
+            "rollouts/auto_one_per_tp": float(1.0 if ((tp_size or 1) > 1 and getattr(self.arguments, "rollout_chunk_size", None) in (None, 0)) else 0.0),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
