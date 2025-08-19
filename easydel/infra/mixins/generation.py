@@ -1335,8 +1335,12 @@ class EasyGenerationMixin:
             logits = model_outputs.logits[:, -1]
             logits = logits_processor(state.sequences, logits, state.cur_len)
             logits = logits_warper(logits, logits, state.cur_len)
+            # Use per-row RNG keys to ensure duplicate rows (e.g., expanded for num_return_sequences)
+            # sample independently within a single generate() call.
+            row_keys = jax.random.split(prng_key, logits.shape[0])
             next_token = (
-                jax.random.categorical(prng_key, logits, axis=-1) * ~state.is_sent_finished
+                jax.vmap(lambda k, row_logits: jax.random.categorical(k, row_logits, axis=-1))(row_keys, logits)
+                * ~state.is_sent_finished
                 + pad_token_id * state.is_sent_finished
             )
             next_is_sent_finished = state.is_sent_finished | jnp.isin(

@@ -421,6 +421,10 @@ class TrainingArguments:
         default=None,
         metadata={"help": "The Weights & Biases entity."},
     )
+    wandb_project: str | None = field(
+        default=None,
+        metadata={"help": "Optional Weights & Biases project name. If unset, defaults to EasyDeL-<trainer_prefix>-<model_name>."},
+    )
     wandb_name: str | None = field(
         default=None,
         metadata={"help": "The Weights & Biases run name."},
@@ -740,8 +744,10 @@ class TrainingArguments:
                 _time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 wandb_name = f"{self.model_name.lower()}-{_time}"
 
+            project_name = self.wandb_project or f"EasyDeL{prefix}-{self.model_name}"
+
             return wandb.init(
-                project=f"EasyDeL{prefix}-{self.model_name}",
+                project=project_name,
                 config=self.to_dict(),
                 save_code=True,
                 name=wandb_name,

@@ -1391,11 +1391,20 @@ class BaseTrainer(BaseTrainerProtocol):
             update_size = 0 if step == 0 else self.arguments.log_steps
             pbar.update(update_size)
         if step % self.arguments.report_steps == 0 and self.arguments.can_log_metrics:
-            # Minimal logging path; strip distribution diagnostics by default when disabled
+            # Minimal logging path; when log_logprobs_metrics is False, drop any logprob diagnostics
+            # We filter keys that are distribution/logprob heavy by prefix convention
             if getattr(self.arguments, "log_logprobs_metrics", True):
                 self.arguments.log_metrics(metrics=metrics, step=step)
             else:
-                filtered = {k: v for k, v in metrics.items() if not (k.startswith("dist/") or 
-                                                                     k.startswith("train/dist/") or 
-                                                                     k.startswith("eval/dist/"))}
+                filtered = {
+                    k: v
+                    for k, v in metrics.items()
+                    if not (
+                        k.startswith("dist/")
+                        or k.startswith("train/dist/")
+                        or k.startswith("eval/dist/")
+                        or "logprob" in k.lower()
+                        or "logp" in k.lower()
+                    )
+                }
                 self.arguments.log_metrics(metrics=filtered, step=step)

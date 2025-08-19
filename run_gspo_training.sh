@@ -30,7 +30,7 @@ python easydel/scripts/finetune/numinamath_gspo.py \
   --num_return_sequences 8 \
   --num_train_epochs 1 \
   --max_prompt_length 512 \
-  --max_completion_length 1024 \
+  --max_completion_length 3072 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \

@@ -201,7 +201,10 @@ class GRPOTrainer(Trainer):
             )
         log_table = None
         if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
-            log_table = wandb.Table(columns=["generations", "took", "length", "step"])
+            try:
+                log_table = wandb.Table(columns=["generations", "took", "length", "step"])
+            except Exception:
+                log_table = None
         else:
             log_table = None
         self.log_table = log_table
@@ -588,14 +591,11 @@ class GRPOTrainer(Trainer):
             
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
+            # Default to generating all num_return_sequences at once when not set
             if rollout_chunk_size is None or rollout_chunk_size <= 0:
-                # Auto: if TP>1, generate one completion per chunk (per TP group) to minimize memory
-                try:
-                    mesh_shape = getattr(self.model.mesh, "shape", {})
-                    tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-                except Exception:
-                    tp_size = 1
-                rollout_chunk_size = 1 if tp_size and tp_size > 1 else min(2, int(self.num_generations))
+                rollout_chunk_size = int(self.num_generations)
+            # Clamp to valid range [1, num_generations]
+            rollout_chunk_size = int(max(1, min(int(rollout_chunk_size), int(self.num_generations))))
 
             sequences_chunks = []
             completion_ids_chunks = []
@@ -1014,12 +1014,13 @@ class GRPOTrainer(Trainer):
                 pass
 
             # Log to WandB
-            try:
-                if hasattr(self.log_table, 'data') and len(self.log_table.data) > 0:
-                    wandb.log({"generations": self.log_table}, step=cur_step)
-            except Exception:
-                # Don't crash training over logging
-                pass
+            if self.log_table is not None:
+                try:
+                    if hasattr(self.log_table, 'data') and len(self.log_table.data) > 0:
+                        wandb.log({"generations": self.log_table}, step=cur_step)
+                except Exception:
+                    # Don't crash training over logging
+                    pass
 
         # i don't care who you are and what you do.
         # ill find you and ill gather u...
