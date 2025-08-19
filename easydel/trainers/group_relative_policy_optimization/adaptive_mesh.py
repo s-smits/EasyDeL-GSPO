@@ -233,9 +233,21 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     # Only DP workers should have different data shards
     try:
         proc_count = jax.process_count()
-        # Calculate the actual data-parallel workers
-        # Processes are assumed ordered as: [tp0_dp0, tp1_dp0, ..., tp{tp-1}_dp0, tp0_dp1, ...]
-        if plan.tp > 1:
+        
+        # Handle single-process multi-device setups (e.g., TPU pods)
+        if proc_count == 1 and plan.dp > 1:
+            # Single process with intra-process DP - all DP groups see same shard
+            arguments.grain_shard_count = 1
+            arguments.grain_shard_index = 0
+            if jax.process_index() == 0:
+                logger.warning(
+                    f"Single-process multi-device setup detected (proc_count=1, mesh_dp={plan.dp}). "
+                    f"All {plan.dp} DP groups will see the same dataset shard (shard 0/1). "
+                    f"For true dataset sharding across DP groups, use multi-process launch: "
+                    f"e.g., mpirun -n {plan.dp} or srun -n {plan.dp}"
+                )
+        elif plan.tp > 1:
+            # Multi-process with TP
             num_dp_groups = max(1, int(proc_count) // int(plan.tp))
             dp_group_id = int(jax.process_index()) // int(plan.tp)
             arguments.grain_shard_count = int(num_dp_groups)
@@ -254,7 +266,7 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         if jax.process_index() == 0:
             logger.info(
                 f"Dataset configuration: shard {arguments.grain_shard_index}/{arguments.grain_shard_count} "
-                f"(process {jax.process_index()}/{proc_count}, TP={plan.tp})"
+                f"(process {jax.process_index()}/{proc_count}, mesh_dp={plan.dp}, mesh_tp={plan.tp})"
             )
     except Exception as e:
         logger.warning(f"Failed to configure dataset sharding: {e}")

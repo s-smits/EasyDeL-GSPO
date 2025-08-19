@@ -810,53 +810,42 @@ class GRPOTrainer(Trainer):
             # Host-side diagnostic: print per-rollout completion token lengths
             if jax.process_index() == 0:
                 try:
-                    # Get local lengths for this process
-                    if isinstance(completion_lengths_per_seq, jax.Array):
-                        if hasattr(completion_lengths_per_seq, 'addressable_shards') and len(completion_lengths_per_seq.addressable_shards) > 0:
-                            # Gather all local shards
-                            local_shards = []
-                            for shard in completion_lengths_per_seq.addressable_shards:
-                                local_shards.append(jax.device_get(shard.data))
-                            if len(local_shards) > 1:
-                                _lens = jnp.concatenate(local_shards, axis=0)
-                            else:
-                                _lens = local_shards[0]
-                        else:
-                            _lens = jax.device_get(completion_lengths_per_seq)
-                    else:
-                        _lens = completion_lengths_per_seq
+                    # Get mesh info for debugging
+                    try:
+                        mesh_shape = getattr(self.model.mesh, "shape", {})
+                        dp_sz = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+                        tp_sz = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+                        logger.info(f"Actual mesh shape: {mesh_shape}")
+                        logger.info(f"Process count: {jax.process_count()}, local devices: {jax.local_device_count()}, total devices: {jax.device_count()}")
+                    except Exception:
+                        dp_sz = 1
+                        tp_sz = 1
                     
-                    _lens = jnp.asarray(_lens).astype(jnp.int32)
-                    lengths_list = [int(x) for x in list(_lens)]
+                    # Get unique local rows to deduplicate TP replicas
+                    r = int(self.num_generations)
+                    local_rows = self._to_local_flat(completion_lengths_per_seq).reshape(-1, r)
+                    unique_local, idx = jnp.unique(jnp.asarray(jax.device_get(local_rows)), axis=0, return_index=True)
+                    unique_local = unique_local[jnp.argsort(idx)]  # Preserve original order
+                    
+                    # Count actual unique queries from prompt_ids shape
+                    num_queries = int(batch["input_ids"].shape[0])  # True local batch size without TP replication
+                    
+                    # Convert to list for logging
+                    lengths_list = [int(x) for x in unique_local.flatten()]
                     
                     if lengths_list:
-                        num_queries = len(lengths_list) // max(1, int(self.num_generations))
-                        r = int(self.num_generations)
+                        # Log local statistics (deduplicated)
+                        logger.info(
+                            f"per_query_completion_token_lengths (local): queries={num_queries}, rollouts_per_query={r}; "
+                            f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}; "
+                            f"mesh_config=(DP={dp_sz}, TP={tp_sz})"
+                        )
                         
-                        if r > 0 and len(lengths_list) % r == 0:
-                            grouped = [lengths_list[i * r : (i + 1) * r] for i in range(num_queries)]
-                            
-                            # Get mesh info for context
-                            try:
-                                mesh_shape = getattr(self.model.mesh, "shape", {})
-                                dp_sz = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                                tp_sz = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-                            except Exception:
-                                dp_sz = 1
-                                tp_sz = 1
-                            
-                            # Log local statistics
-                            logger.info(
-                                f"per_query_completion_token_lengths (local): queries={num_queries}, rollouts_per_query={r}; "
-                                f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}; "
-                                f"mesh_config=(DP={dp_sz}, TP={tp_sz})"
-                            )
-                            
-                            # Print local per-query lengths
-                            for qi, arr in enumerate(grouped):
-                                logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {arr}")
-                            
-                            # Log global statistics if enabled
+                        # Print unique local per-query lengths (deduplicated)
+                        for qi, arr in enumerate(unique_local):
+                            logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {[int(x) for x in arr]}")
+                        
+                        # Log global statistics if enabled
                             if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
                                 try:
                                     all_lengths_flat = _global_lengths_flat
