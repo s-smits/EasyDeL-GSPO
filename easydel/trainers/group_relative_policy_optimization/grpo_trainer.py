@@ -415,11 +415,12 @@ class GRPOTrainer(Trainer):
             self.arguments.rollouts_per_step = int(derived_rps)
             if jax.process_index() == 0:
                 per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
-                global_total = int(total_dp) * per_process
+                # Use effective dp for expected global actually running this process configuration
+                global_total = int(effective_dp) * per_process
                 logger.info(
                     f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                    f"derived_global_rollouts_per_step={self.arguments.rollouts_per_step} (mesh DP={int(dp_size)}), "
-                    f"per_process_rollouts={per_process}, effective_global_rollouts={per_process * effective_dp} (effective DP={effective_dp}), "
+                    f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
+                    f"per_process_rollouts={per_process}, "
                     f"batch_size={self.arguments.total_batch_size}"
                 )
 

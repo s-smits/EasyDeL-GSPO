@@ -515,7 +515,7 @@ class TrainingArguments:
             logger.info(f"Skipping JAX distributed initialization in this process: {e}")
         
         # Auto-configure dataset sharding:
-        # - If mesh dims exist, shard by DP only (replicate across FSDP)
+        # - If mesh dims exist, shard by effective DP (min(mesh dp, process_count)) only (replicate across FSDP)
         # - Otherwise, shard per process
         if self.grain_shard_index is None or self.grain_shard_count is None:
             proc_idx = _safe_process_index()
@@ -530,8 +530,10 @@ class TrainingArguments:
                     dp = None
 
             if dp and dp > 0:
-                self.grain_shard_count = dp
-                self.grain_shard_index = proc_idx % dp
+                # Use effective DP based on active processes to avoid missing shards when dp>process_count
+                effective_dp = max(1, min(dp, proc_cnt))
+                self.grain_shard_count = effective_dp
+                self.grain_shard_index = proc_idx % effective_dp
             else:
                 self.grain_shard_index = proc_idx if self.grain_shard_index is None else self.grain_shard_index
                 self.grain_shard_count = proc_cnt if self.grain_shard_count is None else self.grain_shard_count
