@@ -202,6 +202,40 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         setattr(arguments, "sharding_axis_dims", (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp))
     
     validate_mesh_config(plan.dp, plan.fsdp, plan.tp, num_devices, total_batch_size)
+
+    # Dataset sharding configuration
+    # With TP, all TP replicas must see the same data
+    # Only DP workers should have different data shards
+    try:
+        proc_count = jax.process_count()
+        # Calculate the actual data-parallel workers
+        # Processes are assumed ordered as: [tp0_dp0, tp1_dp0, ..., tp{tp-1}_dp0, tp0_dp1, ...]
+        if plan.tp > 1:
+            num_dp_groups = max(1, int(proc_count) // int(plan.tp))
+            dp_group_id = int(jax.process_index()) // int(plan.tp)
+            arguments.grain_shard_count = int(num_dp_groups)
+            arguments.grain_shard_index = int(dp_group_id)
+            if jax.process_index() == 0:
+                logger.info(
+                    f"Dataset sharding with TP={plan.tp}: {num_dp_groups} data shards across DP groups. "
+                    f"Processes {list(range(0, int(plan.tp)))} will see shard 0, "
+                    f"processes {list(range(int(plan.tp), 2*int(plan.tp)))} will see shard 1, etc."
+                )
+        else:
+            # No TP, standard sharding across all processes
+            arguments.grain_shard_count = int(proc_count)
+            arguments.grain_shard_index = int(jax.process_index())
+
+        if jax.process_index() == 0:
+            logger.info(
+                f"Dataset configuration: shard {arguments.grain_shard_index}/{arguments.grain_shard_count} "
+                f"(process {jax.process_index()}/{proc_count}, TP={plan.tp})"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to configure dataset sharding: {e}")
+        # Fallback to safe defaults
+        arguments.grain_shard_count = 1
+        arguments.grain_shard_index = 0
     return plan
 
 

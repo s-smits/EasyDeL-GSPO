@@ -93,28 +93,16 @@ class GRPOTrainer(Trainer):
         # Configure mesh and update arguments in-place
         if arguments.force_tensor_parallel is not None or arguments.force_data_parallel is not None:
             mesh_plan = configure_adaptive_mesh_inplace(arguments)
-            
-            # Ensure dataset sharding aligns with active DP only (effective DP)
+            # Dataset sharding is set inside configure_adaptive_mesh_inplace with TP-aware DP grouping.
+            # Do not override it here. Only log for visibility.
             try:
-                try:
-                    proc_cnt = max(1, int(jax.process_count()))
-                except Exception:
-                    proc_cnt = 1
-                effective_dp = max(1, min(int(mesh_plan.dp), proc_cnt))
-                # Dataset should be sharded across effective DP workers only
-                arguments.grain_shard_count = effective_dp
-                arguments.grain_shard_index = jax.process_index() % effective_dp
-
                 if jax.process_index() == 0:
                     logger.info(
-                        f"Configured mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, "
-                        f"TP={mesh_plan.tp}, dataset shards={effective_dp} (effective DP={effective_dp})"
+                        f"Configured mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, TP={mesh_plan.tp}; "
+                        f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
                     )
-            except Exception as e:
-                logger.warning(f"Failed to configure dataset sharding: {e}")
-                # Fallback to safe defaults
-                arguments.grain_shard_count = 1
-                arguments.grain_shard_index = 0
+            except Exception:
+                pass
         else:
             # No forced parallelism, use default behavior
             pass
