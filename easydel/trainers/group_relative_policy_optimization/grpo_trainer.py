@@ -596,6 +596,33 @@ class GRPOTrainer(Trainer):
                 rollout_chunk_size = int(self.num_generations)
             # Clamp to valid range [1, num_generations]
             rollout_chunk_size = int(max(1, min(int(rollout_chunk_size), int(self.num_generations))))
+            # Additionally cap by TP size to avoid multi-host halts when TP>1 (configurable)
+            if getattr(self.arguments, "cap_rollout_chunk_to_tp", True):
+                try:
+                    mesh_shape = getattr(self.model.mesh, "shape", {})
+                    tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+                    dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+                except Exception:
+                    tp_size = 1
+                    dp_size = 1
+                if isinstance(tp_size, tuple):
+                    tp_size = tp_size[0] if len(tp_size) > 0 else 1
+                try:
+                    orig_rcs = int(rollout_chunk_size)
+                    tp_cap = int(max(1, int(tp_size)))
+                except Exception:
+                    orig_rcs = rollout_chunk_size
+                    tp_cap = 1
+                if tp_cap > 0 and orig_rcs > tp_cap:
+                    rollout_chunk_size = tp_cap
+                    if jax.process_index() == 0:
+                        logger.warning(
+                            "rollout_chunk_size clipped from %s to TP cap (%s) for stability (DP=%s, TP=%s) — set cap_rollout_chunk_to_tp=false to disable",
+                            orig_rcs,
+                            tp_cap,
+                            dp_size,
+                            tp_size,
+                        )
 
             sequences_chunks = []
             completion_ids_chunks = []

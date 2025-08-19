@@ -119,6 +119,15 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Throughput/stability toggle for TP setups
+    cap_rollout_chunk_to_tp: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, cap rollout_chunk_size to the tensor-parallel (TP) size to improve stability on TP>1. "
+            "Set to False to allow larger chunks for higher throughput at the risk of TPU halts."
+        },
+    )
+
 
     top_p: float = field(
         default=0.95,
