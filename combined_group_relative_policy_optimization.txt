@@ -1,3 +1,242 @@
+===== grpo_config.py =====
+# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import typing as tp
+from dataclasses import field
+
+from eformer.pytree import auto_pytree
+
+from easydel.utils.compiling_utils import hash_fn
+
+from ..training_configurations import TrainingArguments
+
+
+@auto_pytree
+class GRPOConfig(TrainingArguments):
+    """
+    Configuration class for the GRPOTrainer.
+    """
+
+    trainer_prefix: str | None = field(
+        default="grpotrainer",
+        metadata={"help": "default prefix name for trainer."},
+    )
+    remove_unused_columns: bool | None = field(
+        default=False,
+        metadata={"help": "Whether to remove unused columns from the dataset."},
+    )
+    max_prompt_length: int = field(
+        default=512,
+        metadata={"help": "The maximum length of the prompt."},
+    )
+    max_completion_length: int = field(
+        default=256,
+        metadata={"help": "The maximum length of the completion."},
+    )
+    dataset_num_proc: int | None = field(
+        default=None,
+        metadata={"help": "The number of processes to use for dataset processing."},
+    )
+    learning_rate: float = field(
+        default=1e-6,
+        metadata={"help": "The learning rate."},
+    )
+    beta: float = field(
+        default=0.04,
+        metadata={"help": "The beta parameter for GRPO."},
+    )
+    sync_ref_model: bool = field(
+        default=False,
+        metadata={"help": "Whether to periodically sync the reference model with the policy model."},
+    )
+    ref_model_mixup_alpha: float = field(
+        default=0.9,
+        metadata={"help": "The alpha parameter for mixing the reference model with the policy model."},
+    )
+    ref_model_sync_steps: int = field(
+        default=64,
+        metadata={"help": "The number of steps between syncing the reference model."},
+    )
+    tools: list[dict | tp.Callable] | None = field(
+        default=None,
+        metadata={"help": "Additional tools for training."},
+    )
+    skip_apply_chat_template: bool = field(
+        default=False,
+        metadata={"help": "whenever to skip extracting prompt from dataset."},
+    )
+    force_tensor_parallel: int | None = field(
+        default=None,
+        metadata={
+            "help": "Force tensor parallelism dimension. Enables sub-batch processing for more "
+            "efficient parallel training. E.g., tp=2 creates 2 models on 2 TPUs each with 4 TPUs total."
+        },
+    )
+    force_data_parallel: int | None = field(
+        default=None,
+        metadata={
+            "help": "Force data parallelism dimension. When used with --force_tensor_parallel, must satisfy dp * tp <= num_devices."
+        },
+    )
+    mini_batch_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Minimum batch size per model instance when using tensor parallelism. "
+            "Must be >= 1. Used to control how batches are distributed across model instances."
+        },
+    )
+    num_return_sequences: int = field(
+        default=4,
+        metadata={
+            "help": "Number of completions generated per prompt per process. "
+            "Total rollouts per process per step = total_batch_size × num_return_sequences. "
+            "Global total ≈ that × data_parallel_processes (if >1)."
+        },
+    )
+    rollouts_per_step: int | None = field(
+        default=None,
+        metadata={
+            "help": "Target total rollouts per global step across all data-parallel workers. "
+            "Automatically derives num_return_sequences from DP and total_batch_size."
+        },
+    )
+    rollout_chunk_size: int | None = field(
+        default=None,
+        metadata={
+            "help": "Chunk size for processing rollouts to reduce memory usage during generation. "
+            "If None or <= 0, defaults to min(2, num_return_sequences). Larger values use more memory "
+            "but may be faster, while smaller values reduce memory usage. Does not change total rollouts."
+        },
+    )
+
+    # Throughput/stability toggle for TP setups
+    cap_rollout_chunk_to_tp: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, cap rollout_chunk_size to the tensor-parallel (TP) size to improve stability on TP>1. "
+            "Set to False to allow larger chunks for higher throughput at the risk of TPU halts."
+        },
+    )
+
+    advantage_epsilon: float = field(
+        default=1e-6,
+        metadata={
+            "help": "Minimum standard deviation threshold for computing advantages. Groups with std < epsilon "
+            "will have their advantages set to 0 to avoid numerical instability. Typical values: 1e-6 to 1e-3. "
+            "Critical for avoiding tiny advantages (e.g., 1e-8) that provide no learning signal. "
+            "After per-group standardization, advantages should typically have median |A| ~ 0.5-1.5 "
+            "and 95th percentile |A| ~ 2-5. If you see many low-variance groups, consider: "
+            "(1) using more diverse prompts, (2) increasing num_return_sequences, "
+            "(3) using continuous rewards instead of binary, or (4) increasing this epsilon."
+        },
+    )
+
+    # Note: use num_return_sequences, rollouts_per_step, and rollout_chunk_size as the primary knobs
+
+    # Memory-optimized microbatching: process one completion per prompt per microbatch
+    microbatch_one_completion: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, set gradient_accumulation_steps = num_return_sequences so each microbatch holds one completion per prompt. "
+            "Also defaults completions_chunk_size (rollout_chunk_size) to 1 for lowest generation memory."
+        },
+    )
+
+    top_p: float = field(
+        default=0.95,
+        metadata={
+            "help": "Top-p (nucleus) sampling threshold. Tokens are sampled from the smallest possible set whose "
+            "cumulative probability exceeds this value."
+        },
+    )
+
+    top_k: int = field(
+        default=50,
+        metadata={"help": "Top-k sampling threshold. Limits sampling to the top-k most probable tokens at each step."},
+    )
+
+    temperature: float = field(
+        default=0.7,
+        metadata={
+            "help": "Sampling temperature. Higher values (e.g., >1.0) produce more random outputs, while "
+            "lower values (e.g., <1.0) make the output more deterministic."
+        },
+    )
+
+    advantage_epsilon: float = field(
+        default=1e-6,
+        metadata={
+            "help": "Minimum standard deviation threshold for computing advantages. Groups with std < epsilon "
+            "will have their advantages set to 0 to avoid numerical instability. Typical values: 1e-6 to 1e-3. "
+            "Critical for avoiding tiny advantages (e.g., 1e-8) that provide no learning signal. "
+            "After per-group standardization, advantages should typically have median |A| ~ 0.5-1.5 "
+            "and 95th percentile |A| ~ 2-5. If you see many low-variance groups, consider: "
+            "(1) using more diverse prompts, (2) increasing num_return_sequences, "
+            "(3) using continuous rewards instead of binary, or (4) increasing this epsilon."
+        },
+    )
+
+
+    # Note: use num_return_sequences, rollouts_per_step, and rollout_chunk_size as the primary knobs
+
+    # Memory-optimized microbatching: process one completion per prompt per microbatch
+    microbatch_one_completion: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, set gradient_accumulation_steps = num_return_sequences so each microbatch holds one completion per prompt. "
+            "Also defaults completions_chunk_size (rollout_chunk_size) to 1 for lowest generation memory."
+        },
+    )
+
+
+    def __post_init__(self):
+        """Post initialization to set dependent parameters."""
+        self.max_sequence_length = self.max_prompt_length + self.max_completion_length
+        
+        # No aliasing: prefer explicit num_return_sequences and rollout_chunk_size
+
+        # If enabled, only tune rollout chunking for minimal generation memory
+        if self.microbatch_one_completion:
+            # Generate one completion per chunk to bound peak KV/logit memory
+            self.rollout_chunk_size = 1
+
+        # Note: rollouts_per_step will be handled by the trainer after mesh planning
+        # We can't properly compute num_return_sequences here because we don't know 
+        # the final DP size until after adaptive mesh planning
+
+        # Validate tensor parallelism configuration
+        if self.force_tensor_parallel is not None:
+            if self.force_tensor_parallel < 1:
+                raise ValueError("force_tensor_parallel must be >= 1")
+            
+            if self.mini_batch_size is not None and self.mini_batch_size < 1:
+                raise ValueError("mini_batch_size must be >= 1 when specified")
+            
+            # Default mini_batch_size to 1 if not specified with TP
+            if self.mini_batch_size is None:
+                self.mini_batch_size = 1
+
+        # Validate data parallelism configuration
+        if self.force_data_parallel is not None:
+            if self.force_data_parallel < 1:
+                raise ValueError("force_data_parallel must be >= 1")
+
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+
+    __hash__ = hash_fn
+===== grpo_trainer.py =====
 # Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -623,118 +862,24 @@ class GRPOTrainer(Trainer):
             )
 
     def _gather_deduplicated(self, array: jax.Array) -> jnp.ndarray | None:
-        """Gather array across processes, properly handling sharded arrays."""
+        """Gather array across processes, deduplicating TP replicas."""
         try:
-            # Step 1: Gather ALL local shards to reconstruct the full local array
-            if hasattr(array, 'addressable_shards') and len(array.addressable_shards) > 0:
-                # Get all local shards
-                local_shards = []
-                for shard in array.addressable_shards:
-                    local_shards.append(jax.device_get(shard.data))
-                
-                # Determine how to concatenate based on the array's sharding
-                # For most cases with batch sharding, shards are split along axis 0
-                if len(local_shards) > 1:
-                    # Try to infer the concatenation axis from shard shapes
-                    # Usually for batch-sharded data, we concatenate along axis 0
-                    try:
-                        # Attempt concatenation along axis 0 (batch dimension)
-                        local_full = jnp.concatenate(local_shards, axis=0)
-                    except Exception:
-                        # If that fails, try flattening and concatenating
-                        local_full = jnp.concatenate([s.flatten() for s in local_shards])
-                else:
-                    local_full = local_shards[0]
+            # Get first shard to avoid TP duplication
+            if hasattr(array, 'addressable_shards'):
+                local = jax.device_get(array.addressable_shards[0].data)
             else:
-                # Non-sharded or fully replicated array
-                local_full = jax.device_get(array)
+                local = jax.device_get(array)
             
-            # Step 2: Gather across processes
-            gathered = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local_full))
+            gathered = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local).flatten())
             
-            # Step 3: Handle the gathered shape
-            # With TP, the gathering might include duplicates from tensor parallel replicas
-            # The gathered shape should be (num_processes * local_size)
-            # No need for complex reshaping - just return the flattened gathered array
-            return gathered.reshape(-1) if gathered.ndim > 1 else gathered
-            
+            # Deduplicate: reshape to (processes, devices_per_process, data) and take first device
+            try:
+                return gathered.reshape(jax.process_count(), jax.local_device_count(), -1)[:, 0, :].reshape(-1)
+            except Exception:
+                return gathered.reshape(-1)
         except Exception as e:
             logger.debug(f"Failed to gather array: {e}")
             return None
-
-    def _gather_completion_lengths_global(self, completion_lengths_per_seq: jax.Array) -> tuple[jnp.ndarray | None, jnp.ndarray | None]:
-        """
-        Gather completion lengths across all processes for global logging.
-        Returns both the flat array and the reshaped per-query array.
-        """
-        try:
-            # Gather all local shards first
-            if hasattr(completion_lengths_per_seq, 'addressable_shards') and len(completion_lengths_per_seq.addressable_shards) > 0:
-                local_shards = []
-                for shard in completion_lengths_per_seq.addressable_shards:
-                    local_shards.append(jax.device_get(shard.data))
-                
-                # Concatenate local shards - for completion lengths, this is a 1D array
-                if len(local_shards) > 1:
-                    local_full = jnp.concatenate(local_shards, axis=0)
-                else:
-                    local_full = local_shards[0]
-            else:
-                local_full = jax.device_get(completion_lengths_per_seq)
-            
-            # Ensure it's 1D
-            local_full = local_full.flatten()
-            
-            # Gather across all processes
-            global_flat = jax.experimental.multihost_utils.process_allgather(local_full)
-            
-            # Reshape to (total_queries_global, num_return_sequences)
-            r = int(self.num_generations)
-            total_elements = int(global_flat.size)
-            
-            # With TP, we might have duplicates. Try to detect and handle them.
-            # If TP > 1, each TP replica has the same data, so we need to deduplicate
-            try:
-                tp_size = getattr(self.model.mesh.shape, 'tp', 1) if hasattr(self.model.mesh, 'shape') else 1
-                if tp_size > 1:
-                    # Reshape to (num_processes, elements_per_process) 
-                    # then take every tp_size'th process to deduplicate
-                    num_procs = jax.process_count()
-                    elements_per_proc = total_elements // num_procs
-                    reshaped = global_flat.reshape(num_procs, elements_per_proc)
-                    
-                    # Take one representative from each TP group
-                    # Assuming processes are ordered as [tp0_dp0, tp1_dp0, ..., tp0_dp1, tp1_dp1, ...]
-                    dp_size = num_procs // tp_size
-                    dedup_indices = [i * tp_size for i in range(dp_size)]
-                    global_dedup = reshaped[dedup_indices].flatten()
-                    
-                    # Now reshape to per-query format
-                    total_queries = global_dedup.size // r
-                    if total_queries * r == global_dedup.size:
-                        global_shaped = global_dedup[:total_queries * r].reshape(total_queries, r)
-                    else:
-                        global_shaped = None
-                else:
-                    # No TP, just reshape directly
-                    total_queries = total_elements // r
-                    if total_queries * r == total_elements:
-                        global_shaped = global_flat[:total_queries * r].reshape(total_queries, r)
-                    else:
-                        global_shaped = None
-            except Exception:
-                # Fallback: just try direct reshape
-                total_queries = total_elements // r
-                if total_queries * r == total_elements:
-                    global_shaped = global_flat[:total_queries * r].reshape(total_queries, r)
-                else:
-                    global_shaped = None
-            
-            return global_flat, global_shaped
-            
-        except Exception as e:
-            logger.debug(f"Failed to gather completion lengths globally: {e}")
-            return None, None
 
 
     def _preprocess_batch_input(
@@ -872,111 +1017,118 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Global gathering for logging (if enabled)
-            _global_lengths_flat = None
+            # Optional: all-gather for logging across processes (disabled by default)
+            _global_lengths_for_logging = None
             _global_lengths_shaped = None
             if getattr(self.arguments, "log_global", False):
-                _global_lengths_flat, _global_lengths_shaped = self._gather_completion_lengths_global(completion_lengths_per_seq)
+                _global_lengths_for_logging = self._gather_deduplicated(completion_lengths_per_seq)
+                if _global_lengths_for_logging is not None:
+                    r = int(self.num_generations)
+                    total_queries = _global_lengths_for_logging.size // r
+                    _global_lengths_shaped = _global_lengths_for_logging[:total_queries * r].reshape(total_queries, r)
+                else:
+                    _global_lengths_shaped = None
 
-            # Host-side diagnostic: print per-rollout completion token lengths
+            # Host-side diagnostic: print per-rollout completion token lengths (process 0 prints)
             if jax.process_index() == 0:
                 try:
-                    # Get local lengths for this process
-                    if isinstance(completion_lengths_per_seq, jax.Array):
-                        if hasattr(completion_lengths_per_seq, 'addressable_shards') and len(completion_lengths_per_seq.addressable_shards) > 0:
-                            # Gather all local shards
-                            local_shards = []
-                            for shard in completion_lengths_per_seq.addressable_shards:
-                                local_shards.append(jax.device_get(shard.data))
-                            if len(local_shards) > 1:
-                                _lens = jnp.concatenate(local_shards, axis=0)
-                            else:
-                                _lens = local_shards[0]
-                        else:
-                            _lens = jax.device_get(completion_lengths_per_seq)
+                    # Prefer fully addressable arrays
+                    if isinstance(completion_lengths_per_seq, jax.Array) and getattr(
+                        completion_lengths_per_seq, "is_fully_addressable", False
+                    ):
+                        _lens = jax.device_get(completion_lengths_per_seq)
                     else:
-                        _lens = completion_lengths_per_seq
-                    
+                        # Fallback to first local shard if available
+                        try:
+                            _shards = completion_lengths_per_seq.addressable_shards  # type: ignore[attr-defined]
+                            if _shards and len(_shards) > 0:
+                                _lens = jax.device_get(_shards[0].data)
+                            else:
+                                _lens = jax.device_get(completion_lengths_per_seq)
+                        except Exception:
+                            _lens = jax.device_get(completion_lengths_per_seq)
                     _lens = jnp.asarray(_lens).astype(jnp.int32)
                     lengths_list = [int(x) for x in list(_lens)]
-                    
                     if lengths_list:
-                        num_queries = len(lengths_list) // max(1, int(self.num_generations))
+                        # Try to group by num_generations so we print per-query arrays
+                        try:
+                            num_queries = int(prompt_ids.shape[0])
+                        except Exception:
+                            num_queries = len(lengths_list) // max(1, int(self.num_generations))
                         r = int(self.num_generations)
-                        
                         if r > 0 and len(lengths_list) % r == 0:
                             grouped = [lengths_list[i * r : (i + 1) * r] for i in range(num_queries)]
-                            
-                            # Get mesh info for context
+                            # Clarify that these counts are per-process (local). Global prompts ~= DP * queries
                             try:
                                 mesh_shape = getattr(self.model.mesh, "shape", {})
                                 dp_sz = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                                tp_sz = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
                             except Exception:
                                 dp_sz = 1
-                                tp_sz = 1
-                            
-                            # Log local statistics
                             logger.info(
                                 f"per_query_completion_token_lengths (local): queries={num_queries}, rollouts_per_query={r}; "
                                 f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}; "
-                                f"mesh_config=(DP={dp_sz}, TP={tp_sz})"
+                                f"approx_global_queries={num_queries*int(dp_sz)}"
                             )
-                            
-                            # Print local per-query lengths
+                            # Print compactly: one line per query (local view)
                             for qi, arr in enumerate(grouped):
                                 logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {arr}")
                             
-                            # Log global statistics if enabled
-                            if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
+                            # Optional: global logging if explicitly enabled
+                            if getattr(self.arguments, "log_global", False):
                                 try:
-                                    all_lengths_flat = _global_lengths_flat
-                                    total_completions_global = int(all_lengths_flat.size)
-                                    
-                                    # Account for TP deduplication in the gathered data
-                                    if tp_sz > 1:
-                                        # If TP > 1, we've deduplicated so the actual global count is correct
-                                        effective_global_queries = total_completions_global // r
-                                    else:
-                                        # No TP, so global count is straightforward
-                                        effective_global_queries = total_completions_global // r
-                                    
-                                    logger.info(
-                                        f"GLOBAL completion_token_lengths: queries={effective_global_queries}, rollouts_per_query={r}, "
-                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
-                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
-                                    )
-                                    
-                                    # Per-query global breakdown
-                                    if _global_lengths_shaped is not None:
-                                        max_queries_to_print = min(32, int(_global_lengths_shaped.shape[0]))  # Increased from 16
-                                        for qi in range(max_queries_to_print):
-                                            arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
-                                            logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
-                                        
-                                        if _global_lengths_shaped.shape[0] > max_queries_to_print:
-                                            logger.info(f"... ({_global_lengths_shaped.shape[0] - max_queries_to_print} more queries not shown)")
-                                except Exception as e:
-                                    logger.debug(f"Failed to log global statistics: {e}")
+                                    if _global_lengths_for_logging is not None:
+                                        all_lengths_flat = _global_lengths_for_logging
+                                        # Derive counts from actual gathered data
+                                        total_completions_global = int(all_lengths_flat.size)
+                                        r = max(1, int(self.num_generations))
+                                        total_queries_global = max(1, total_completions_global // r)
+                                        logger.info(
+                                            f"GLOBAL completion_token_lengths: queries={total_queries_global}, rollouts_per_query={r}, "
+                                            f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
+                                            f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
+                                        )
+                                        # Per-query global breakdown (compact): show first 16 queries
+                                        try:
+                                            if _global_lengths_shaped is not None:
+                                                max_q = min(16, int(_global_lengths_shaped.shape[0]))
+                                                for qi in range(max_q):
+                                                    arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
+                                                    logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
                             
-                            # Check for suspicious patterns
-                            if num_queries > 1:
-                                as_tuples = {tuple(x) for x in grouped}
-                                if len(as_tuples) == 1:
-                                    logger.warning(
-                                        "All local per-query completion length patterns are identical. "
-                                        "This may indicate duplicated prompts or identical RNG streams."
-                                    )
-                        
+                            # If all per-query arrays are identical, this suggests duplicated prompts or identical RNG streams
+                            try:
+                                if num_queries > 1:
+                                    as_tuples = {tuple(x) for x in grouped}
+                                    if len(as_tuples) == 1:
+                                        logger.warning(
+                                            "All per-query completion length patterns are identical. "
+                                            "This often indicates duplicated prompts in the local batch or repeated RNG streams across queries."
+                                        )
+                            except Exception:
+                                pass
+                        else:
+                            logger.info(
+                                f"completion_token_lengths (n={len(lengths_list)}): min={min(lengths_list)}, max={max(lengths_list)}, "
+                                f"mean={sum(lengths_list)/len(lengths_list):.2f}; values={lengths_list}"
+                            )
+                    else:
+                        logger.info("completion_token_lengths: []")
                 except Exception as e:
                     logger.warning(f"Failed to print completion lengths: {e}")
-                    
-                # Log prompt diagnostics
+                # Additionally, show prompt diagnostics to detect accidental duplication
                 try:
+                    # Only log short prefixes and uniqueness to avoid massive logs
                     prompt_prefixes = [p[:64].replace("\n", " ") for p in prompts]
                     unique_prompt_count = len(set(prompts))
-                    shard_idx = getattr(self.arguments, "grain_shard_index", None)
-                    shard_cnt = getattr(self.arguments, "grain_shard_count", None)
+                    try:
+                        shard_idx = getattr(self.arguments, "grain_shard_index", None)
+                        shard_cnt = getattr(self.arguments, "grain_shard_count", None)
+                    except Exception:
+                        shard_idx, shard_cnt = None, None
                     logger.info(
                         f"prompt_diagnostics: proc={jax.process_index()}, shard={shard_idx}/{shard_cnt}, "
                         f"queries={len(prompts)}, unique={unique_prompt_count}; prefixes={prompt_prefixes}"
@@ -1086,29 +1238,27 @@ class GRPOTrainer(Trainer):
                     total_comp_global = total_comp_local
                     success_rate_comp_global = success_rate_comp_local
 
-                # Global pass@k via proper gathering
+                # Global pass@k via gathering counts across processes
+                pass_prompt_count_global = pass_prompt_count_local
+                num_prompts_global = jnp.array(float(num_prompts_local))
                 try:
                     if jax.process_count() > 1:
-                        gathered_per_prompt = self._gather_deduplicated(per_prompt_success.astype(jnp.float32))
-                        if gathered_per_prompt is not None:
-                            pass_prompt_count_global = jnp.sum(gathered_per_prompt)
-                            num_prompts_global = gathered_per_prompt.size
-                        else:
-                            g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
-                            g_prompts = jax.experimental.multihost_utils.process_allgather(
-                                jnp.array(float(num_prompts_local), dtype=jnp.float32)
-                            )
-                            pass_prompt_count_global = jnp.sum(g_pass)
-                            num_prompts_global = jnp.sum(g_prompts)
-                    else:
-                        pass_prompt_count_global = pass_prompt_count_local
-                        num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                        # Gather scalars uniformly; they are host values, no TP duplication expected
+                        g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
+                        g_prompts = jax.experimental.multihost_utils.process_allgather(jnp.array(float(num_prompts_local), dtype=jnp.float32))
+                        try:
+                            proc_cnt = max(1, int(jax.process_count()))
+                            local_dc = max(1, int(jax.local_device_count()))
+                            if g_pass.shape[0] == proc_cnt * local_dc:
+                                g_pass = jnp.reshape(g_pass, (proc_cnt, local_dc))[:, 0]
+                                g_prompts = jnp.reshape(g_prompts, (proc_cnt, local_dc))[:, 0]
+                        except Exception:
+                            pass
+                        pass_prompt_count_global = jnp.sum(g_pass)
+                        num_prompts_global = jnp.sum(g_prompts)
                 except Exception:
-                    # Fallback to local if gathering fails
-                    pass_prompt_count_global = pass_prompt_count_local
-                    num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                    pass
+                pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
             except Exception:
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
@@ -1133,38 +1283,19 @@ class GRPOTrainer(Trainer):
             lengths_local_min = jnp.array(0.0)
             lengths_local_max = jnp.array(0.0)
             lengths_local_mean = jnp.array(0.0)
-        
-        # Global length stats from properly gathered data
-        if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
-            try:
-                lengths_global_min = jnp.min(_global_lengths_flat)
-                lengths_global_max = jnp.max(_global_lengths_flat)
-                lengths_global_mean = jnp.mean(_global_lengths_flat)
-                # Use actual gathered count for global totals
-                actual_global_completions = int(_global_lengths_flat.size)
-                actual_global_queries = actual_global_completions // int(self.num_generations)
-            except Exception:
-                lengths_global_min = lengths_local_min
-                lengths_global_max = lengths_local_max
-                lengths_global_mean = lengths_local_mean
-                actual_global_completions = num_completions_local * dp_size
-                actual_global_queries = num_prompts_local * dp_size
-        else:
-            lengths_global_min = lengths_local_min
-            lengths_global_max = lengths_local_max
-            lengths_global_mean = lengths_local_mean
-            # Estimate based on DP size
-            try:
-                mesh_shape = getattr(self.model.mesh, "shape", {})
-                mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-                proc_count = jax.process_count()
-                dp_size = max(1, min(int(mesh_dp), int(proc_count)))
-            except Exception:
-                dp_size = 1
-                tp_size = 1
-            actual_global_completions = num_completions_local * dp_size
-            actual_global_queries = num_prompts_local * dp_size
+        # Default globals to local; override if we can gather
+        lengths_global_min = lengths_local_min
+        lengths_global_max = lengths_local_max
+        lengths_global_mean = lengths_local_mean
+        try:
+            if jax.process_count() > 1:
+                g_lens = jax.experimental.multihost_utils.process_allgather(lengths_local_arr)
+                g_lens = jnp.reshape(g_lens, (-1,))
+                lengths_global_min = jnp.min(g_lens)
+                lengths_global_max = jnp.max(g_lens)
+                lengths_global_mean = jnp.mean(g_lens)
+        except Exception:
+            pass
         # Robust termination ratios: detect EOS presence directly in completions.
         # Works even when pad_token_id == eos_token_id because sequences that ended early are padded with EOS.
         eos_found = jnp.isin(
@@ -1213,8 +1344,8 @@ class GRPOTrainer(Trainer):
             "reward/denominator/completions_local": float(num_completions_local),
             "reward/denominator/prompts_local": float(num_prompts_local),
             "reward/mean_per_completion_global": global_mean_reward_per_completion,
-            "reward/denominator/completions_global": float(actual_global_completions),
-            "reward/denominator/prompts_global": float(actual_global_queries),
+            "reward/denominator/completions_global": float(num_completions_local * dp_size),
+            "reward/denominator/prompts_global": float(num_prompts_local * dp_size),
             # Success metrics (reward > 0)
             "reward/success_count_completions_local": float(success_count_comp_local),
             "reward/success_rate_completions_local": float(success_rate_comp_local),
@@ -1236,15 +1367,12 @@ class GRPOTrainer(Trainer):
             # Rollout accounting to clarify totals
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(num_completions_local),
-            "rollouts/total_global": float(actual_global_completions),
-            "rollouts/total_global_actual": float(actual_global_completions),
+            "rollouts/total_global": float(num_completions_local * dp_size),
             "rollouts/queries_per_process": float(num_prompts_local),
-            "rollouts/queries_global": float(actual_global_queries),
-            "rollouts/queries_global_actual": float(actual_global_queries),
+            "rollouts/queries_global": float(num_prompts_local * dp_size),
             "rollouts/derived_global_rollouts_per_step": derived_global_rollouts,
             "rollouts/chunk_size": float(rollout_chunk_size),
             "rollouts/tp_size": float(tp_size or 1),
-            "rollouts/dp_size": float(dp_size),
             # Explicit termination diagnostics each step
             "termination/eos_stop_rate": eos_stop_rate,
             "termination/no_eos_max_length_rate": no_eos_maxlen_rate,
@@ -1273,8 +1401,9 @@ class GRPOTrainer(Trainer):
             try:
                 # TRL-style per-reward-function metrics with global aggregation
                 try:
-                    if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
-                        global_vals = global_rewards_per_func[:, i]
+                    if jax.process_count() > 1:
+                        gathered = jax.experimental.multihost_utils.process_allgather(rewards_per_func[:, i])
+                        global_vals = jnp.reshape(gathered, (-1,))
                         global_mean = jnp.mean(global_vals)
                         global_std = jnp.std(global_vals)
                     else:
@@ -1445,3 +1574,795 @@ class GRPOTrainer(Trainer):
         ):
             self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
         return state, metrics
+===== gspo_config.py =====
+# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import typing as tp
+from dataclasses import field
+
+from eformer.pytree import auto_pytree
+
+from easydel.utils.compiling_utils import hash_fn
+
+from .grpo_config import GRPOConfig
+
+
+@auto_pytree
+class GSPOConfig(GRPOConfig):
+    """
+    Configuration class for the GSPO (Group Sequence Policy Optimization) Trainer.
+    
+    GSPO modifies GRPO by computing importance sampling weights at the sequence level
+    instead of per-token. This leads to more stable training when using sequence-level
+    rewards, as shown in the GSPO paper (https://huggingface.co/papers/2507.18071).
+    
+    Key benefits:
+    1. More stable training with sequence-level rewards
+    2. Better alignment between optimization objective and reward signal
+    3. Reduced variance in gradient estimates
+    """
+
+    trainer_prefix: str | None = field(
+        default="gspotrainer",
+        metadata={"help": "default prefix name for trainer."},
+    )
+    
+    # GSPO-specific parameters
+    importance_sampling_level: str = field(
+        default="sequence",
+        metadata={
+            "help": "Controls whether importance sampling ratios are computed at the 'token' or 'sequence' level. "
+            "'token' keeps the raw per-token log-probability ratios (one weight per token). 'sequence' averages "
+            "the log-probability ratios across valid tokens to produce a single ratio per sequence. "
+            "GSPO uses 'sequence' level by default."
+        },
+    )
+    
+    epsilon: float = field(
+        default=0.2,
+        metadata={"help": "The epsilon parameter for PPO-style clipping. Same as GRPO default."},
+    )
+
+    def __post_init__(self):
+        """Post initialization to set dependent parameters."""
+        super().__post_init__()
+        
+        # Validate GSPO-specific parameters
+        if self.importance_sampling_level not in ["token", "sequence"]:
+            raise ValueError(
+                f"importance_sampling_level must be 'token' or 'sequence', got {self.importance_sampling_level}"
+            )
+        
+        if self.epsilon <= 0:
+            raise ValueError(f"epsilon must be positive, got {self.epsilon}")
+        
+        # Note: advantage_epsilon is inherited from GRPOConfig and is critical for GSPO
+        # as sequence-level rewards often have low variance within groups
+
+    __hash__ = hash_fn ===== gspo_trainer.py =====
+# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import typing as tp
+
+from easydel.infra.base_module import EasyDeLBaseModule
+from eformer.escale import with_sharding_constraint
+from easydel.infra.base_state import EasyDeLState
+from easydel.infra.utils import ProcessingClassType
+from easydel.utils.helpers import get_logger
+
+from ..trainer_protocol import TrainerConfigureFunctionOutput
+from ._gspo_fn import gspo_step
+from .gspo_config import GSPOConfig
+from .grpo_trainer import GRPOTrainer, RewardFunc
+
+if tp.TYPE_CHECKING:
+    from datasets import Dataset, IterableDataset
+
+logger = get_logger(__name__)
+
+
+class GSPOTrainer(GRPOTrainer):
+    arguments: GSPOConfig  # type hinting
+
+    def __init__(
+        self,
+        arguments: GSPOConfig,
+        model: EasyDeLBaseModule | EasyDeLState | None,
+        reward_funcs: RewardFunc | list[RewardFunc],
+        train_dataset: Dataset | None = None,
+        eval_dataset: Dataset | dict[str, Dataset] | None = None,
+        processing_class: ProcessingClassType = None,
+        reward_processing_classes: ProcessingClassType = None,
+        data_tokenize_fn: tp.Callable | None = None,
+    ):
+        assert arguments is not None, (
+            "You Have to pass `arguments` that will be used for training, but you have passed `arguments=None`"
+        )
+        assert isinstance(arguments, GSPOConfig), f"arguments type must be `GSPOConfig` but got {type(arguments)}"
+        
+        # Initialize the parent GRPO trainer
+        super().__init__(
+            arguments=arguments,
+            model=model,
+            reward_funcs=reward_funcs,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=processing_class,
+            reward_processing_classes=reward_processing_classes,
+            data_tokenize_fn=data_tokenize_fn,
+        )
+        
+        # Override parent's arguments with GSPO-specific config
+        self.arguments = arguments
+        
+        logger.info(
+            f"Initialized GSPO trainer with importance_sampling_level={arguments.importance_sampling_level}, "
+            f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+        )
+
+    def _configure_gspo_generate_function(self):
+        """
+        Configure the generate function with adaptive sharding based on batch size.
+        """
+        from transformers import GenerationConfig
+        from easydel.utils.compiling_utils import ejit
+        from jax.sharding import NamedSharding, PartitionSpec
+        from eformer import common_types
+        from .adaptive_mesh import get_adaptive_sharding_spec
+        import inspect
+
+        mesh = self.model.mesh
+        empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+
+        # Use adaptive sharding based on batch size and tensor parallelism
+        _sig = inspect.signature(get_adaptive_sharding_spec)
+        _kwargs = dict(
+            total_batch_size=self.arguments.total_batch_size,
+            force_tensor_parallel=self.arguments.force_tensor_parallel,
+            mini_batch_size=self.arguments.mini_batch_size,
+        )
+        if 'force_data_parallel' in _sig.parameters:
+            _kwargs['force_data_parallel'] = self.arguments.force_data_parallel
+        if 'rollouts_per_step' in _sig.parameters and getattr(self.arguments, 'rollouts_per_step', None):
+            _kwargs['rollouts_per_step'] = self.arguments.rollouts_per_step
+        adaptive_spec = get_adaptive_sharding_spec(**_kwargs)
+        input_sharding = NamedSharding(
+            mesh=mesh,
+            spec=adaptive_spec
+        )
+        # step_sharding is not used further; rely on step_partition_spec from arguments
+
+        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
+            module = state.model
+
+            with module.mesh:
+                input_ids = module.config.partition_manager.shard(
+                    input_ids,
+                    axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
+                    mode=common_types.MODE_PREFILL,
+                )
+                attention_mask = module.config.partition_manager.shard(
+                    attention_mask,
+                    axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
+                    mode=common_types.MODE_PREFILL,
+                )
+                # Generation config with proper EOS token handling
+                generation_config = GenerationConfig(
+                    top_p=self.arguments.top_p,
+                    top_k=self.arguments.top_k,
+                    temperature=self.arguments.temperature,
+                    pad_token_id=self.pad_token_id,
+                    eos_token_id=self.eos_token_id,
+                    max_new_tokens=self.arguments.max_completion_length,
+                    max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
+                    num_return_sequences=num_return_sequences,
+                    do_sample=True,
+                    use_cache=False,
+                )
+                
+                # Build PRNG key from provided seed to ensure per-chunk diversity
+                import jax
+                prng_key = jax.random.PRNGKey(prng_seed)
+                sequences = module.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=generation_config,
+                    prng_key=prng_key,
+                ).sequences
+                
+                # Re-constrain inputs to the step partition spec for downstream ops
+                input_ids = with_sharding_constraint(input_ids, self.arguments.step_partition_spec)
+                attention_mask = with_sharding_constraint(attention_mask, self.arguments.step_partition_spec)
+                return sequences, input_ids, attention_mask
+
+        self.generate_function = ejit(
+            generate,
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            static_argnums=(3,),
+        )
+
+    def configure_functions(self) -> TrainerConfigureFunctionOutput:
+        """
+        Configures and JIT-compiles the training and evaluation step functions for GSPO.
+        Fully overrides parent to ensure GSPO-specific generation function is used.
+        """
+        # Call parent configure_functions to set up shared components
+        parent_result = super().configure_functions()
+        
+        # Override with GSPO-specific generation function (must be after parent call)
+        self._configure_gspo_generate_function()
+        
+        # Now override just the training and evaluation functions to use gspo_step instead of grpo_step
+        from easydel.utils.compiling_utils import ejit
+        from jax.sharding import NamedSharding, PartitionSpec
+        
+        mesh = self.model.mesh
+        empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+        
+        # Derive rollouts_per_step from num_return_sequences if not provided (preferred)
+        mesh_shape = getattr(mesh, "shape", {})
+        dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+        total_dp = dp_size
+        if getattr(self.arguments, 'rollouts_per_step', None) is None:
+            derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+            self.arguments.rollouts_per_step = int(derived_rps)
+            if self.arguments.is_process_zero:
+                per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+                global_total = int(total_dp) * per_process
+                logger.info(
+                    f"GSPO Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
+                    f"derived rollouts_per_step={self.arguments.rollouts_per_step}, "
+                    f"DP={total_dp}, batch_size={self.arguments.total_batch_size}, "
+                    f"per_process_rollouts={per_process}, global_rollouts={global_total}"
+                )
+        
+        # GSPO-specific training step static arguments (add importance_sampling_level and epsilon)
+        # Allow gradient accumulation to be driven by config (incl. microbatch_one_completion)
+        self._train_shared_fn_static_args = (
+            self.num_generations,
+            self.arguments.beta,
+            self.arguments.importance_sampling_level,
+            self.arguments.epsilon,
+            self.arguments.loss_config,
+            self.scheduler,
+            self.arguments.step_partition_spec,
+            self.arguments.gradient_accumulation_steps,
+            True,  # is_train
+        )
+
+        # Compute static arg indices robustly, capped by function arity
+        import inspect as _inspect
+        _sig = _inspect.signature(gspo_step)
+        _max_pos_index = len(_sig.parameters) - 1  # zero-based last positional index
+        _end = min(2 + len(self._train_shared_fn_static_args), _max_pos_index + 1)
+        static_argnames = tuple(range(2, _end))
+
+        sharded_training_step_function = ejit(
+            gspo_step,
+            in_shardings=(self.state_shardings, None),
+            out_shardings=(self.state_shardings, empty_sharding),
+            donate_argnums=(0,),
+            static_argnums=static_argnames,
+        )
+
+        # GSPO-specific evaluation step static arguments
+        self._eval_shared_fn_static_args = (
+            self.num_generations,
+            self.arguments.beta,
+            self.arguments.importance_sampling_level,
+            self.arguments.epsilon,
+            self.arguments.loss_config,
+            self.scheduler,
+            self.arguments.step_partition_spec,
+            self.arguments.gradient_accumulation_steps,
+            False,  # is_train
+        )
+
+        sharded_evaluation_step_function = ejit(
+            gspo_step,
+            in_shardings=(self.state_shardings, None),
+            out_shardings=empty_sharding,
+            static_argnums=static_argnames,
+        )
+
+        sharded_training_step_function.static_argnums_ = static_argnames
+        sharded_evaluation_step_function.static_argnums_ = static_argnames
+
+        # Return the same structure but with GSPO-specific step functions
+        return TrainerConfigureFunctionOutput(
+            sharded_training_step_function=sharded_training_step_function,
+            sharded_evaluation_step_function=sharded_evaluation_step_function,
+            mesh=parent_result.mesh,
+            checkpoint_manager=parent_result.checkpoint_manager,
+        )===== _fn.py =====
+# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import typing as tp
+
+import flax
+import flax.nnx
+import jax
+import optax
+from eformer.escale import with_sharding_constraint
+from jax import numpy as jnp
+from jax.sharding import PartitionSpec
+
+from easydel.infra.base_state import EasyDeLState
+from easydel.infra.loss_utils import LossConfig, LossMetrics
+
+from ..training_utils import make_assertions_and_get_sizes, minibatch_call, update_metrics, update_state_respectfully
+
+RewardFunc = tp.Union[EasyDeLState, tp.Callable[[list, list], list[float]]]  # noqa
+
+
+def _compute_quantile_grid_stats(x: jnp.ndarray, y: jnp.ndarray, num_quantiles: int = 41) -> dict:
+    """
+    Compute quantile-based distances between two 1D samples using fixed quantile grid.
+
+    Returns a dict containing:
+      - qq_l2: Mean squared difference between quantile functions
+      - w1: Approximate Wasserstein-1 distance via |Qx - Qy| integrated over p
+    """
+    # Ensure float32 for numerical stability
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+
+    # Use interior quantiles to reduce tail noise; grid in (0,1)
+    probs = jnp.linspace(0.02, 0.98, num_quantiles, dtype=jnp.float32)
+    qx = jnp.quantile(x, probs, method="linear")
+    qy = jnp.quantile(y, probs, method="linear")
+
+    diff = qx - qy
+    qq_l2 = jnp.mean(diff * diff)
+    # Trapezoidal rule to integrate |Qx - Qy| over p in [0,1]
+    absdiff = jnp.abs(diff)
+    w1 = jnp.trapz(absdiff, probs)
+    return {"qq_l2": qq_l2, "w1": w1}
+
+
+def _ks_statistic_approx(x: jnp.ndarray, y: jnp.ndarray, grid_size: int = 129) -> jnp.ndarray:
+    """
+    Approximate two-sample Kolmogorov–Smirnov statistic on a fixed value grid.
+    Uses an evenly spaced grid between min and max of pooled samples to avoid dynamic shapes.
+    """
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+    vmin = jnp.minimum(jnp.min(x), jnp.min(y))
+    vmax = jnp.maximum(jnp.max(x), jnp.max(y))
+    # Handle degenerate case to avoid NaNs
+    vmax = jnp.where(jnp.equal(vmin, vmax), vmin + 1e-6, vmax)
+    grid = jnp.linspace(vmin, vmax, grid_size, dtype=jnp.float32)
+
+    # Empirical CDFs on the grid via broadcasting
+    Fx = jnp.mean((x[:, None] <= grid[None, :]).astype(jnp.float32), axis=0)
+    Fy = jnp.mean((y[:, None] <= grid[None, :]).astype(jnp.float32), axis=0)
+    return jnp.max(jnp.abs(Fx - Fy))
+
+
+def _epps_singleton_stat(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    """
+    Epps–Singleton-style statistic using a small set of frequencies, avoiding complex dtypes.
+    T = sum_k [(Ex cos(t_k X) - Ey cos(t_k Y))^2 + (Ex sin(t_k X) - Ey sin(t_k Y))^2]
+    """
+    x = x.astype(jnp.float32)
+    y = y.astype(jnp.float32)
+    ts = jnp.asarray([0.5, 1.0, 2.0], dtype=jnp.float32)
+
+    def _stat_for_t(t):
+        cx = jnp.mean(jnp.cos(t * x))
+        sx = jnp.mean(jnp.sin(t * x))
+        cy = jnp.mean(jnp.cos(t * y))
+        sy = jnp.mean(jnp.sin(t * y))
+        return (cx - cy) ** 2 + (sx - sy) ** 2
+
+    vals = jax.vmap(_stat_for_t)(ts)
+    return jnp.sum(vals)
+
+
+def _sequence_average(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute per-sequence average over valid tokens using a binary mask.
+    Returns a 1D array of shape [num_sequences].
+    """
+    # Sum over sequence axis then divide by valid lengths (avoid divide-by-zero)
+    lengths = jnp.maximum(jnp.sum(mask, axis=1), 1.0)
+    summed = jnp.sum(values * mask, axis=1)
+    return summed / lengths
+
+
+def compute_two_sample_stats_1d(x: jnp.ndarray, y: jnp.ndarray) -> dict[str, jnp.ndarray]:
+    """
+    Simplified comparison: report only mean difference to avoid heavy host/device work.
+    """
+    return {"dist/mean_delta": jnp.mean(x) - jnp.mean(y)}
+
+
+def get_per_token_logps(model, input_ids, attention_mask, prompt_length):
+    """
+    Get per-token log probabilities using the model outputs.
+
+    Args:
+        model: The language model
+        input_ids: Input token ids [batch_size, seq_len]
+        attention_mask: Input masks [batch_size, seq_len]
+        prompt_length: Length of the prompt
+    """
+
+    logits = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+    ).logits[:, prompt_length - 1 :]
+    logits = logits[:, :-1, :]
+    token_log_probs = compute_per_token_logps(logits, input_ids, prompt_length)
+    return token_log_probs
+
+
+def compute_per_token_logps(logits, input_ids, prompt_length):
+    """
+    Compute per-token log probabilities in a vectorized way.
+
+    Args:
+        logits: Pre-trimmed logits [batch_size, seq_len, vocab_size]
+        input_ids: Input token ids [batch_size, seq_len]
+        prompt_length: Length of the prompt
+    """
+    log_probs = jax.nn.log_softmax(logits, axis=-1)
+    target_ids = input_ids[:, prompt_length:]
+    token_log_probs = jnp.take_along_axis(
+        log_probs,
+        jnp.expand_dims(target_ids, axis=-1),
+        axis=-1,
+    )
+    token_log_probs = jnp.squeeze(token_log_probs, axis=-1)
+    return token_log_probs
+
+
+def grpo_step(
+    state: EasyDeLState,
+    batch: tp.Mapping[str, jax.Array],
+    num_generations: int,
+    beta: float,
+    loss_config: LossConfig | None = None,
+    learning_rate_fn: optax.Schedule = None,
+    partition_spec: PartitionSpec | None = None,
+    gradient_accumulation_steps: int = 1,
+    is_training: bool = True,
+) -> tuple[EasyDeLState, LossMetrics]:
+    # Determine batch size, minibatch size, and enforce partition spec.
+    batch_size, minibatch_size, partition_spec = make_assertions_and_get_sizes(
+        batch=batch,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        batch_partition_spec=partition_spec,
+    )
+    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
+
+    def loss_fn(tree, minibatch):
+        module = flax.nnx.merge(state.graphdef, tree, state.graphother)
+
+        (
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            advantages,
+        ) = (
+            minibatch["prompt_ids"],
+            minibatch["prompt_mask"],
+            minibatch["completion_ids"],
+            minibatch["completion_mask"],
+            minibatch["advantages"],
+        )
+
+        # Repeat prompts to match completions if needed so leading dims align
+        if prompt_ids.shape[0] != completion_ids.shape[0]:
+            # Expect completion_ids batch = prompt_ids batch × num_generations
+            repeat_factor = completion_ids.shape[0] // prompt_ids.shape[0]
+            prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
+            prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
+        else:
+            prompt_ids_rep = prompt_ids
+            prompt_mask_rep = prompt_mask
+
+        input_ids = jnp.concatenate([prompt_ids_rep, completion_ids], axis=1)
+        attention_mask = jnp.concatenate([prompt_mask_rep, completion_mask], axis=1)
+
+        per_token_logps = get_per_token_logps(module, input_ids, attention_mask, prompt_ids.shape[-1])
+
+        ref_per_token_logps = minibatch["ref_per_token_logps"]
+        per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+
+        per_token_loss = jnp.exp(per_token_logps - jax.lax.stop_gradient(per_token_logps)) * jnp.expand_dims(
+            advantages, 1
+        )
+        per_token_loss = -(per_token_loss - beta * per_token_kl)
+        comps = jnp.sum(completion_mask, axis=1)
+        loss = jnp.mean(jnp.sum(per_token_loss * completion_mask, axis=1) / comps)
+        mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / comps)
+
+        # Compute advantage statistics for progress bar
+        advantage_median_abs = jnp.median(jnp.abs(advantages))
+        advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
+        
+        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
+        dist_stats = {}
+
+        # Assemble metrics
+        other_items = {
+            "advantages_mean": jnp.mean(advantages),
+            "advantage_median_abs": advantage_median_abs,
+            "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
+        }
+        # Skip logprob diagnostics for stability
+
+        return loss, LossMetrics(
+            loss=loss,
+            accuracy=1,
+            other_metrics=other_items,
+        )
+
+    # Compute gradients and metrics across minibatches.
+    if is_training:
+        gradients, metrics = minibatch_call(
+            state=state,
+            batch=batch,
+            minibatch_size=minibatch_size,
+            grad_fn=jax.value_and_grad(loss_fn, has_aux=True),
+        )
+        state = update_state_respectfully(
+            state=state,
+            gradients=gradients,
+            loss_config=loss_config,
+            metrics=update_metrics(
+                metrics=metrics,
+                learning_rate_fn=learning_rate_fn,
+                step=state.step,
+                gradients=gradients,
+            ),
+        )
+        return state, metrics
+    else:
+        _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
+        return state, metrics
+===== _gspo_fn.py =====
+# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import typing as tp
+
+import flax
+import flax.nnx
+import jax
+import optax
+from eformer.escale import with_sharding_constraint
+from jax import numpy as jnp
+from jax.sharding import PartitionSpec
+
+from easydel.infra.base_state import EasyDeLState
+from easydel.infra.loss_utils import LossConfig, LossMetrics
+
+from ..training_utils import make_assertions_and_get_sizes, minibatch_call, update_metrics, update_state_respectfully
+from ._fn import get_per_token_logps
+
+
+def gspo_step(
+    state: EasyDeLState,
+    batch: tp.Mapping[str, jax.Array],
+    num_generations: int,
+    beta: float,
+    importance_sampling_level: str = "sequence",
+    epsilon: float = 0.2,
+    loss_config: LossConfig | None = None,
+    learning_rate_fn: optax.Schedule = None,
+    partition_spec: PartitionSpec | None = None,
+    gradient_accumulation_steps: int = 1,
+    is_training: bool = True,
+# Same mixed return convention as the other helpers
+) -> tp.Union[tuple[EasyDeLState, LossMetrics], LossMetrics]:
+    """
+    GSPO (Group Sequence Policy Optimization) training step.
+    
+    Key difference from GRPO: Computes importance sampling weights at the sequence level
+    instead of per-token, leading to more stable training for sequence-level rewards.
+    
+    Args:
+        state: The current training state
+        batch: Training batch containing prompts and completions
+        num_generations: Number of generations per prompt
+        beta: KL penalty coefficient
+        importance_sampling_level: "token" or "sequence" level importance sampling
+        epsilon: Clipping epsilon for PPO-style objective
+        loss_config: Loss configuration
+        learning_rate_fn: Learning rate schedule
+        partition_spec: Partitioning specification for distributed training
+        gradient_accumulation_steps: Number of gradient accumulation steps
+        is_training: Whether in training mode
+    
+    Returns:
+        Updated state and loss metrics
+    """
+    # Determine batch size, minibatch size, and enforce partition spec.
+    batch_size, minibatch_size, partition_spec = make_assertions_and_get_sizes(
+        batch=batch,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        batch_partition_spec=partition_spec,
+    )
+    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
+
+    def loss_fn(tree, minibatch):
+        module = flax.nnx.merge(state.graphdef, tree, state.graphother)
+
+        (
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            advantages,
+        ) = (
+            minibatch["prompt_ids"],
+            minibatch["prompt_mask"],
+            minibatch["completion_ids"],
+            minibatch["completion_mask"],
+            minibatch["advantages"],
+        )
+
+        # Repeat prompts to match completions if needed so leading dims align
+        if prompt_ids.shape[0] != completion_ids.shape[0]:
+            repeat_factor = completion_ids.shape[0] // prompt_ids.shape[0]
+            prompt_ids_rep = prompt_ids.repeat(repeat_factor, 0)
+            prompt_mask_rep = prompt_mask.repeat(repeat_factor, 0)
+        else:
+            prompt_ids_rep = prompt_ids
+            prompt_mask_rep = prompt_mask
+
+        input_ids = jnp.concatenate([prompt_ids_rep, completion_ids], axis=1)
+        attention_mask = jnp.concatenate([prompt_mask_rep, completion_mask], axis=1)
+
+        per_token_logps = get_per_token_logps(module, input_ids, attention_mask, prompt_ids.shape[-1])
+        ref_per_token_logps = minibatch["ref_per_token_logps"]
+        
+        # Compute log ratios at token level
+        log_ratio = per_token_logps - ref_per_token_logps
+        
+        # GSPO: Compute importance sampling weights based on specified level
+        if importance_sampling_level == "token":
+            # Standard GRPO: per-token importance weights
+            log_importance_weights = log_ratio
+        elif importance_sampling_level == "sequence":
+            # GSPO: sequence-level importance weights
+            # Average log ratios across valid tokens to get single weight per sequence
+            seq_log_ratios = (log_ratio * completion_mask).sum(axis=1) / jnp.maximum(completion_mask.sum(axis=1), 1.0)
+            log_importance_weights = seq_log_ratios[:, None]  # Shape: (B, 1)
+        else:
+            raise ValueError(f"Unknown importance_sampling_level: {importance_sampling_level}")
+        
+        # Compute importance sampling ratios
+        ratio = jnp.exp(log_importance_weights)
+        clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+        
+        # Compute policy gradient loss
+        pg_loss1 = -advantages[:, None] * ratio
+        pg_loss2 = -advantages[:, None] * clipped_ratio
+        per_token_loss = jnp.maximum(pg_loss1, pg_loss2)
+        
+        # KL divergence computation (same as GRPO)
+        per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        
+        # Add KL penalty
+        if importance_sampling_level == "sequence":
+            # For sequence-level, broadcast KL penalty
+            per_token_loss = per_token_loss + beta * per_token_kl
+        else:
+            # For token-level, standard addition
+            per_token_loss = per_token_loss + beta * per_token_kl
+        
+        # Compute loss
+        comps = jnp.sum(completion_mask, axis=1)
+        loss = jnp.mean(jnp.sum(per_token_loss * completion_mask, axis=1) / jnp.maximum(comps, 1.0))
+        
+        # Compute metrics
+        mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / jnp.maximum(comps, 1.0))
+        
+        # Clipping metrics computation
+        if importance_sampling_level == "sequence":
+            # For sequence-level, compute clipping at sequence level
+            clipped_fraction = jnp.mean((jnp.abs(ratio[:, 0] - clipped_ratio[:, 0]) > 1e-6).astype(jnp.float32))
+            mean_ratio = jnp.mean(ratio[:, 0])
+        else:
+            # For token-level, compute clipping at token level
+            clipped_fraction = jnp.mean(((jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask).astype(jnp.float32))
+            mean_ratio = jnp.mean(ratio * completion_mask) / jnp.mean(completion_mask)
+
+        # Skip logging of logprob-difference diagnostics to avoid host/device divergence
+        dist_stats = {}
+
+        # Compute advantage statistics for progress bar
+        advantage_median_abs = jnp.median(jnp.abs(advantages))
+        advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
+
+        return loss, LossMetrics(
+            loss=loss,
+            accuracy=1,
+            other_metrics={
+                "mean_ratio": mean_ratio,
+                "clipped_fraction": clipped_fraction,
+                "advantages_mean": jnp.mean(advantages),
+                "advantage_median_abs": advantage_median_abs,
+                "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
+                # Convert string to numeric value for JAX compatibility
+                "importance_sampling_level_seq": jnp.float32(1.0 if importance_sampling_level == "sequence" else 0.0),
+            },
+        )
+
+    # Compute gradients and metrics across minibatches.
+    if is_training:
+        gradients, metrics = minibatch_call(
+            state=state,
+            batch=batch,
+            minibatch_size=minibatch_size,
+            grad_fn=jax.value_and_grad(loss_fn, has_aux=True),
+        )
+        state = update_state_respectfully(
+            state=state,
+            gradients=gradients,
+            loss_config=loss_config,
+            metrics=update_metrics(
+                metrics=metrics,
+                learning_rate_fn=learning_rate_fn,
+                step=state.step,
+                gradients=gradients,
+            ),
+        )
+        return state, metrics
+    else:
+        _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
+        return metrics  # type: ignore[return-value] 
