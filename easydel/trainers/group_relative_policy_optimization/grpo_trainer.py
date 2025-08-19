@@ -403,6 +403,12 @@ class GRPOTrainer(Trainer):
         # Derive rollouts_per_step from num_return_sequences if not provided
         mesh_shape = getattr(mesh, "shape", {})
         dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+        # Effective DP is bounded by the actual number of JAX processes participating
+        try:
+            proc_count = jax.process_count()
+        except Exception:
+            proc_count = 1
+        effective_dp = max(1, min(int(dp_size), int(proc_count)))
         total_dp = dp_size
         if getattr(self.arguments, 'rollouts_per_step', None) is None:
             derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
@@ -412,8 +418,9 @@ class GRPOTrainer(Trainer):
                 global_total = int(total_dp) * per_process
                 logger.info(
                     f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                    f"derived_global_rollouts_per_step={self.arguments.rollouts_per_step}, "
-                    f"per_process_rollouts={per_process}, DP={total_dp}, batch_size={self.arguments.total_batch_size}"
+                    f"derived_global_rollouts_per_step={self.arguments.rollouts_per_step} (mesh DP={int(dp_size)}), "
+                    f"per_process_rollouts={per_process}, effective_global_rollouts={per_process * effective_dp} (effective DP={effective_dp}), "
+                    f"batch_size={self.arguments.total_batch_size}"
                 )
 
         # Use adaptive sharding based on batch size and tensor parallelism
@@ -707,7 +714,16 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Do not allgather for logging inside the training path to avoid launch-id divergence
+            # Optional: allgather for logging (disabled by default to avoid launch-id divergence)
+            _global_lengths_for_logging = None
+            if getattr(self.arguments, "log_global", False):
+                try:
+                    # Ensure all processes run this collective if enabled
+                    lengths_local_arr = jnp.asarray(completion_lengths_per_seq, dtype=jnp.int32)
+                    _g = jax.experimental.multihost_utils.process_allgather(lengths_local_arr)
+                    _global_lengths_for_logging = jnp.reshape(_g, (-1,))
+                except Exception:
+                    _global_lengths_for_logging = None
 
             # Host-side diagnostic: print per-rollout completion token lengths (process 0 prints)
             if jax.process_index() == 0:
@@ -753,7 +769,20 @@ class GRPOTrainer(Trainer):
                             for qi, arr in enumerate(grouped):
                                 logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {arr}")
                             
-                            # Skip global logging to prevent conditional collectives inside JIT path
+                            # Optional: global logging if explicitly enabled
+                            if getattr(self.arguments, "log_global", False):
+                                try:
+                                    if _global_lengths_for_logging is not None:
+                                        all_lengths_flat = _global_lengths_for_logging
+                                        total_global_queries = num_queries * max(1, jax.process_count())
+                                        logger.info(
+                                            f"GLOBAL completion_token_lengths: total_queries={total_global_queries}, "
+                                            f"total_completions={int(all_lengths_flat.shape[0])}, "
+                                            f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
+                                            f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
+                                        )
+                                except Exception:
+                                    pass
                             
                             # If all per-query arrays are identical, this suggests duplicated prompts or identical RNG streams
                             try:
@@ -970,12 +999,17 @@ class GRPOTrainer(Trainer):
         per_completion_mean_reward = jnp.mean(rewards)
         num_prompts_local = int(prompt_ids.shape[0])
         num_completions_local = int(num_prompts_local * self.num_generations)
-        # Estimate DP size from the device mesh to report expected global denominators
+        # Use effective DP (min(mesh dp, process_count)) for global denominators
         try:
             mesh_shape = getattr(self.model.mesh, "shape", {})
-            dp_size = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
         except Exception:
-            dp_size = 1
+            mesh_dp = 1
+        try:
+            proc_count = jax.process_count()
+        except Exception:
+            proc_count = 1
+        dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         metrics_dict = {
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/denominator/completions_local": float(num_completions_local),

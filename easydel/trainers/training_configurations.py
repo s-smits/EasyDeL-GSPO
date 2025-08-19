@@ -221,6 +221,14 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Whether to log metrics from all workers in a distributed setup."},
     )
+    log_global: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, perform cross-process allgather of certain diagnostics (e.g., completion lengths) "
+            "to log global views. This introduces collectives in the host preprocessing path; enable only when "
+            "you need full global logs. Default False for maximal stability."
+        },
+    )
     log_grad_norms: bool = field(
         default=True,
         metadata={"help": "Whether to log gradient norms."},
