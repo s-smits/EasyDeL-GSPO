@@ -128,6 +128,29 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    advantage_epsilon: float = field(
+        default=1e-6,
+        metadata={
+            "help": "Minimum standard deviation threshold for computing advantages. Groups with std < epsilon "
+            "will have their advantages set to 0 to avoid numerical instability. Typical values: 1e-6 to 1e-3. "
+            "Critical for avoiding tiny advantages (e.g., 1e-8) that provide no learning signal. "
+            "After per-group standardization, advantages should typically have median |A| ~ 0.5-1.5 "
+            "and 95th percentile |A| ~ 2-5. If you see many low-variance groups, consider: "
+            "(1) using more diverse prompts, (2) increasing num_return_sequences, "
+            "(3) using continuous rewards instead of binary, or (4) increasing this epsilon."
+        },
+    )
+
+    # Note: use num_return_sequences, rollouts_per_step, and rollout_chunk_size as the primary knobs
+
+    # Memory-optimized microbatching: process one completion per prompt per microbatch
+    microbatch_one_completion: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, set gradient_accumulation_steps = num_return_sequences so each microbatch holds one completion per prompt. "
+            "Also defaults completions_chunk_size (rollout_chunk_size) to 1 for lowest generation memory."
+        },
+    )
 
     top_p: float = field(
         default=0.95,

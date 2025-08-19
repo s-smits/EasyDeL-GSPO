@@ -162,8 +162,7 @@ def grpo_step(
     partition_spec: PartitionSpec | None = None,
     gradient_accumulation_steps: int = 1,
     is_training: bool = True,
-    log_logprobs_metrics: bool = True,
-) -> tp.Union[tuple[EasyDeLState, LossMetrics], LossMetrics]:
+) -> tuple[EasyDeLState, LossMetrics]:
     # Determine batch size, minibatch size, and enforce partition spec.
     batch_size, minibatch_size, partition_spec = make_assertions_and_get_sizes(
         batch=batch,
@@ -258,4 +257,4 @@ def grpo_step(
         return state, metrics
     else:
         _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
-        return metrics  # type: ignore[return-value]
+        return state, metrics
