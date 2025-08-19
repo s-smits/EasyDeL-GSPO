@@ -570,13 +570,20 @@ class BaseTrainer(BaseTrainerProtocol):
             )
             
             # Log dataset sharding configuration for multi-worker setups
-            if jax.process_count() > 1 and jax.process_index() == 0:
-                logger.info(
-                    f"Dataset sharding configured for {self.arguments.grain_shard_count} workers: "
-                    f"shard_index={self.arguments.grain_shard_index}, "
-                    f"shard_count={self.arguments.grain_shard_count}, "
-                    f"batch_size={'train' if is_train else 'eval'}={batch_size}"
-                )
+            if jax.process_count() > 1:
+                if jax.process_index() == 0:
+                    logger.info(
+                        f"Dataset sharding configured for {self.arguments.grain_shard_count} workers: "
+                        f"shard_index={self.arguments.grain_shard_index}, "
+                        f"shard_count={self.arguments.grain_shard_count}, "
+                        f"batch_size={'train' if is_train else 'eval'}={batch_size}"
+                    )
+                elif getattr(self.arguments, "log_all_workers", False):
+                    logger.info(
+                        f"Worker {jax.process_index()}: shard_index={self.arguments.grain_shard_index}, "
+                        f"shard_count={self.arguments.grain_shard_count}, "
+                        f"batch_size={'train' if is_train else 'eval'}={batch_size}"
+                    )
             from datasets import IterableDataset
 
             if isinstance(dataset, IterableDataset):

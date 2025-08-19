@@ -93,16 +93,21 @@ class GRPOTrainer(Trainer):
         if arguments.force_tensor_parallel is not None or arguments.force_data_parallel is not None:
             mesh_plan = configure_adaptive_mesh_inplace(arguments)
             
-            # Ensure dataset sharding aligns with DP only
+            # Ensure dataset sharding aligns with active DP only (effective DP)
             try:
-                # Dataset should be sharded across DP workers only
-                arguments.grain_shard_count = mesh_plan.dp
-                arguments.grain_shard_index = jax.process_index() % mesh_plan.dp
-                
+                try:
+                    proc_cnt = max(1, int(jax.process_count()))
+                except Exception:
+                    proc_cnt = 1
+                effective_dp = max(1, min(int(mesh_plan.dp), proc_cnt))
+                # Dataset should be sharded across effective DP workers only
+                arguments.grain_shard_count = effective_dp
+                arguments.grain_shard_index = jax.process_index() % effective_dp
+
                 if jax.process_index() == 0:
                     logger.info(
                         f"Configured mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, "
-                        f"TP={mesh_plan.tp}, dataset shards={mesh_plan.dp}"
+                        f"TP={mesh_plan.tp}, dataset shards={effective_dp} (effective DP={effective_dp})"
                     )
             except Exception as e:
                 logger.warning(f"Failed to configure dataset sharding: {e}")
@@ -848,9 +853,14 @@ class GRPOTrainer(Trainer):
                     # Only log short prefixes and uniqueness to avoid massive logs
                     prompt_prefixes = [p[:64].replace("\n", " ") for p in prompts]
                     unique_prompt_count = len(set(prompts))
+                    try:
+                        shard_idx = getattr(self.arguments, "grain_shard_index", None)
+                        shard_cnt = getattr(self.arguments, "grain_shard_count", None)
+                    except Exception:
+                        shard_idx, shard_cnt = None, None
                     logger.info(
-                        f"prompt_diagnostics: queries={len(prompts)}, unique={unique_prompt_count}; "
-                        f"prefixes={prompt_prefixes}"
+                        f"prompt_diagnostics: proc={jax.process_index()}, shard={shard_idx}/{shard_cnt}, "
+                        f"queries={len(prompts)}, unique={unique_prompt_count}; prefixes={prompt_prefixes}"
                     )
                 except Exception:
                     pass
