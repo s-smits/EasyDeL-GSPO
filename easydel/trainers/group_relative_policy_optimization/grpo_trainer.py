@@ -496,10 +496,9 @@ class GRPOTrainer(Trainer):
             self.arguments.step_partition_spec,
             self.arguments.gradient_accumulation_steps,
             True,  # is_train
-            getattr(self.arguments, "log_logprobs_metrics", True),
         )
 
-        static_argnames = (2, 3, 4, 5, 6, 7, 8, 9)
+        static_argnames = (2, 3, 4, 5, 6, 7, 8)
         
         sharded_training_step_function = ejit(
             grpo_step,
