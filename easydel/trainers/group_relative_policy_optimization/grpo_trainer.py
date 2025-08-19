@@ -717,14 +717,21 @@ class GRPOTrainer(Trainer):
             completion_lengths_per_seq = completion_mask.sum(-1)
             # Optional: allgather for logging (disabled by default to avoid launch-id divergence)
             _global_lengths_for_logging = None
+            _global_lengths_shaped = None
             if getattr(self.arguments, "log_global", False):
                 try:
                     # Ensure all processes run this collective if enabled
                     lengths_local_arr = jnp.asarray(completion_lengths_per_seq, dtype=jnp.int32)
-                    _g = jax.experimental.multihost_utils.process_allgather(lengths_local_arr)
+                    r = max(1, int(self.num_generations))
+                    local_total = int(lengths_local_arr.shape[0])
+                    local_queries = max(1, local_total // r)
+                    lengths_local_2d = jnp.reshape(lengths_local_arr, (local_queries, r))
+                    _g = jax.experimental.multihost_utils.process_allgather(lengths_local_2d)
+                    _global_lengths_shaped = _g
                     _global_lengths_for_logging = jnp.reshape(_g, (-1,))
                 except Exception:
                     _global_lengths_for_logging = None
+                    _global_lengths_shaped = None
 
             # Host-side diagnostic: print per-rollout completion token lengths (process 0 prints)
             if jax.process_index() == 0:
@@ -784,6 +791,22 @@ class GRPOTrainer(Trainer):
                                             f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
                                             f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
                                         )
+                                        # Per-query global breakdown (compact)
+                                        try:
+                                            if _global_lengths_shaped is not None:
+                                                dp_dim = int(_global_lengths_shaped.shape[0])
+                                                lq_dim = int(_global_lengths_shaped.shape[1])
+                                                r_dim = int(_global_lengths_shaped.shape[2])
+                                                max_proc = min(4, dp_dim)
+                                                max_q = min(8, lq_dim)
+                                                for pi in range(max_proc):
+                                                    for lqi in range(max_q):
+                                                        arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[pi, lqi]))]
+                                                        logger.info(
+                                                            f"GLOBAL query_p{pi}_q{lqi}_lengths: {arr}"
+                                                        )
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
                             
