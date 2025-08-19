@@ -22,6 +22,7 @@ import inspect
 import flax
 import flax.nnx
 import jax
+import numpy as np
 from eformer import common_types
 from eformer.escale import with_sharding_constraint
 from flax import nnx as nn
@@ -1176,6 +1177,9 @@ class GRPOTrainer(Trainer):
                     else:
                         global_mean = jnp.mean(rewards_per_func[:, i])
                         global_std = jnp.std(rewards_per_func[:, i])
+                except Exception:
+                    global_mean = jnp.mean(rewards_per_func[:, i])
+                    global_std = jnp.std(rewards_per_func[:, i])
                 
                 # TRL-compatible reward function metrics
                 metrics_dict[f"rewards/{_name}/mean"] = global_mean
