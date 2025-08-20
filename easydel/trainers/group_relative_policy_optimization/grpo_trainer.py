@@ -691,101 +691,59 @@ class GRPOTrainer(Trainer):
         batch: dict[str, jax.Array],
         state: EasyDeLState
     ) -> dict[str, jax.Array]:
-        """Cascade fill to ensure minimum unique prompts by fetching additional samples if needed."""
+        """Efficient cascade filling with optimized individual prompt selection."""
         if not hasattr(self, 'dataset_train') or self.dataset_train is None:
             return batch
 
-        # Get target batch size from original batch
-        target_batch_size = batch["input_ids"].shape[0]
-
-        # Check current uniqueness
+        # Compute hashes for existing prompts
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-        local_hashes = []
-        for p in prompts:
-            prompt_bytes = p.encode('utf-8')
-            hash_obj = hashlib.md5(prompt_bytes)
-            hash_u32 = np.frombuffer(hash_obj.digest(), dtype=np.uint32)
-            local_hashes.append(hash_u32[0])
+        local_hashes = jnp.array([hash(p.encode('utf-8')) % (2**32) for p in prompts], dtype=jnp.uint32)
 
-        local_hashes_np = np.array(local_hashes, dtype=np.uint32)
-        local_hashes = jnp.asarray(local_hashes_np, dtype=jnp.uint32)
-
-        # Gather across processes
-        gathered = jax.experimental.multihost_utils.process_allgather(local_hashes)
-        flat = jnp.reshape(gathered, (-1,))
-        flat_np = np.asarray(jax.device_get(flat))
-        unique_count = int(np.unique(flat_np).size)
-        total_count = int(flat_np.size)
+        # Check global uniqueness
+        gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes)
+        unique_hashes = jnp.unique(gathered_hashes.flatten())
+        unique_count, total_count = len(unique_hashes), len(gathered_hashes.flatten())
 
         tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
-        max_allowed_duplicates = max(2, int(tolerance * total_count))
+        target_unique = max(2, int(tolerance * total_count))
 
-        if unique_count >= max_allowed_duplicates:
-            return batch  # Already have enough unique prompts
-
-        logger.warning(
-            f"Insufficient unique prompts: {unique_count}/{total_count}. "
-            f"Cascade filling to reach minimum {max_allowed_duplicates} unique prompts."
-        )
-
-        # Need to fetch additional samples - create a larger batch
-        additional_needed = max_allowed_duplicates - unique_count
-        expanded_batch_size = min(target_batch_size + additional_needed * 2, len(self.dataset_train))
-
-        if expanded_batch_size <= target_batch_size:
-            logger.warning(f"Cannot expand batch: dataset too small ({len(self.dataset_train)} samples)")
+        if unique_count >= target_unique:
             return batch
 
-        # Create iterator for additional samples (this is a simplified approach)
-        # In a real implementation, you'd want to use the proper dataloader
-        try:
-            # Get additional samples from dataset
-            additional_indices = np.random.choice(
-                len(self.dataset_train),
-                size=expanded_batch_size - target_batch_size,
-                replace=False
-            )
+        # Efficient cascade filling
+        additional_needed = target_unique - unique_count
+        max_expand = min(len(self.dataset_train) - len(prompts), additional_needed * 3)
 
-            additional_samples = []
-            for idx in additional_indices:
-                sample = self.dataset_train[idx]
-                # Process the sample similar to how the dataloader does it
-                if hasattr(sample, 'keys'):
-                    additional_samples.append(sample)
-                else:
-                    additional_samples.append({"text": sample})
+        if max_expand <= 0:
+            return batch
 
-            # Process additional samples through the same pipeline
-            if additional_samples:
-                # This is a simplified implementation - you'd want to match the exact dataloader preprocessing
-                additional_texts = [s.get("text", str(s)) for s in additional_samples]
-                additional_tokens = self.processing_class(
-                    additional_texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=self.arguments.max_prompt_length,
-                    return_tensors="np"
-                )
+        # Select diverse samples efficiently
+        existing_hashes = set(unique_hashes.tolist())
+        candidates, new_samples = [], []
 
-                # Expand the original batch with additional samples
-                expanded_input_ids = np.concatenate([
-                    np.array(batch["input_ids"]),
-                    additional_tokens["input_ids"]
-                ])
-                expanded_attention_mask = np.concatenate([
-                    np.array(batch["attention_mask"]),
-                    additional_tokens["attention_mask"]
-                ])
+        for i in np.random.permutation(len(self.dataset_train)):
+            if len(candidates) >= max_expand:
+                break
+            sample = self.dataset_train[i]
+            text = sample.get("text", str(sample))
+            sample_hash = hash(text.encode('utf-8')) % (2**32)
+            if sample_hash not in existing_hashes:
+                candidates.append(text)
+                existing_hashes.add(sample_hash)
 
-                # Convert back to JAX arrays
-                batch["input_ids"] = jnp.asarray(expanded_input_ids)
-                batch["attention_mask"] = jnp.asarray(expanded_attention_mask)
+        if not candidates:
+            return batch
 
-                logger.info(f"Cascade filled batch: {target_batch_size} -> {expanded_batch_size} samples")
+        # Batch tokenize new samples
+        new_tokens = self.processing_class(candidates, padding=True, truncation=True,
+                                         max_length=self.arguments.max_prompt_length, return_tensors="np")
 
-        except Exception as e:
-            logger.error(f"Failed to cascade fill batch: {e}")
-            # Return original batch if cascade filling fails
+        # Merge batches efficiently
+        batch["input_ids"] = jnp.concatenate([batch["input_ids"], jnp.asarray(new_tokens["input_ids"])])
+        batch["attention_mask"] = jnp.concatenate([batch["attention_mask"], jnp.asarray(new_tokens["attention_mask"])])
+
+        logger.info(f"Cascade filled: {len(prompts)} -> {len(batch['input_ids'])} samples "
+                   f"({unique_count} -> {unique_count + len(candidates)} unique)")
 
         return batch
 
