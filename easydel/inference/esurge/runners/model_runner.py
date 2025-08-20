@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import time
 import typing
-from typing import cast
+from functools import partial
 
 import jax
 from eformer import escale as es
@@ -131,6 +131,7 @@ class ExecutorManager:
         kv_pages: PagesCache,
         use_combined_forward: bool = False,
         use_aot_forward: bool = True,
+        min_input_pad: int = 8,
     ):
         """Initialize the executor manager.
 
@@ -151,6 +152,7 @@ class ExecutorManager:
         self.kv_pages = kv_pages
         self.use_combined_forward = use_combined_forward
         self.use_aot_forward = use_aot_forward
+        self.min_input_pad = min_input_pad
         logger.debug("Splitting model module for graph-based execution")
         self.graphdef, self.graphstate, self.graphother = model.split_module()
 
@@ -250,7 +252,7 @@ class ExecutorManager:
         logger.debug(f"Token paddings: {num_tokens_paddings}")
         logger.debug(f"Max pages per request: {max_pages_per_req}, Max requests: {max_num_reqs}")
 
-        ufn = _get_padded_num_reqs_with_upper_limit
+        ufn = partial(_get_padded_num_reqs_with_upper_limit, min_input_pad=self.min_input_pad)
         reqs_padds = list(set([ufn(num_reqs, max_num_reqs) for num_reqs in range(max_num_reqs)]))
         total_compilations = len(num_tokens_paddings) * len(reqs_padds)
         compilation_count = 0
@@ -440,7 +442,7 @@ class ExecutorManager:
                     sampling_params.top_p.astype(logits.dtype),
                     sampling_params.temperature.astype(logits.dtype),
                     keys[1:],
-                    64,
+                    32,
                 )
                 return samples.reshape(-1, 1), output.past_key_values, keys[0]
 
@@ -614,7 +616,7 @@ class ExecutorManager:
         return example_args
 
 
-def _get_padded_num_reqs_with_upper_limit(x: int, upper_limit: int) -> int:
+def _get_padded_num_reqs_with_upper_limit(x: int, upper_limit: int, min_input_pad: int) -> int:
     """Calculate padded request count for compilation efficiency.
 
     Pads the number of requests to powers of 2 (up to 8) or the nearest
@@ -633,7 +635,7 @@ def _get_padded_num_reqs_with_upper_limit(x: int, upper_limit: int) -> int:
         >>> _get_padded_num_reqs_with_upper_limit(10, 32)  # Returns 16
         >>> _get_padded_num_reqs_with_upper_limit(20, 16)  # Returns 16
     """
-    res = 8 if x <= 8 else 1 << (x - 1).bit_length()
+    res = min_input_pad if x <= min_input_pad else 1 << (x - 1).bit_length()
     return min(res, upper_limit)
 
 
@@ -700,7 +702,8 @@ class eSurgeRunner:
         hbm_utilization: float = 0.5,
         page_size: int = 128,
         max_model_len: int = 2**13,
-        max_num_seqs: int = 8,
+        min_input_pad: int = 256,
+        max_num_seqs: int = 16,
         use_combined_forward: bool = False,
         use_aot_forward: bool = True,
         verbose: bool = False,
@@ -724,7 +727,9 @@ class eSurgeRunner:
         )
         self.max_num_seqs = max_num_seqs
         self.max_num_reqs = max_num_seqs
+
         self.max_model_len = max_model_len
+        self.min_input_pad = min(min_input_pad, max_num_seqs)
 
         self.page_size = int(self.metadata.page_size)
         self.max_pages_per_req = int(self.metadata.max_num_pages_per_req)
@@ -732,11 +737,12 @@ class eSurgeRunner:
 
         logger.debug("Creating ExecutorManager and initializing pages cache")
         self.executor_manager = ExecutorManager(
-            model,
-            model.mesh,
-            model.init_pages(self.metadata),
-            use_combined_forward,
-            use_aot_forward,
+            model=model,
+            mesh=model.mesh,
+            kv_pages=model.init_pages(self.metadata),
+            use_combined_forward=use_combined_forward,
+            use_aot_forward=use_aot_forward,
+            min_input_pad=self.min_input_pad,
         )
         self.log_it = logger.info if verbose else logger.debug
         logger.debug("Setting up internal variables and buffers")
@@ -922,10 +928,9 @@ class eSurgeRunner:
             slot_mapping_buf = slot_mapping_buf.at[1, :].set(sm1)
             slot_mapping_buf = slot_mapping_buf.at[2, :].set(sm2)
 
-            # padded_num_reqs: 8 if <=8 else next pow2, capped
             nr_safe = jnp.maximum(nr, 1)
             next_pow2 = jnp.left_shift(1, jnp.ceil(jnp.log2(nr_safe)).astype(jnp.int32))
-            padded_num_reqs = jnp.where(nr <= 8, jnp.int32(8), next_pow2)
+            padded_num_reqs = jnp.where(nr <= self.min_input_pad, jnp.int32(self.min_input_pad), next_pow2)
             padded_num_reqs = jnp.minimum(padded_num_reqs, jnp.int32(max_num_reqs))
 
             tmp_logits = qsl[1:] - 1
@@ -1177,34 +1182,28 @@ class eSurgeRunner:
             - Modifies sequence buffer contents
             - May trigger buffer condensation
         """
-        # Remove finished requests
-        if scheduler_output.finished_req_ids:
-            logger.debug(f"Removing {len(scheduler_output.finished_req_ids)} finished requests")
+        # Remove finished requests from tracking
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
 
+        # Remove finished requests from sequence buffer
         removed_req_indices: list[int] = []
         for req_id in scheduler_output.finished_req_ids:
             req_index = self.sequence_buffer.remove_request(req_id)
             if req_index is not None:
                 removed_req_indices.append(req_index)
-                logger.debug(f"Removed finished request {req_id} at index {req_index}")
 
-        # Remove unscheduled ones currently in buffer
+        # Identify and remove unscheduled requests from buffer
         scheduled_req_ids = scheduler_output.num_scheduled_tokens.keys()
         cached_req_ids = self.sequence_buffer.req_id_to_index.keys()
         unscheduled_req_ids = cached_req_ids - scheduled_req_ids
-
         for req_id in unscheduled_req_ids:
-            logger.debug(f"Removing unscheduled request {req_id} from sequence buffer")
             req_index = self.sequence_buffer.remove_request(req_id)
             assert req_index is not None
             removed_req_indices.append(req_index)
 
-        # Add new requests
+        # Add new requests to the tracking dictionary
         req_ids_to_add: list[str] = []
-        if scheduler_output.scheduled_new_reqs:
-            logger.debug(f"Adding {len(scheduler_output.scheduled_new_reqs)} new requests")
         for new_req_data in scheduler_output.scheduled_new_reqs:
             assert new_req_data.sampling_params is not None, "Pooling not supported in TPU"
             req_id = new_req_data.req_id
@@ -1218,55 +1217,70 @@ class eSurgeRunner:
                 output_token_ids=[],
             )
             req_ids_to_add.append(req_id)
-            logger.debug(f"Added new request {req_id} with {len(new_req_data.prompt_token_ids)} prompt tokens")
 
-        # Update cached reqs metadata
+        # Process cached requests and prepare batch updates
         req_data = scheduler_output.scheduled_cached_reqs
-        if req_data.req_ids:
-            logger.debug(f"Updating {len(req_data.req_ids)} cached requests")
+        upd_req_indices: list[int] = []  # Indices of requests to update
+        upd_num_computed_vals: list[int] = []  # New num_computed_tokens values
+        batched_page_rows: list[tuple[int, tuple[list[int], ...]]] = []  # Page table updates
+
+        # Update state for each cached request
         for i, req_id in enumerate(req_data.req_ids):
             req_state = self.requests.get(req_id)
             if req_state is None:
-                logger.warning(f"Cached request {req_id} not found in requests dict - skipping")
                 continue
 
-            num_computed_tokens = req_data.num_computed_tokens[i]
-            new_page_ids = req_data.new_page_ids[i]
+            nct = req_data.num_computed_tokens[i]  # New computed token count
+            new_page_ids = req_data.new_page_ids[i]  # New pages allocated for this request
             resumed_from_preemption = req_data.resumed_from_preemption[i]
-            req_state.num_computed_tokens = num_computed_tokens
+            req_state.num_computed_tokens = nct
 
+            # Handle page IDs based on preemption status
             if not resumed_from_preemption:
+                # Extend existing pages with new ones
                 for page_ids, new_ids in zip(req_state.page_ids, new_page_ids, strict=False):
                     page_ids.extend(new_ids)
             else:
+                # Replace pages entirely when resuming from preemption
                 req_state.page_ids = new_page_ids
 
+            # Check if request is already in sequence buffer
             req_index = self.sequence_buffer.req_id_to_index.get(req_id)
             if req_index is None:
+                # Request not in buffer, needs to be added
                 req_ids_to_add.append(req_id)
                 continue
-            self.sequence_buffer.num_computed_tokens = self.sequence_buffer.num_computed_tokens.at[req_index].set(
-                num_computed_tokens
-            )
-            self.sequence_buffer.page_table.append_row(new_page_ids, req_index)
 
-        # Add new or reinsert
+            # Collect updates for batched processing
+            upd_req_indices.append(req_index)
+            upd_num_computed_vals.append(int(nct))
+            batched_page_rows.append((req_index, new_page_ids))
+
+        # Batch update num_computed_tokens for efficiency
+        if upd_req_indices:
+            idx_arr = jnp.array(upd_req_indices, dtype=jnp.int32)
+            val_arr = jnp.array(upd_num_computed_vals, dtype=jnp.int32)
+            self.sequence_buffer.num_computed_tokens = self.sequence_buffer.num_computed_tokens.at[idx_arr].set(val_arr)
+
+        # Batch update page tables using optimized batched operation
+        if batched_page_rows:
+            indices = [ix for ix, _ in batched_page_rows]
+            pages_per_req = [ids for _, ids in batched_page_rows]
+            self.sequence_buffer.page_table.append_rows_batch(pages_per_req, indices)
+
+        # Add new/reinserted requests, reusing removed slots when possible
         removed_req_indices = sorted(removed_req_indices, reverse=True)
         for req_id in req_ids_to_add:
             req_state = self.requests[req_id]
             req_index = removed_req_indices.pop() if removed_req_indices else None
             self.sequence_buffer.add_request(req_state, req_index)
-            logger.debug(
-                f"Added request {req_id} to sequence buffer at index {req_index if req_index is not None else 'new'}"
-            )
 
+        # Condense sequence buffer to remove gaps from removed requests
         if removed_req_indices:
-            logger.debug(f"Condensing sequence buffer, removing {len(removed_req_indices)} empty slots")
             self.sequence_buffer.condense(removed_req_indices)
 
+        # Return whether any changes occurred that might affect scheduling
         has_changes = len(unscheduled_req_ids) > 0 or len(req_ids_to_add) > 0
-        if has_changes:
-            logger.debug(f"State update complete: {len(unscheduled_req_ids)} unscheduled, {len(req_ids_to_add)} added")
         return has_changes
 
     def _prepare_inputs(self, scheduler_output: SchedulerOutput, start_index: int):
@@ -1346,6 +1360,41 @@ class eSurgeRunner:
 
         return attn_metadata, logits_indices, padded_num_reqs, num_reqs, end_index, padded_total
 
+    @staticmethod
+    @ejit(donate_argnums=(0, 1))
+    def _apply_sampled_tokens_and_update(
+        token_ids: jax.Array,  # [max_reqs, max_len]
+        num_tokens: jax.Array,  # [max_reqs]
+        selected_token_ids: jax.Array,  # [max_reqs] or [max_reqs, 1]
+        scheduled_tokens: jax.Array,  # [max_reqs]
+        req_num_tokens: jax.Array,  # [max_reqs]
+        num_computed_tokens: jax.Array,  # [max_reqs]
+        active_mask: jax.Array,  # [max_reqs] bool
+        i_range: jax.Array,  # [max_reqs], reuse self.arange_np
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """
+        Shape-stable, fully jitted updater:
+          - computes valid_mask
+          - writes sampled token at [i, num_computed_tokens[i] + scheduled_tokens[i]]
+          - returns updated token_ids, num_tokens, out_tokens[-1 for invalid], valid_mask
+        """
+        sampled_flat = selected_token_ids.squeeze(-1) if selected_token_ids.ndim > 1 else selected_token_ids
+        seq_lens = num_computed_tokens + scheduled_tokens
+        valid_mask = active_mask & (scheduled_tokens > 0) & (seq_lens >= req_num_tokens)
+
+        # Static at trace time
+        max_len_m1 = token_ids.shape[1] - 1
+        j = jnp.clip(seq_lens, 0, max_len_m1)
+
+        # masked "set" using add(delta) for better fusion
+        current_vals = token_ids[i_range, j]
+        delta = jnp.where(valid_mask, sampled_flat - current_vals, 0)
+        token_ids = token_ids.at[(i_range, j)].add(delta)
+        num_tokens = num_tokens + valid_mask.astype(num_tokens.dtype)
+
+        out_tokens = jnp.where(valid_mask, sampled_flat, -1)
+        return token_ids, num_tokens, out_tokens, valid_mask
+
     def execute_model(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Execute the model on scheduled requests.
 
@@ -1381,7 +1430,9 @@ class eSurgeRunner:
         logger.debug(f"Starting model execution with {scheduler_output.total_num_scheduled_tokens} scheduled tokens")
 
         logger.debug("Updating internal states based on scheduler output")
+        updating_states_start = time.time()
         self._update_states(scheduler_output)
+        updating_states_time = time.time() - updating_states_start
 
         if not scheduler_output.total_num_scheduled_tokens:
             logger.debug("No tokens scheduled, returning empty output")
@@ -1400,6 +1451,8 @@ class eSurgeRunner:
         start_index = 0
         combined_selected_tokens: list[jax.Array] = []
         batch_count = 0
+        total_prepare_time = 0.0
+        total_exec_time = 0.0
 
         logger.debug(f"Processing {self.sequence_buffer.num_reqs} requests in batches")
         while start_index < self.sequence_buffer.num_reqs:
@@ -1415,6 +1468,7 @@ class eSurgeRunner:
                 padded_total,
             ) = self._prepare_inputs(scheduler_output, start_index)
             prepare_time = time.time() - prepare_start
+            total_prepare_time += prepare_time
 
             exec_start = time.time()
             selected_token_ids, logits = self.executor_manager.execute(
@@ -1425,32 +1479,38 @@ class eSurgeRunner:
                 ModelRunnerSamplingMetadata.from_sequence_buffer(self.sequence_buffer, padded_num_reqs),
                 padded_num_reqs,
             )
-            selected_token_ids = selected_token_ids[:num_reqs]
+            # Ensure timing reflects real device work
+            selected_token_ids = jax.block_until_ready(selected_token_ids)[:num_reqs]
             exec_time = time.time() - exec_start
-            combined_selected_tokens.append(selected_token_ids)
+            total_exec_time += exec_time
 
+            combined_selected_tokens.append(selected_token_ids)
             start_index = end_index
 
         selected_token_ids = jnp.concatenate(combined_selected_tokens, axis=0)
         logger.debug(f"Processed {batch_count} batches, generated {selected_token_ids.shape[0]} tokens")
 
         logger.debug("Processing sampled tokens and updating buffers")
+        processing_token_start = time.time()
         result = self._process_sampled_tokens(
             selected_token_ids,
             scheduler_output,
             execution_start_time,
         )
-
+        processing_token_time = time.time() - processing_token_start
         total_time = time.time() - execution_start_time
 
         self.log_it(
-            f"Model execution took {exec_time:.3f}s "
-            f"Input preparation took {prepare_time:.3f}s "
-            f"execution completed in {total_time:.3f}s"
+            f"Model execution in {total_exec_time:.3f}s "
+            f"Input preparation in {total_prepare_time:.3f}s "
+            f"execution completed in {total_time:.3f}s "
+            f"processing token in {processing_token_time:.3f}s "
+            f"updating states in {updating_states_time:.3f}s"
         )
         return result
 
     @staticmethod
+    @ejit
     def _update_token_buffers_optimized(
         token_ids: jax.Array,  # [max_reqs, max_len]
         num_tokens: jax.Array,  # [max_reqs]
@@ -1464,102 +1524,138 @@ class eSurgeRunner:
         num_tokens = num_tokens.at[update_indices].add(1)
         return token_ids, num_tokens
 
+    @staticmethod
+    @jax.jit
+    def _prepare_token_updates(
+        selected_token_ids: jax.Array,  # [max_reqs] or [max_reqs, 1]
+        num_computed_tokens: jax.Array,  # [max_reqs]
+        scheduled_tokens: jax.Array,  # [max_reqs]
+        req_num_tokens: jax.Array,  # [max_reqs]
+        active_mask: jax.Array,  # [max_reqs] boolean mask for active requests
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Prepare token update indices and values using JAX operations.
+
+        Returns:
+            - valid_mask: [max_reqs] boolean mask for valid updates
+            - update_indices: [max_reqs] indices to update (masked with -1 for invalid)
+            - update_tokens: [max_reqs] token values (masked with 0 for invalid)
+            - update_seq_lens: [max_reqs] sequence lengths (masked with 0 for invalid)
+        """
+        sampled_flat = selected_token_ids.squeeze(-1) if selected_token_ids.ndim > 1 else selected_token_ids
+        seq_lens = num_computed_tokens + scheduled_tokens
+        has_scheduled = scheduled_tokens > 0
+        meets_length = seq_lens >= req_num_tokens
+        valid_mask = active_mask & has_scheduled & meets_length
+        max_reqs = selected_token_ids.shape[0]
+        indices = jnp.arange(max_reqs, dtype=jnp.int32)
+        update_indices = jnp.where(valid_mask, indices, -1)
+        update_tokens = jnp.where(valid_mask, sampled_flat, 0)
+        update_seq_lens = jnp.where(valid_mask, seq_lens, 0)
+        return valid_mask, update_indices, update_tokens, update_seq_lens
+
+    @staticmethod
+    @jax.jit
+    def _extract_valid_sampled_tokens(
+        selected_token_ids: jax.Array,  # [num_reqs] or [num_reqs, 1]
+        valid_mask: jax.Array,  # [num_reqs] boolean
+        num_reqs: int,
+    ) -> jax.Array:
+        """Extract valid sampled tokens as a 2D array for output.
+
+        Returns:
+            - valid_tokens: [num_reqs, 1] array with -1 for invalid tokens
+        """
+        sampled_flat = selected_token_ids.squeeze(-1) if selected_token_ids.ndim > 1 else selected_token_ids
+        sampled_flat = sampled_flat[:num_reqs]
+        valid_tokens = jnp.where(valid_mask, sampled_flat, -1)
+        return valid_tokens.reshape(-1, 1)
+
     def _process_sampled_tokens(
         self,
         selected_token_ids: jax.Array,  # [num_reqs, 1] typically
         scheduler_output: SchedulerOutput,
         execution_start_time: float,
     ) -> ModelRunnerOutput:
-        """Process sampled tokens and update buffers."""
-        request_seq_lens: list[tuple[int, CachedRequestState, int]] = []
-        discard_sampled_tokens_req_indices: list[int] = []
+        """Process sampled tokens and update buffers with async host copy."""
         num_reqs = self.sequence_buffer.num_reqs
         logger.debug(f"Processing {selected_token_ids.shape[0]} sampled tokens for {num_reqs} requests")
+        req_ids_window = list(self.sequence_buffer.req_ids[:num_reqs])
+        scheduled_list = [
+            int(scheduler_output.num_scheduled_tokens.get(rid, 0)) if rid is not None else 0 for rid in req_ids_window
+        ]
+        req_num_tokens_list = [
+            int(getattr(self.requests.get(rid, None), "num_tokens", 0)) if rid is not None else 0
+            for rid in req_ids_window
+        ]
+        active_list = [rid is not None for rid in req_ids_window]
 
-        for i, req_id in enumerate(self.sequence_buffer.req_ids[:num_reqs]):
-            if req_id is None:
-                logger.warning(f"Null request ID at index {i} during token processing")
-                continue
-            req_state = self.requests.get(req_id)
-            if req_state is None:
-                logger.error(f"Request {req_id} not found in requests dict during token processing")
-                continue
-            scheduled_tokens = scheduler_output.num_scheduled_tokens.get(req_id, 0)
-            if scheduled_tokens == 0:
-                continue
-            seq_len = req_state.num_computed_tokens + scheduled_tokens
+        scheduled_tokens_arr = (
+            jnp.zeros((self.max_num_reqs,), dtype=jnp.int32)
+            .at[:num_reqs]
+            .set(jnp.array(scheduled_list, dtype=jnp.int32))
+        )
+        req_num_tokens_arr = (
+            jnp.zeros((self.max_num_reqs,), dtype=jnp.int32)
+            .at[:num_reqs]
+            .set(jnp.array(req_num_tokens_list, dtype=jnp.int32))
+        )
+        active_mask = jnp.zeros((self.max_num_reqs,), dtype=bool).at[:num_reqs].set(jnp.array(active_list, dtype=bool))
 
-            # If scheduled token extends past current num_tokens, we accept it; else discard.
-            if seq_len >= req_state.num_tokens:
-                request_seq_lens.append((i, req_state, seq_len))
+        if selected_token_ids.shape[0] < self.max_num_reqs:
+            pad_w = self.max_num_reqs - selected_token_ids.shape[0]
+            if selected_token_ids.ndim == 1:
+                selected_token_ids = jnp.pad(selected_token_ids, (0, pad_w), constant_values=0)
             else:
-                discard_sampled_tokens_req_indices.append(i)
+                selected_token_ids = jnp.pad(selected_token_ids, ((0, pad_w), (0, 0)), constant_values=0)
 
-        req_ids = cast(list[str], self.sequence_buffer.req_ids[:num_reqs])
-        prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {req_id: None for req_id in req_ids}
+        self.sequence_buffer.token_ids, self.sequence_buffer.num_tokens, out_tokens, valid_mask = (
+            self._apply_sampled_tokens_and_update(
+                self.sequence_buffer.token_ids,
+                self.sequence_buffer.num_tokens,
+                selected_token_ids,
+                scheduled_tokens_arr,
+                req_num_tokens_arr,
+                self.sequence_buffer.num_computed_tokens,
+                active_mask,
+                self.arange_np,  # prebuilt in _setup_variables
+            )
+        )
 
-        max_gen_len = int(selected_token_ids.shape[-1])
+        out_tokens.copy_to_host_async()
+        valid_mask.copy_to_host_async()
 
-        if max_gen_len == 1:
-            # Vectorized path (typical decoding)
-            logger.debug("Using vectorized path for single-token generation")
-            sampled_flat = selected_token_ids.squeeze(-1)  # [num_reqs]
-            # Discard indices: just don't update buffer, and clear returned list entry
-            update_rows: list[int] = []
-            update_tokens: list[int] = []
-            update_seq_lens: list[int] = []
+        prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {
+            rid: None for rid in req_ids_window if rid is not None
+        }
 
-            valid_sampled_token_ids = [[int(sampled_flat[i])] for i in range(num_reqs)]
-            for idx in discard_sampled_tokens_req_indices:
-                valid_sampled_token_ids[idx].clear()
+        out_tokens_np, valid_mask_np = jax.device_get((out_tokens[:num_reqs], valid_mask[:num_reqs]))
+        sampled_token_ids: list[list[int]] = []
+        req_ids: list[str] = []
+        for i, rid in enumerate(req_ids_window):
+            if rid is None:
+                continue
+            req_ids.append(rid)
+            if valid_mask_np[i]:
+                tid = int(out_tokens_np[i])
+                sampled_token_ids.append([tid])
+                rs = self.requests.get(rid)
+                if rs:
+                    rs.output_token_ids.append(tid)
+            else:
+                sampled_token_ids.append([])
 
-            for i, req_state, seq_len in request_seq_lens:
-                token_id = int(sampled_flat[i])
-                update_rows.append(i)
-                update_tokens.append(token_id)
-                update_seq_lens.append(seq_len)
-                req_state.output_token_ids.append(token_id)
-
-            if update_rows:
-                rows = jnp.array(update_rows, dtype=jnp.int32)
-                toks = jnp.array(update_tokens, dtype=jnp.int32)
-                lens = jnp.array(update_seq_lens, dtype=jnp.int32)
-                self.sequence_buffer.token_ids, self.sequence_buffer.num_tokens = self._update_token_buffers_optimized(
-                    self.sequence_buffer.token_ids, self.sequence_buffer.num_tokens, rows, toks, lens
-                )
-
-        else:
-            # Rare ragged multi-token case (keep original logic)
-            logger.debug(f"Using ragged path for multi-token generation (max_gen_len={max_gen_len})")
-            valid_mask = selected_token_ids != -1
-            gen_lens = valid_mask.sum(axis=1).tolist()
-            valid_sampled_token_ids = [seq.tolist() for seq in selected_token_ids[valid_mask].split(gen_lens)]
-            self.sequence_buffer.num_tokens = self.sequence_buffer.num_tokens.at[:num_reqs].add(jnp.array(gen_lens))
-
-            for i, req_state, seq_len in request_seq_lens:
-                if i >= len(gen_lens):
-                    logger.error(f"Index {i} out of bounds for gen_lens (size={len(gen_lens)})")
-                    continue
-                target_slice = slice(seq_len - gen_lens[i] + 1, seq_len + 1)
-                self.sequence_buffer.token_ids = self.sequence_buffer.token_ids.at[i, target_slice].set(
-                    jnp.array(valid_sampled_token_ids[i], dtype=jnp.int32)
-                )
-                req_state.output_token_ids.extend(valid_sampled_token_ids[i])
-
-        # Log runner metrics
         metrics_collector = get_metrics_collector()
         if metrics_collector:
-            logger.debug("Recording metrics to metrics collector")
             metrics_collector.record_runner_metrics(
                 execution_time=time.time() - execution_start_time,
-                batch_size=num_reqs,
+                batch_size=len(req_ids),
                 num_tokens=scheduler_output.total_num_scheduled_tokens,
             )
 
         return ModelRunnerOutput(
             req_ids=req_ids,
             req_id_to_index=self.sequence_buffer.req_id_to_index,
-            sampled_token_ids=valid_sampled_token_ids,
+            sampled_token_ids=sampled_token_ids,
             spec_token_ids=None,
             logprobs=None,
             prompt_logprobs_dict=prompt_logprobs_dict,

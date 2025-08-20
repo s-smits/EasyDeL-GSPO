@@ -128,6 +128,7 @@ def main():
             use_sliding_window=False,
             # sliding_window=max(4096, max_sequence_length),  # Safe window size
             # max_window_layers=0,  # Apply sliding window from layer 0 onwards
+            gradient_checkpointing=ed.EasyDeLGradientCheckPointers.NONE,  # change this if u go OOM
         ),
         quantization_method=ed.EasyDeLQuantizationMethods.NONE,
         param_dtype=runtime_config.param_dtype,
