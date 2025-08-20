@@ -699,9 +699,9 @@ class GRPOTrainer(Trainer):
             prompt_hash = hashlib.md5(prompt.encode('utf-8')).digest()
             local_hashes.append(prompt_hash)
 
-        # Gather all hashes across processes
-        local_hashes_np = np.array(local_hashes, dtype=object)
-        local_hashes_jax = jnp.asarray([hash.tobytes() for hash in local_hashes_np], dtype=jnp.uint8).reshape(len(local_hashes), -1)
+        # Convert bytes hashes to numpy arrays for JAX compatibility
+        local_hashes_arrays = [np.frombuffer(hash_bytes, dtype=np.uint8) for hash_bytes in local_hashes]
+        local_hashes_jax = jnp.array(local_hashes_arrays, dtype=jnp.uint8)
 
         # Gather across processes
         gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes_jax)
