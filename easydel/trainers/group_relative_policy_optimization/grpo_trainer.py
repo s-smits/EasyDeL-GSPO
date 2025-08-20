@@ -87,30 +87,17 @@ class GRPOTrainer(Trainer):
         assert isinstance(arguments, GRPOConfig), f"arguments type must be `GRPOConfig` but got {type(arguments)}"
         assert processing_class is not None, "processing_class must be specified to tokenize a DPO dataset."
 
-        # Apply adaptive mesh configuration before storing arguments
+        # Configure adaptive mesh if parallelism is forced
         from .adaptive_mesh import configure_adaptive_mesh_inplace
-        
-        # Configure mesh and update arguments in-place
-        if arguments.force_tensor_parallel is not None or arguments.force_data_parallel is not None:
-            mesh_plan = configure_adaptive_mesh_inplace(arguments)
-            # Dataset sharding is set inside configure_adaptive_mesh_inplace with TP-aware DP grouping.
-            # Do not override it here. Only log for visibility.
-            try:
-                if jax.process_index() == 0:
-                    logger.info(
-                        f"Configured mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, TP={mesh_plan.tp}; "
-                        f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
-                    )
-            except Exception:
-                pass
-        else:
-            # No forced parallelism, use default behavior
-            pass
-        
-        # Store mesh plan for validation
-        self._mesh_plan = getattr(self, '_mesh_plan', None) or (
-            configure_adaptive_mesh_inplace(arguments) if arguments.force_tensor_parallel or arguments.force_data_parallel else None
-        )
+        self._mesh_plan = configure_adaptive_mesh_inplace(arguments) if (
+            arguments.force_tensor_parallel or arguments.force_data_parallel
+        ) else None
+
+        if self._mesh_plan and jax.process_index() == 0:
+            logger.info(
+                f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
+                f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
+            )
         
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
@@ -224,6 +211,30 @@ class GRPOTrainer(Trainer):
                     f"Mesh DP={mesh_dp} doesn't match requested DP={arguments.force_data_parallel}. "
                     f"Check adaptive mesh configuration."
                 )
+
+    def _get_or_create_mesh(self):
+        """Get mesh from arguments or create from adaptive config."""
+        if hasattr(self.arguments, 'mesh_dims') and self.arguments.mesh_dims:
+            from eformer.escale import create_mesh
+            mesh = create_mesh(
+                axis_dims=self.arguments.mesh_dims,
+                axis_names=("dp", "fsdp", "ep", "tp", "sp"),
+                process_is_granule=False,
+                should_sort_granules_by_key=True,
+                allow_split_physical_axes=True,
+            )
+            logger.info(f"Created mesh with adaptive dimensions: {self.arguments.mesh_dims}")
+            return mesh
+        return self.model.mesh
+
+    def _update_model_mesh(self, mesh):
+        """Update model and model_state to use new mesh."""
+        if hasattr(self.model, 'config'):
+            self.model.config.mesh = mesh
+        if hasattr(self.model_state, 'model') and hasattr(self.model_state.model, 'config'):
+            self.model_state = self.model_state.replace(
+                model=self.model_state.model.replace(config=self.model_state.model.config.replace(mesh=mesh))
+            )
 
     @cached_property
     def pad_token_id(self):
@@ -404,7 +415,9 @@ class GRPOTrainer(Trainer):
         Returns:
             TrainerConfigureFunctionOutput: An object containing the configured functions and other relevant information.
         """
-        mesh = self.model.mesh
+        # Get or create mesh with adaptive configuration
+        mesh = self._get_or_create_mesh()
+        self._update_model_mesh(mesh)
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
