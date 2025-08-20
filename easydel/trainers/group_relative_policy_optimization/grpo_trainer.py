@@ -908,8 +908,26 @@ class GRPOTrainer(Trainer):
                     unique_local, idx = jnp.unique(jnp.asarray(jax.device_get(local_rows)), axis=0, return_index=True)
                     unique_local = unique_local[jnp.argsort(idx)]  # Preserve original order
                     
-                    # Count actual unique queries from prompt_ids shape
+                    # Count actual queries from prompt_ids shape (local)
                     num_queries = int(batch["input_ids"].shape[0])  # True local batch size without TP replication
+
+                    # Compute global unique prompt count across processes (based on input_ids hashes)
+                    global_unique_prompts = None
+                    total_expected_prompts = None
+                    try:
+                        local_ids_np = np.asarray(jax.device_get(batch["input_ids"]))  # [Q, L]
+
+                        def _hash_ids(arr: np.ndarray) -> np.uint64:
+                            # Fast, fixed-size hash of the token ids row
+                            return np.frombuffer(hashlib.blake2b(arr.tobytes(), digest_size=8).digest(), dtype=np.uint64)[0]
+
+                        local_hashes_np = np.asarray([_hash_ids(row) for row in local_ids_np], dtype=np.uint64)
+                        gathered_hashes = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local_hashes_np, dtype=jnp.uint64))
+                        all_hashes = np.asarray(jax.device_get(gathered_hashes)).reshape(-1)
+                        global_unique_prompts = int(np.unique(all_hashes).size)
+                        total_expected_prompts = int(jax.process_count()) * int(local_ids_np.shape[0])
+                    except Exception as e:
+                        logger.debug(f"Failed to compute global unique prompt count: {e}")
                     
                     # Convert to list for logging
                     lengths_list = [int(x) for x in unique_local.flatten()]
@@ -926,19 +944,25 @@ class GRPOTrainer(Trainer):
                         for qi, arr in enumerate(unique_local):
                             logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {[int(x) for x in arr]}")
                         
-                        # Log global statistics if enabled (FIX: unindent this block)
+                        # Log global statistics if enabled
                         if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
                             try:
                                 all_lengths_flat = _global_lengths_flat
-                                total_completions_global = int(all_lengths_flat.size)
-                                # Compute unique queries from shaped array directly
-                                effective_global_queries = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else (total_completions_global // r)
-                                
-                                logger.info(
-                                    f"GLOBAL completion_token_lengths: queries={effective_global_queries}, rollouts_per_query={r}, "
-                                    f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
-                                    f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
-                                )
+                                compressed_patterns = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else None
+                                # Prefer logging the true global unique prompts if available
+                                if global_unique_prompts is not None and total_expected_prompts is not None:
+                                    logger.info(
+                                        f"GLOBAL completion_token_lengths: unique_prompts={global_unique_prompts}/{total_expected_prompts}, "
+                                        f"compressed_patterns={compressed_patterns}, rollouts_per_query={r}, "
+                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
+                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"GLOBAL completion_token_lengths: compressed_patterns={compressed_patterns}, rollouts_per_query={r}, "
+                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
+                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
+                                    )
                                 
                                 # Per-query global breakdown
                                 if _global_lengths_shaped is not None:
