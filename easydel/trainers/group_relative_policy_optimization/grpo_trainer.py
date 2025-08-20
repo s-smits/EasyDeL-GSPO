@@ -229,12 +229,21 @@ class GRPOTrainer(Trainer):
 
     def _update_model_mesh(self, mesh):
         """Update model and model_state to use new mesh."""
+        # Try to update model config mesh if possible
         if hasattr(self.model, 'config'):
-            self.model.config.mesh = mesh
+            try:
+                self.model.config.mesh = mesh
+            except (AttributeError, TypeError):
+                logger.debug("Model config mesh is read-only, continuing with new mesh for training")
+
+        # Update model_state with new mesh
         if hasattr(self.model_state, 'model') and hasattr(self.model_state.model, 'config'):
-            self.model_state = self.model_state.replace(
-                model=self.model_state.model.replace(config=self.model_state.model.config.replace(mesh=mesh))
-            )
+            try:
+                self.model_state = self.model_state.replace(
+                    model=self.model_state.model.replace(config=self.model_state.model.config.replace(mesh=mesh))
+                )
+            except (AttributeError, TypeError):
+                logger.debug("Could not update model_state config mesh, using new mesh for training only")
 
     @cached_property
     def pad_token_id(self):
