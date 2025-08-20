@@ -344,7 +344,7 @@ class TrainingArguments:
         metadata={"help": "The directory to save checkpoints to."},
     )
     save_optimizer_state: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to save the optimizer state along with the model."},
     )
     save_steps: int | None = field(
