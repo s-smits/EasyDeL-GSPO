@@ -469,11 +469,17 @@ class EasyDeLState(struct.PyTreeNode):
 
             logger.info(f"Coordinated optimizer save through {optim_path}")
             try:
+                # Gather the optimizer state from distributed devices before saving
+                gathered_state = self
+                if self.opt_state is not None:
+                    gathered_state = self.gather_optimizer_state()
+
                 CheckpointManager.save_checkpoint(
                     state={
-                        f"param_idx_{idx}": param for idx, param in enumerate(jax.tree_util.tree_leaves(self.opt_state))
+                        f"param_idx_{idx}": param for idx, param in enumerate(jax.tree_util.tree_leaves(gathered_state.opt_state))
                     },
                     path=optim_path,
+                    gather_fns=True,  # Data is already gathered, no need for additional gathering
                     float_dtype=float_dtype,
                     mismatch_allowed=mismatch_allowed,
                     verbose=verbose,
@@ -481,7 +487,7 @@ class EasyDeLState(struct.PyTreeNode):
                 )
                 if enable:
                     struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
-                    buffer_struct = pickle.dumps((jax.tree_util.tree_structure(self.opt_state), self.step))
+                    buffer_struct = pickle.dumps((jax.tree_util.tree_structure(gathered_state.opt_state), self.step))
                     struct_path.write_bytes(buffer_struct)
             except Exception as e:
                 logger.error(f"Optimizer save failed: {e!s}")
