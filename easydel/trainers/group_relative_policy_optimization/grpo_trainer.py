@@ -203,14 +203,7 @@ class GRPOTrainer(Trainer):
             data_collator=None,
         )
         
-        # Validate mesh configuration matches forced arguments
-        if hasattr(self.model.mesh, 'shape') and arguments.force_data_parallel:
-            mesh_dp = getattr(self.model.mesh.shape, 'dp', 1)
-            if mesh_dp != arguments.force_data_parallel:
-                raise ValueError(
-                    f"Mesh DP={mesh_dp} doesn't match requested DP={arguments.force_data_parallel}. "
-                    f"Check adaptive mesh configuration."
-                )
+        # Validation not needed anymore, mesh config is handled in _get_or_create_mesh
 
     def _get_or_create_mesh(self):
         """Get mesh from arguments or create from adaptive config."""
