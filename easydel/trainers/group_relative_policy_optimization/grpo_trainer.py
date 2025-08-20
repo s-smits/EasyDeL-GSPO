@@ -624,49 +624,6 @@ class GRPOTrainer(Trainer):
             )[:, None]
         ).astype(jnp.int32)
 
-    def _verify_prompt_uniqueness(self, prompts: list[str]) -> None:
-        """Verify that prompts are unique across processes to detect sharding issues."""
-        import hashlib
-        # Stable 32-bit hash to avoid int64 requirement on default JAX x32
-        local_hashes_np = np.fromiter(
-            (
-                int.from_bytes(
-                    hashlib.sha256(p.encode('utf-8', 'ignore')).digest()[:4],
-                    'little',
-                    signed=False,
-                )
-                for p in prompts
-            ),
-            dtype=np.uint32,
-        )
-        local_hashes = jnp.asarray(local_hashes_np, dtype=jnp.uint32)
-
-        gathered = jax.experimental.multihost_utils.process_allgather(local_hashes)
-        # Flatten and compute uniqueness on host for robustness
-        flat = jnp.reshape(gathered, (-1,))
-        flat_np = np.asarray(jax.device_get(flat))
-        unique_count = int(np.unique(flat_np).size)
-        total_count = int(flat_np.size)
-
-        if jax.process_index() == 0 and unique_count < total_count:
-            duplicate_count = total_count - unique_count
-            duplicate_ratio = duplicate_count / total_count
-
-            # Allow small number of duplicates based on configurable tolerance
-            tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
-            max_allowed_duplicates = max(2, int(tolerance * total_count))
-            if duplicate_count <= max_allowed_duplicates:
-                logger.warning(
-                    f"Minor dataset sharding inefficiency detected: "
-                    f"{duplicate_count} duplicate prompts out of {total_count} total "
-                    f"({duplicate_ratio:.2%}). This is within acceptable limits and training will continue."
-                )
-            else:
-                raise RuntimeError(
-                    f"CRITICAL: Dataset sharding failure detected! "
-                    f"Only {unique_count}/{total_count} unique prompts across {jax.process_count()} processes. "
-                    f"This means processes are duplicating work. Check dataset sharding configuration."
-                )
 
     @staticmethod
     def _to_local_flat(x: jax.Array) -> jnp.ndarray:
@@ -687,51 +644,36 @@ class GRPOTrainer(Trainer):
         return jnp.asarray(unique_rows[np.argsort(idx)])
 
     def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
-        """Ensure batch has enough unique prompts by filtering duplicates across all processes."""
-        tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
-
+        """Actually ensure batch has unique prompts by filtering duplicates within this batch."""
         # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-
-        # Create hash for each prompt
-        local_hashes = []
-        for prompt in prompts:
-            prompt_hash = hashlib.md5(prompt.encode('utf-8')).digest()
-            local_hashes.append(prompt_hash)
-
-        # Convert bytes hashes to numpy arrays for JAX compatibility
-        local_hashes_arrays = [np.frombuffer(hash_bytes, dtype=np.uint8) for hash_bytes in local_hashes]
-        local_hashes_jax = jnp.array(local_hashes_arrays, dtype=jnp.uint8)
-
-        # Gather across processes
-        gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes_jax)
-        all_hashes_flat = gathered_hashes.reshape(-1, local_hashes_jax.shape[1])
-
-        # Find unique hashes and their indices
-        unique_hashes, unique_indices = np.unique(all_hashes_flat, axis=0, return_index=True)
-
-        # Calculate how many unique prompts we have globally
-        global_unique_count = len(unique_hashes)
-        expected_total = jax.process_count() * len(prompts)  # 8 processes * 8 prompts each
-
-        # Log the global statistics
-        if jax.process_index() == 0:
-            logger.info(f"Global prompt statistics: {global_unique_count}/{expected_total} unique prompts across {jax.process_count()} processes")
-
-        # If we have enough unique prompts globally, return original batch
-        min_required = max(2, int((1 - tolerance) * expected_total))
-        if global_unique_count >= min_required:
+        
+        # Find unique prompts within this local batch
+        seen_prompts = set()
+        unique_indices = []
+        
+        for i, prompt in enumerate(prompts):
+            if prompt not in seen_prompts:
+                seen_prompts.add(prompt)
+                unique_indices.append(i)
+        
+        # If all prompts are unique, return original batch
+        if len(unique_indices) == len(prompts):
             return batch
-
-        # We need to filter - but we need to do this carefully across processes
-        # For now, return the original batch and let the tolerance mechanism handle it
-        # A full implementation would need to coordinate which prompts to keep across processes
+        
+        # Filter to unique prompts only
         if jax.process_index() == 0:
-            logger.warning(f"Insufficient global unique prompts: {global_unique_count}/{expected_total}. "
-                          f"Consider increasing dataset_sharding_tolerance (currently {tolerance:.2%}) "
-                          f"or reducing the number of processes.")
-
-        return batch
+            logger.info(f"Filtered {len(prompts) - len(unique_indices)} duplicate prompts from local batch")
+        
+        # Create filtered batch with unique prompts only
+        filtered_batch = {}
+        for key, values in batch.items():
+            if isinstance(values, jax.Array) and len(values) == len(prompts):
+                filtered_batch[key] = values[unique_indices]
+            else:
+                filtered_batch[key] = values
+        
+        return filtered_batch
 
     def _preprocess_batch_input(
         self,
@@ -750,10 +692,6 @@ class GRPOTrainer(Trainer):
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
 
-            # Verify sharding early to avoid wasted computation
-            if getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0:
-                prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-                self._verify_prompt_uniqueness(prompts)
 
             # Ensure unique prompts if enabled
             if getattr(self.arguments, "ensure_unique_prompts", True):
