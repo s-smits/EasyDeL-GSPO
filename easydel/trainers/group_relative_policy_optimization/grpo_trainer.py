@@ -710,7 +710,9 @@ class GRPOTrainer(Trainer):
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
                     # Use a simple per-chunk seed; avoids JIT recompiles and ensures diversity across chunks
-                    per_chunk_seed = int(cur_step_int * 131071 + 4099 * jax.process_index() + chunk_idx)
+                    # Ensure seed is always positive and within 32-bit range
+                    per_chunk_seed = int((cur_step_int * 131071 + 4099 * abs(jax.process_index()) + chunk_idx) % (2**31 - 1))
+                    per_chunk_seed = max(1, per_chunk_seed)
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
                     )

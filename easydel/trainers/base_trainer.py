@@ -611,7 +611,12 @@ class BaseTrainer(BaseTrainerProtocol):
                 )
             else:
                 data_source = grain.MapDataset.source(dataset)
-                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
+                base_seed = self.arguments.shuffle_seed_train or 0
+                process_offset = jax.process_index()
+                # Ensure seed is always positive and within 32-bit range
+                seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                # Ensure seed is at least 1 (grain requires positive integer)
+                seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
