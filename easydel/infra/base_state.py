@@ -479,9 +479,10 @@ class EasyDeLState(struct.PyTreeNode):
                     verbose=verbose,
                     enable=enable,
                 )
-                struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
-                buffer_struct = pickle.dumps((jax.tree_util.tree_structure(self.opt_state), self.step))
-                struct_path.write_bytes(buffer_struct)
+                if enable:
+                    struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
+                    buffer_struct = pickle.dumps((jax.tree_util.tree_structure(self.opt_state), self.step))
+                    struct_path.write_bytes(buffer_struct)
             except Exception as e:
                 logger.error(f"Optimizer save failed: {e!s}")
                 raise

@@ -35,7 +35,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --log_logprobs_metrics false \
   --log_global true \
   --log_steps 1 \
-  --save_steps 50 \
+  --save_steps 4 \
   --evaluation_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
