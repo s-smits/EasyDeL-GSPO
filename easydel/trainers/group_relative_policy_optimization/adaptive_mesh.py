@@ -258,6 +258,11 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
                     f"Processes {list(range(0, int(plan.tp)))} will see shard 0, "
                     f"processes {list(range(int(plan.tp), 2*int(plan.tp)))} will see shard 1, etc."
                 )
+                if num_dp_groups > 1:
+                    logger.info(
+                        f"Note: With {num_dp_groups} DP groups, ensure dataset size is divisible by "
+                        f"batch_size * num_dp_groups for optimal sharding efficiency."
+                    )
         else:
             # No TP, standard sharding across all processes
             arguments.grain_shard_count = int(proc_count)

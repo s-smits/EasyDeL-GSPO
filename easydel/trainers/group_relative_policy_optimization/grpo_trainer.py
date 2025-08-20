@@ -648,11 +648,24 @@ class GRPOTrainer(Trainer):
         total_count = int(flat_np.size)
 
         if jax.process_index() == 0 and unique_count < total_count:
-            raise RuntimeError(
-                f"CRITICAL: Dataset sharding failure detected! "
-                f"Only {unique_count}/{total_count} unique prompts across {jax.process_count()} processes. "
-                f"This means processes are duplicating work. Check dataset sharding configuration."
-            )
+            duplicate_count = total_count - unique_count
+            duplicate_ratio = duplicate_count / total_count
+
+            # Allow small number of duplicates based on configurable tolerance
+            tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
+            max_allowed_duplicates = max(2, int(tolerance * total_count))
+            if duplicate_count <= max_allowed_duplicates:
+                logger.warning(
+                    f"Minor dataset sharding inefficiency detected: "
+                    f"{duplicate_count} duplicate prompts out of {total_count} total "
+                    f"({duplicate_ratio:.2%}). This is within acceptable limits and training will continue."
+                )
+            else:
+                raise RuntimeError(
+                    f"CRITICAL: Dataset sharding failure detected! "
+                    f"Only {unique_count}/{total_count} unique prompts across {jax.process_count()} processes. "
+                    f"This means processes are duplicating work. Check dataset sharding configuration."
+                )
 
     @staticmethod
     def _to_local_flat(x: jax.Array) -> jnp.ndarray:

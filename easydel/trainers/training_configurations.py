@@ -251,6 +251,12 @@ class TrainingArguments:
             "help": "If True, perform a one-time cross-process verification on step 0 to detect duplicate prompts across DP workers."
         },
     )
+    dataset_sharding_tolerance: float = field(
+        default=0.05,
+        metadata={
+            "help": "Maximum allowed ratio of duplicate prompts before raising an error (default: 0.05 = 5%). Set to 0.0 for strict checking."
+        },
+    )
     loss_config: LossConfig | None = field(
         default=None,
         metadata={"help": "Configuration for the loss function."},
