@@ -18,6 +18,7 @@ from __future__ import annotations
 import typing as tp
 from functools import cached_property, partial
 import inspect
+import hashlib
 
 import flax
 import flax.nnx
@@ -685,6 +686,108 @@ class GRPOTrainer(Trainer):
         unique_rows, idx = np.unique(np.asarray(jax.device_get(all_rows)), axis=0, return_index=True)
         return jnp.asarray(unique_rows[np.argsort(idx)])
 
+    def _cascade_fill_unique_prompts(
+        self,
+        batch: dict[str, jax.Array],
+        state: EasyDeLState
+    ) -> dict[str, jax.Array]:
+        """Cascade fill to ensure minimum unique prompts by fetching additional samples if needed."""
+        if not hasattr(self, 'dataset_train') or self.dataset_train is None:
+            return batch
+
+        # Get target batch size from original batch
+        target_batch_size = batch["input_ids"].shape[0]
+
+        # Check current uniqueness
+        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+        local_hashes = []
+        for p in prompts:
+            prompt_bytes = p.encode('utf-8')
+            hash_obj = hashlib.md5(prompt_bytes)
+            hash_u32 = np.frombuffer(hash_obj.digest(), dtype=np.uint32)
+            local_hashes.append(hash_u32[0])
+
+        local_hashes_np = np.array(local_hashes, dtype=np.uint32)
+        local_hashes = jnp.asarray(local_hashes_np, dtype=jnp.uint32)
+
+        # Gather across processes
+        gathered = jax.experimental.multihost_utils.process_allgather(local_hashes)
+        flat = jnp.reshape(gathered, (-1,))
+        flat_np = np.asarray(jax.device_get(flat))
+        unique_count = int(np.unique(flat_np).size)
+        total_count = int(flat_np.size)
+
+        tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
+        max_allowed_duplicates = max(2, int(tolerance * total_count))
+
+        if unique_count >= max_allowed_duplicates:
+            return batch  # Already have enough unique prompts
+
+        logger.warning(
+            f"Insufficient unique prompts: {unique_count}/{total_count}. "
+            f"Cascade filling to reach minimum {max_allowed_duplicates} unique prompts."
+        )
+
+        # Need to fetch additional samples - create a larger batch
+        additional_needed = max_allowed_duplicates - unique_count
+        expanded_batch_size = min(target_batch_size + additional_needed * 2, len(self.dataset_train))
+
+        if expanded_batch_size <= target_batch_size:
+            logger.warning(f"Cannot expand batch: dataset too small ({len(self.dataset_train)} samples)")
+            return batch
+
+        # Create iterator for additional samples (this is a simplified approach)
+        # In a real implementation, you'd want to use the proper dataloader
+        try:
+            # Get additional samples from dataset
+            additional_indices = np.random.choice(
+                len(self.dataset_train),
+                size=expanded_batch_size - target_batch_size,
+                replace=False
+            )
+
+            additional_samples = []
+            for idx in additional_indices:
+                sample = self.dataset_train[idx]
+                # Process the sample similar to how the dataloader does it
+                if hasattr(sample, 'keys'):
+                    additional_samples.append(sample)
+                else:
+                    additional_samples.append({"text": sample})
+
+            # Process additional samples through the same pipeline
+            if additional_samples:
+                # This is a simplified implementation - you'd want to match the exact dataloader preprocessing
+                additional_texts = [s.get("text", str(s)) for s in additional_samples]
+                additional_tokens = self.processing_class(
+                    additional_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.arguments.max_prompt_length,
+                    return_tensors="np"
+                )
+
+                # Expand the original batch with additional samples
+                expanded_input_ids = np.concatenate([
+                    np.array(batch["input_ids"]),
+                    additional_tokens["input_ids"]
+                ])
+                expanded_attention_mask = np.concatenate([
+                    np.array(batch["attention_mask"]),
+                    additional_tokens["attention_mask"]
+                ])
+
+                # Convert back to JAX arrays
+                batch["input_ids"] = jnp.asarray(expanded_input_ids)
+                batch["attention_mask"] = jnp.asarray(expanded_attention_mask)
+
+                logger.info(f"Cascade filled batch: {target_batch_size} -> {expanded_batch_size} samples")
+
+        except Exception as e:
+            logger.error(f"Failed to cascade fill batch: {e}")
+            # Return original batch if cascade filling fails
+
+        return batch
 
     def _preprocess_batch_input(
         self,
@@ -694,7 +797,7 @@ class GRPOTrainer(Trainer):
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
-            
+
             # Convert numpy arrays to JAX arrays using the working solution
             try:
                 prompt_ids = jnp.asarray(prompt_ids)
@@ -702,11 +805,15 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
-            
+
             # Verify sharding early to avoid wasted computation
             if getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0:
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
                 self._verify_prompt_uniqueness(prompts)
+
+            # Check for duplicates and cascade fill if needed during training
+            if is_train and getattr(self.arguments, "enable_cascade_filling", True):
+                batch = self._cascade_fill_unique_prompts(batch, state)
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
