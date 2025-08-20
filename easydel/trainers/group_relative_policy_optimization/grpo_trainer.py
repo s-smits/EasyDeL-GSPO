@@ -800,6 +800,13 @@ class GRPOTrainer(Trainer):
                 completion_mask = _reorder_from_chunks(completion_mask_chunks)
                 ref_per_token_logps = _reorder_from_chunks(ref_logps_chunks)
                 completion_lengths_per_seq = _reorder_from_chunks(comp_len_chunks)
+            # Always initialize prompts to safe placeholders to avoid UnboundLocalError
+            try:
+                _local_prompt_count = int(batch["input_ids"].shape[0])
+            except Exception:
+                _local_prompt_count = 0
+            prompts = [""] * _local_prompt_count
+
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
@@ -1121,7 +1128,7 @@ class GRPOTrainer(Trainer):
             lengths_global_min = lengths_local_min
             lengths_global_max = lengths_local_max
             lengths_global_mean = lengths_local_mean
-            # Estimate based on DP size
+            # Estimate based on DP size and local prompt count (avoid referencing undeclared variables)
             try:
                 mesh_shape = getattr(self.model.mesh, "shape", {})
                 mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
@@ -1131,8 +1138,12 @@ class GRPOTrainer(Trainer):
             except Exception:
                 dp_size = 1
                 tp_size = 1
-            actual_global_completions = num_completions_local * dp_size
-            actual_global_queries = num_prompts_local * dp_size
+            try:
+                _local_prompt_count_est = int(prompt_ids.shape[0])
+            except Exception:
+                _local_prompt_count_est = 0
+            actual_global_completions = int(_local_prompt_count_est * self.num_generations * dp_size)
+            actual_global_queries = int(_local_prompt_count_est * dp_size)
         # Robust termination ratios: detect EOS presence directly in completions.
         # Works even when pad_token_id == eos_token_id because sequences that ended early are padded with EOS.
         eos_found = jnp.isin(
