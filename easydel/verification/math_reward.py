@@ -23,6 +23,18 @@ except Exception as _e:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _extract_text(comp) -> str:
+    if isinstance(comp, list) and comp:
+        c0 = comp[0]
+        if isinstance(c0, dict) and "content" in c0:
+            return c0["content"]
+        if isinstance(c0, str):
+            return c0
+        return str(c0)
+    if isinstance(comp, str):
+        return comp
+    return ""
+
 def get_extraction_config(problem_type: str = "math", is_gold: bool = True):
     """Get Math-Verify extraction config based on problem type, following their task patterns.
     
@@ -195,7 +207,7 @@ def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwa
     """
     out: List[float] = []
     for comp in completions:
-        text = comp[0]["content"] if comp and comp[0] else ""
+        text = _extract_text(comp)
         # Must contain one think and one answer block
         ok_blocks = (text.count("<think>") == 1 and text.count("</think>") == 1 and text.count("<answer>") == 1 and text.count("</answer>") == 1)
         if not ok_blocks:
@@ -253,7 +265,7 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     out: List[float] = []
     
     for i, (comp, gt) in enumerate(zip(completions, gts, strict=False)):
-        text = comp[0]["content"] if comp and comp[0] else ""
+        text = _extract_text(comp)
         
         # Store verification details for debugging (following Math-Verify's approach)
         detail = {

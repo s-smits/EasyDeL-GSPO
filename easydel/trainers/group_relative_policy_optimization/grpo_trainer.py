@@ -855,15 +855,23 @@ class GRPOTrainer(Trainer):
                     try:
                         local_ids_np = np.asarray(jax.device_get(batch["input_ids"]))  # [Q, L]
 
-                        def _hash_ids(arr: np.ndarray) -> np.uint64:
-                            # Fast, fixed-size hash of the token ids row
-                            return np.frombuffer(hashlib.blake2b(arr.tobytes(), digest_size=8).digest(), dtype=np.uint64)[0]
+                        def _hash_ids_u32(arr: np.ndarray) -> np.uint32:
+                            # 32-bit hash to avoid unsupported uint64 dtype on TPU all-gather
+                            h = hashlib.blake2b(arr.tobytes(), digest_size=4).digest()
+                            return np.frombuffer(h, dtype=np.uint32)[0]
 
-                        local_hashes_np = np.asarray([_hash_ids(row) for row in local_ids_np], dtype=np.uint64)
-                        gathered_hashes = jax.experimental.multihost_utils.process_allgather(jnp.asarray(local_hashes_np, dtype=jnp.uint64))
-                        all_hashes = np.asarray(jax.device_get(gathered_hashes)).reshape(-1)
-                        global_unique_prompts = int(np.unique(all_hashes).size)
-                        total_expected_prompts = int(jax.process_count()) * int(local_ids_np.shape[0])
+                        local_hashes_np = np.asarray([_hash_ids_u32(row) for row in local_ids_np], dtype=np.uint32)
+                        try:
+                            gathered_hashes = jax.experimental.multihost_utils.process_allgather(
+                                jnp.asarray(local_hashes_np, dtype=jnp.uint32)
+                            )
+                            all_hashes = np.asarray(jax.device_get(gathered_hashes)).reshape(-1)
+                            global_unique_prompts = int(np.unique(all_hashes).size)
+                            total_expected_prompts = int(jax.process_count()) * int(local_ids_np.shape[0])
+                        except Exception as e:
+                            logger.debug(f"Failed to compute global unique prompt count: {e}")
+                            global_unique_prompts = None
+                            total_expected_prompts = None
                     except Exception as e:
                         logger.debug(f"Failed to compute global unique prompt count: {e}")
                     

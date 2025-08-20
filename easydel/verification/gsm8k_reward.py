@@ -17,6 +17,18 @@ except Exception as _e:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _extract_text(comp) -> str:
+    if isinstance(comp, list) and comp:
+        c0 = comp[0]
+        if isinstance(c0, dict) and "content" in c0:
+            return c0["content"]
+        if isinstance(c0, str):
+            return c0
+        return str(c0)
+    if isinstance(comp, str):
+        return comp
+    return ""
+
 def _answer_check(solution_str: str, ground_truth: str) -> bool:
     """Return True if the last number in solution_str equals ground_truth.
 
@@ -88,7 +100,7 @@ def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwa
     """
     out: List[float] = []
     for comp in completions:
-        text = comp[0]["content"] if comp and comp[0] else ""
+        text = _extract_text(comp)
         has_think = (text.count("<think>") == 1 and text.count("</think>") == 1)
         has_answer = (text.count("<answer>") == 1 and text.count("</answer>") == 1)
         out.append(1.0 if (has_think and has_answer) else 0.0)
@@ -137,7 +149,7 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     verification_details = []
 
     for i, (comp, gt) in enumerate(zip(completions, gt_list, strict=False)):
-        text = comp[0]["content"] if comp and comp[0] else ""
+        text = _extract_text(comp)
 
         detail = {
             "completion_idx": i,
@@ -183,7 +195,18 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
 
             if not numbers:
                 detail["verification_method"] = "no_numbers_found"
-                logger.debug(f"✗ NO NUMBERS FOUND [idx={i}] - Text: {ans[-100:]}")
+                # Enhanced debugging for no numbers found - this is likely the main issue
+                logger.warning(f"✗ NO NUMBERS FOUND [idx={i}]")
+                logger.warning(f"  Full original text: '{text}'")
+                logger.warning(f"  Extracted answer: '{ans}'")
+                logger.warning(f"  Ground truth: '{gt}'")
+                logger.warning(f"  Text length: {len(text)} chars")
+                # Try more patterns to see if there are any digits at all
+                all_digits = re.findall(r'\d+', ans)
+                all_numbers_expanded = re.findall(r'-?\d*\.?\d+', ans)
+                logger.warning(f"  Any digits found: {all_digits}")
+                logger.warning(f"  Numbers with expanded pattern: {all_numbers_expanded}")
+                logger.warning(f"  Math-Verify method: {method}")
             else:
                 last_number = numbers[-1]
                 detail["parsed_successfully"] = True
@@ -199,10 +222,13 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                     logger.info(f"  Last number: {last_number}")
                     logger.info(f"  Ground truth: {gt}")
                 else:
-                    logger.debug(f"✗ GSM8K ALL METHODS FAILED [idx={i}]")
-                    logger.debug(f"  Math-Verify method: {method}")
-                    logger.debug(f"  Regex got: '{last_number}', Expected: '{gt}'")
-                    logger.debug(f"  All extracted numbers: {numbers}")
+                    logger.warning(f"✗ GSM8K REGEX MISMATCH [idx={i}]")
+                    logger.warning(f"  Math-Verify method: {method}")
+                    logger.warning(f"  Regex extracted: '{last_number}' (type: {type(last_number)})")
+                    logger.warning(f"  Ground truth: '{gt}' (type: {type(gt)})")
+                    logger.warning(f"  All extracted numbers: {numbers}")
+                    logger.warning(f"  Full extracted answer: '{ans}'")
+                    logger.warning(f"  Full original text: '{text}'")
 
         rewards.append(detail["score"])
         verification_details.append(detail)
@@ -233,9 +259,132 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     return [min(1.0, max(0.0, r * weight)) for r in rewards]
 
 
+def debug_model_outputs(completions: List[list[dict]], batch, max_examples: int = 5) -> None:
+    """Debug function to analyze model outputs and identify issues with GSM8K verification.
+
+    This function helps diagnose why verification is failing by analyzing:
+    - Model output format and content
+    - Answer extraction from <answer> tags
+    - Number extraction patterns
+    - Common issues that prevent successful verification
+
+    Args:
+        completions: List of model completions from the training batch
+        batch: Batch data containing ground truths
+        max_examples: Maximum number of examples to debug (default: 5)
+    """
+    logger.info("=" * 80)
+    logger.info("MODEL OUTPUT DEBUG ANALYSIS")
+    logger.info("=" * 80)
+
+    # Ground truths are provided directly as strings in batch["answer"]
+    gt_raw = batch.get("answer", [])
+    if isinstance(gt_raw, list):
+        gts = gt_raw
+    else:
+        try:
+            import numpy as np
+            if isinstance(gt_raw, np.ndarray):
+                gts = gt_raw.tolist()
+            else:
+                gts = [gt_raw] if gt_raw is not None else []
+        except Exception:
+            gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
+
+    for i, (comp, gt) in enumerate(zip(completions[:max_examples], gts[:max_examples])):
+        # Handle different completion formats
+        if isinstance(comp, list) and len(comp) > 0:
+            if isinstance(comp[0], dict) and "content" in comp[0]:
+                text = comp[0]["content"]
+            elif isinstance(comp[0], str):
+                text = comp[0]
+            else:
+                text = str(comp[0])
+        else:
+            text = str(comp)
+
+        logger.info(f"\n--- DEBUG EXAMPLE {i+1} ---")
+        logger.info(f"Ground truth: '{gt}' (type: {type(gt)})")
+        logger.info(f"Full text length: {len(text)} chars")
+        logger.info(f"Full text: '{text}'")
+
+        # Check for answer tags
+        if "<answer>" in text and "</answer>" in text:
+            try:
+                ans = text.split("<answer>", 1)[1].split("</answer>", 1)[0]
+                logger.info(f"Answer tag content: '{ans}'")
+            except Exception as e:
+                logger.warning(f"Answer tag extraction failed: {e}")
+                ans = text
+        else:
+            ans = text
+            logger.warning("No <answer> tags found - using full text")
+
+        # Analyze numbers in different contexts
+        logger.info("NUMBER ANALYSIS:")
+        numbers_in_ans = re.findall(r"-?\d+\.?\d*", ans)
+        numbers_in_full = re.findall(r"-?\d+\.?\d*", text)
+        all_digits_ans = re.findall(r'\d+', ans)
+        all_digits_full = re.findall(r'\d+', text)
+
+        logger.info(f"  Numbers in extracted answer: {numbers_in_ans}")
+        logger.info(f"  Numbers in full text: {numbers_in_full}")
+        logger.info(f"  All digits in extracted answer: {all_digits_ans}")
+        logger.info(f"  All digits in full text: {all_digits_full}")
+
+        # Check for common issues
+        if not text.strip():
+            logger.error("  ISSUE: Empty text!")
+        elif not ans.strip():
+            logger.error("  ISSUE: Empty answer after extraction!")
+        elif not numbers_in_ans and not all_digits_ans:
+            logger.warning("  POTENTIAL ISSUE: No numbers found in answer")
+        else:
+            logger.info("  OK: Numbers found")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("DEBUG ANALYSIS COMPLETE")
+    logger.info("=" * 80)
+
+
+def test_verification_with_sample_data():
+    """Test the verification system with sample data to identify issues."""
+    # Sample data that mimics what might be causing the verification failures
+    # Format: [[{"role": "assistant", "content": text}], ...]
+    sample_completions = [
+        [{"role": "assistant", "content": "The answer is 42"}],
+        [{"role": "assistant", "content": "<think>Let me calculate this step by step.</think><answer>15</answer>"}],
+        [{"role": "assistant", "content": "The result is 25.5"}],
+        [{"role": "assistant", "content": "<answer>7</answer>"}],
+        [{"role": "assistant", "content": "I think it's 10"}],
+    ]
+
+    sample_batch = {
+        "answer": ["42", "15", "25.5", "7", "10"]
+    }
+
+    print("Testing GSM8K verification with sample data...")
+    print("This will help identify if the issue is with the model outputs or verification logic.")
+    print()
+
+    # Test with debug mode
+    debug_model_outputs(sample_completions, sample_batch, max_examples=5)
+
+    # Test verification - answer_reward(prompts, completions, batch)
+    scores = answer_reward(None, sample_completions, sample_batch)
+
+    print(f"\nVerification Results:")
+    print(f"Scores: {scores}")
+    print(f"Successful verifications: {sum(1 for s in scores if s > 0)}/{len(scores)}")
+
+    return scores
+
+
 __all__ = [
     "format_reward",
     "answer_reward",
+    "debug_model_outputs",
+    "test_verification_with_sample_data",
 ]
 
 
