@@ -57,9 +57,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --advantage_epsilon 1e-6 \
-  --dataset_sharding_tolerance 0.1 \
-  --ensure_unique_prompts true
+  --advantage_epsilon 1e-6
 
 #   --force_data_parallel 1 \
 
