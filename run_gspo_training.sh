@@ -59,7 +59,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --dataset_sharding_tolerance 0.1 \
-  --enable_cascade_filling true
+  --ensure_unique_prompts true
 
 #   --force_data_parallel 1 \
 

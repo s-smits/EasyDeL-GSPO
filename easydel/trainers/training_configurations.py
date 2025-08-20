@@ -257,10 +257,10 @@ class TrainingArguments:
             "help": "Maximum allowed ratio of duplicate prompts before raising an error (default: 0.05 = 5%). Set to 0.0 for strict checking."
         },
     )
-    enable_cascade_filling: bool = field(
+    ensure_unique_prompts: bool = field(
         default=True,
         metadata={
-            "help": "If True, automatically fetch additional samples to reach minimum unique prompt count during training."
+            "help": "If True, filter duplicate prompts in each batch to ensure training quality."
         },
     )
     loss_config: LossConfig | None = field(

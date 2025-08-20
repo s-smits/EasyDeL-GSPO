@@ -686,65 +686,35 @@ class GRPOTrainer(Trainer):
         unique_rows, idx = np.unique(np.asarray(jax.device_get(all_rows)), axis=0, return_index=True)
         return jnp.asarray(unique_rows[np.argsort(idx)])
 
-    def _cascade_fill_unique_prompts(
-        self,
-        batch: dict[str, jax.Array],
-        state: EasyDeLState
-    ) -> dict[str, jax.Array]:
-        """Efficient cascade filling with optimized individual prompt selection."""
-        if not hasattr(self, 'dataset_train') or self.dataset_train is None:
-            return batch
-
-        # Compute hashes for existing prompts
-        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-        local_hashes = jnp.array([hash(p.encode('utf-8')) % (2**32) for p in prompts], dtype=jnp.uint32)
-
-        # Check global uniqueness
-        gathered_hashes = jax.experimental.multihost_utils.process_allgather(local_hashes)
-        unique_hashes = jnp.unique(gathered_hashes.flatten())
-        unique_count, total_count = len(unique_hashes), len(gathered_hashes.flatten())
-
+    def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
+        """Ensure batch has enough unique prompts by filtering duplicates if needed."""
         tolerance = getattr(self.arguments, "dataset_sharding_tolerance", 0.05)
-        target_unique = max(2, int(tolerance * total_count))
 
-        if unique_count >= target_unique:
-            return batch
+        # Decode prompts for uniqueness check
+        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
 
-        # Efficient cascade filling
-        additional_needed = target_unique - unique_count
-        max_expand = min(len(self.dataset_train) - len(prompts), additional_needed * 3)
+        # Create hash for each prompt
+        seen_hashes = set()
+        unique_indices = []
 
-        if max_expand <= 0:
-            return batch
+        for i, prompt in enumerate(prompts):
+            prompt_hash = hashlib.md5(prompt.encode('utf-8')).digest()
+            if prompt_hash not in seen_hashes:
+                seen_hashes.add(prompt_hash)
+                unique_indices.append(i)
 
-        # Select diverse samples efficiently
-        existing_hashes = set(unique_hashes.tolist())
-        candidates, new_samples = [], []
+        unique_count = len(unique_indices)
+        total_count = len(prompts)
 
-        for i in np.random.permutation(len(self.dataset_train)):
-            if len(candidates) >= max_expand:
-                break
-            sample = self.dataset_train[i]
-            text = sample.get("text", str(sample))
-            sample_hash = hash(text.encode('utf-8')) % (2**32)
-            if sample_hash not in existing_hashes:
-                candidates.append(text)
-                existing_hashes.add(sample_hash)
+        if unique_count >= max(2, int((1 - tolerance) * total_count)):
+            return batch  # Already have enough unique prompts
 
-        if not candidates:
-            return batch
+        # Filter to keep only unique prompts
+        if unique_indices:
+            batch["input_ids"] = batch["input_ids"][unique_indices]
+            batch["attention_mask"] = batch["attention_mask"][unique_indices]
 
-        # Batch tokenize new samples
-        new_tokens = self.processing_class(candidates, padding=True, truncation=True,
-                                         max_length=self.arguments.max_prompt_length, return_tensors="np")
-
-        # Merge batches efficiently
-        batch["input_ids"] = jnp.concatenate([batch["input_ids"], jnp.asarray(new_tokens["input_ids"])])
-        batch["attention_mask"] = jnp.concatenate([batch["attention_mask"], jnp.asarray(new_tokens["attention_mask"])])
-
-        logger.info(f"Cascade filled: {len(prompts)} -> {len(batch['input_ids'])} samples "
-                   f"({unique_count} -> {unique_count + len(candidates)} unique)")
-
+        logger.warning(f"Filtered duplicates: {total_count} -> {len(unique_indices)} prompts")
         return batch
 
     def _preprocess_batch_input(
@@ -769,9 +739,9 @@ class GRPOTrainer(Trainer):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
                 self._verify_prompt_uniqueness(prompts)
 
-            # Check for duplicates and cascade fill if needed during training
-            if is_train and getattr(self.arguments, "enable_cascade_filling", True):
-                batch = self._cascade_fill_unique_prompts(batch, state)
+            # Ensure unique prompts if enabled
+            if getattr(self.arguments, "ensure_unique_prompts", True):
+                batch = self._ensure_unique_prompts(batch)
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
