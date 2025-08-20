@@ -1401,6 +1401,21 @@ class GRPOTrainer(Trainer):
                     # Don't crash training over logging
                     pass
 
+        # Generate comprehensive verification report if verification details available
+        verification_report = None
+        if "verification_details" in kwargs and kwargs["verification_details"]:
+            try:
+                from .math_reward import generate_verification_report
+                verification_report = generate_verification_report(kwargs["verification_details"])
+                logger.info("Generated verification performance report")
+            except ImportError:
+                # Fallback to basic reporting if math_reward not available
+                verification_details = kwargs["verification_details"]
+                if verification_details:
+                    successful = sum(1 for d in verification_details if d.get("score", 0) > 0.0)
+                    total = len(verification_details)
+                    logger.info(f"Verification Summary: {successful}/{total} successful ({successful/total:.1%})")
+
         # Immediately log a small set of lightweight generation/reward metrics every step (process 0 only)
         try:
             if (
@@ -1445,6 +1460,12 @@ class GRPOTrainer(Trainer):
                             to_log[f"train/{_nm}"] = float(val)
                 except Exception:
                     pass
+
+                # Log comprehensive verification report periodically (every 10 steps)
+                if verification_report and cur_step % 10 == 0:
+                    # Log as text artifact for detailed analysis
+                    wandb.log({"verification_report": wandb.Html(f"<pre>{verification_report}</pre>")}, step=cur_step)
+
                 if len(to_log) > 0:
                     wandb.log(to_log, step=cur_step)
         except Exception:
@@ -1481,3 +1502,46 @@ class GRPOTrainer(Trainer):
         ):
             self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
         return state, metrics
+
+    def generate_final_verification_report(self, verification_details_list: list = None):
+        """Generate a comprehensive final verification report at the end of training.
+
+        Args:
+            verification_details_list: Optional list of verification details from multiple steps.
+                                      If None, will use accumulated details from recent steps.
+        """
+        try:
+            from .math_reward import generate_verification_report
+
+            if verification_details_list is None:
+                # Try to collect from recent training if available
+                verification_details_list = []
+
+            if verification_details_list:
+                # Flatten list of lists if needed
+                if isinstance(verification_details_list[0], list):
+                    all_details = [item for sublist in verification_details_list for item in sublist]
+                else:
+                    all_details = verification_details_list
+
+                report = generate_verification_report(all_details)
+
+                if jax.process_index() == 0:
+                    logger.info("FINAL VERIFICATION PERFORMANCE REPORT:")
+                    print(report)
+
+                    # Log to wandb if available
+                    if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
+                        try:
+                            wandb.log({"final_verification_report": wandb.Html(f"<pre>{report}</pre>")})
+                        except Exception:
+                            pass
+
+                return report
+            else:
+                logger.info("No verification details available for final report")
+                return "No verification details available."
+
+        except Exception as e:
+            logger.warning(f"Could not generate final verification report: {e}")
+            return f"Report generation failed: {e}"
