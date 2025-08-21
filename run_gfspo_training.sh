@@ -19,18 +19,20 @@ fi
 
 echo "Starting GFSPO training with optimized configuration..."
 
-DATASET=${DATASET:-gsm8k}
+# Prefer positional arg over environment to avoid accidental overrides
+DATASET="${1:-math}"
+echo "Using dataset: ${DATASET}"
 
-python easydel/scripts/finetune/gsm8k_math_gfspo.py \
+python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
   --dataset ${DATASET} \
-  --total_batch_size 2 \
-  --gfpo_group_size 16 \
-  --gfpo_retain_count 8 \
-  --rollout_chunk_size 4 \
+  --total_batch_size 1 \
+  --gfpo_group_size 8 \
+  --gfpo_retain_count 4 \
+  --rollout_chunk_size 1 \
   --num_train_epochs 2 \
-  --max_prompt_length 512 \
-  --max_completion_length 5632 \
+  --max_prompt_length 384 \
+  --max_completion_length 2048 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
@@ -41,7 +43,8 @@ python easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 16 \
+  --microbatch_one_completion true \
   --beta 0.04 \
   --temperature 0.7 \
   --top_p 0.95 \

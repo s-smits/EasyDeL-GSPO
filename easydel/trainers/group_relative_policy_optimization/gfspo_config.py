@@ -10,6 +10,7 @@ from eformer.pytree import auto_pytree
 from easydel.utils.compiling_utils import hash_fn
 
 from .gspo_config import GSPOConfig
+from .gfpo_config import enforce_gfpo_constraints
 
 
 @auto_pytree
@@ -60,22 +61,7 @@ class GFSPOConfig(GSPOConfig):
     def __post_init__(self):
         """Validate settings and set dependent parameters."""
         super().__post_init__()
-
-        if self.gfpo_group_size < 1:
-            raise ValueError("gfpo_group_size must be >= 1")
-        if self.gfpo_retain_count < 1:
-            raise ValueError("gfpo_retain_count must be >= 1")
-        if self.gfpo_group_size < self.gfpo_retain_count:
-            raise ValueError(
-                f"gfpo_group_size ({self.gfpo_group_size}) must be >= gfpo_retain_count ({self.gfpo_retain_count})"
-            )
-        if self.gfpo_metric not in ["length", "token_efficiency"]:
-            raise ValueError(
-                f"gfpo_metric must be one of ['length', 'token_efficiency'], got {self.gfpo_metric}"
-            )
-
-        # Ensure we actually generate G completions per prompt
-        self.num_return_sequences = int(self.gfpo_group_size)
+        enforce_gfpo_constraints(self)
 
         # For GSPO, sequence-level is the recommended default
         if getattr(self, "importance_sampling_level", None) is None:

@@ -45,6 +45,12 @@ def main():
         print("Training Arguments\n----------------------")
         print(gfspo_config)
         print("----------------------")
+        try:
+            import os
+            print(f"DEBUG: runtime.dataset={runtime.dataset}")
+            print(f"DEBUG: ENV DATASET={os.environ.get('DATASET')}")
+        except Exception:
+            pass
 
     tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
     tokenizer.padding_side = "left"
@@ -261,6 +267,10 @@ def main():
 
     else:
         raise ValueError("dataset must be 'gsm8k' or 'math'")
+
+    if jax.process_index() == 0:
+        print(f"DEBUG: About to initialize trainer with reward_funcs: {[f.__name__ for f in reward_funcs]}")
+        print(f"DEBUG: reward_funcs modules: {[f.__module__ for f in reward_funcs]}")
 
     trainer = ed.GFSPOTrainer(
         model=model,

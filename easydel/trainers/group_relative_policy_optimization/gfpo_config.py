@@ -10,6 +10,44 @@ from easydel.utils.compiling_utils import hash_fn
 from .grpo_config import GRPOConfig
 
 
+def enforce_gfpo_constraints(cfg: "GFPOConfig") -> None:
+    """Shared validation logic for GFPO-style configs.
+
+    Ensures sensible minima and relationships between G (group size) and k (retain count),
+    and normalizes generation count to match group size.
+    """
+    if getattr(cfg, "gfpo_group_size", None) is None:
+        raise ValueError("gfpo_group_size must be set")
+    if getattr(cfg, "gfpo_retain_count", None) is None:
+        raise ValueError("gfpo_retain_count must be set")
+
+    # Hard minima to avoid degenerate training
+    if int(cfg.gfpo_group_size) < 2:
+        raise ValueError(f"gfpo_group_size must be >= 2, got {cfg.gfpo_group_size}")
+    if int(cfg.gfpo_retain_count) < 2:
+        raise ValueError(
+            f"gfpo_retain_count must be >= 2 (k=1 makes standardized advantages undefined), got {cfg.gfpo_retain_count}"
+        )
+
+    # Relationship constraints
+    if int(cfg.gfpo_group_size) < int(cfg.gfpo_retain_count):
+        raise ValueError(
+            f"gfpo_group_size ({cfg.gfpo_group_size}) must be >= gfpo_retain_count ({cfg.gfpo_retain_count})"
+        )
+
+    # Supported metrics
+    if getattr(cfg, "gfpo_metric", None) not in ["length", "token_efficiency"]:
+        raise ValueError(
+            f"gfpo_metric must be one of ['length', 'token_efficiency'], got {getattr(cfg, 'gfpo_metric', None)}"
+        )
+
+    # Ensure we generate G completions per prompt
+    try:
+        cfg.num_return_sequences = int(cfg.gfpo_group_size)
+    except Exception:
+        cfg.num_return_sequences = cfg.gfpo_group_size
+
+
 @auto_pytree
 class GFPOConfig(GRPOConfig):
     """
@@ -58,22 +96,7 @@ class GFPOConfig(GRPOConfig):
     def __post_init__(self):
         """Post initialization to validate GFPO config and set generation count."""
         super().__post_init__()
-
-        if self.gfpo_group_size < 1:
-            raise ValueError("gfpo_group_size must be >= 1")
-        if self.gfpo_retain_count < 1:
-            raise ValueError("gfpo_retain_count must be >= 1")
-        if self.gfpo_group_size < self.gfpo_retain_count:
-            raise ValueError(
-                f"gfpo_group_size ({self.gfpo_group_size}) must be >= gfpo_retain_count ({self.gfpo_retain_count})"
-            )
-        if self.gfpo_metric not in ["length", "token_efficiency"]:
-            raise ValueError(
-                f"gfpo_metric must be one of ['length', 'token_efficiency'], got {self.gfpo_metric}"
-            )
-
-        # Ensure we actually generate G completions per prompt
-        self.num_return_sequences = int(self.gfpo_group_size)
+        enforce_gfpo_constraints(self)
 
     __hash__ = hash_fn
 
