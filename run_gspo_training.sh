@@ -16,10 +16,6 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-# Run simplified GSPO training focused on GSM8K or MATH. Choose dataset via DATASET env var.
-# Example: DATASET=math ./run_gspo_training.sh
-DATASET=${DATASET:-gsm8k}
-
 git pull origin math-code || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
@@ -35,7 +31,7 @@ DATASET=${DATASET:-gsm8k}
 
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
-  --dataset gsm8k \
+  --dataset ${DATASET} \
   --total_batch_size 2 \
   --num_return_sequences 4 \
   --rollout_chunk_size 4 \

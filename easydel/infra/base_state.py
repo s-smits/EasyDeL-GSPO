@@ -469,64 +469,19 @@ class EasyDeLState(struct.PyTreeNode):
 
             logger.info(f"Coordinated optimizer save through {optim_path}")
             try:
-                if enable:
-                    # Gather the optimizer state from distributed devices before saving
-                    gathered_state = self.gather_optimizer_state()
-
-                    # Save optimizer checkpoint with robust error handling
-                    try:
-                        CheckpointManager.save_checkpoint(
-                            state={
-                                f"param_idx_{idx}": param for idx, param in enumerate(jax.tree_util.tree_leaves(gathered_state.opt_state))
-                            },
-                            path=optim_path,
-                            gather_fns=True,  # Data is already gathered, no need for additional gathering
-                            float_dtype=float_dtype,
-                            mismatch_allowed=mismatch_allowed,
-                            verbose=verbose,
-                            enable=enable,
-                        )
-                    except (PermissionError, OSError) as checkpoint_error:
-                        logger.warning(f"Failed to save optimizer checkpoint due to file system error: {checkpoint_error}")
-                        # Try to ensure directory exists and has proper permissions
-                        try:
-                            save_directory.mkdir(parents=True, exist_ok=True, mode=0o755)
-                            # Retry checkpoint save once
-                            CheckpointManager.save_checkpoint(
-                                state={
-                                    f"param_idx_{idx}": param for idx, param in enumerate(jax.tree_util.tree_leaves(gathered_state.opt_state))
-                                },
-                                path=optim_path,
-                                gather_fns=True,
-                                float_dtype=float_dtype,
-                                mismatch_allowed=mismatch_allowed,
-                                verbose=verbose,
-                                enable=enable,
-                            )
-                            logger.info("Optimizer checkpoint save succeeded on retry")
-                        except Exception as retry_error:
-                            logger.error(f"Optimizer checkpoint save failed even after retry: {retry_error}")
-                            raise
-
-                    # Save optimizer structure with robust error handling
-                    try:
-                        struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
-                        buffer_struct = pickle.dumps((jax.tree_util.tree_structure(gathered_state.opt_state), self.step))
-                        struct_path.write_bytes(buffer_struct)
-                    except (PermissionError, OSError) as struct_error:
-                        logger.warning(f"Failed to save optimizer structure due to file system error: {struct_error}")
-                        # Try to ensure proper permissions and retry
-                        try:
-                            # Ensure parent directory exists with proper permissions
-                            struct_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-                            struct_path.write_bytes(buffer_struct)
-                            logger.info("Optimizer structure save succeeded on retry")
-                        except Exception as retry_error:
-                            logger.error(f"Optimizer structure save failed even after retry: {retry_error}")
-                            raise
-                else:
-                    # For non-zero processes, don't save anything
-                    logger.debug(f"Skipping optimizer save on non-zero process {jax.process_index()}")
+                CheckpointManager.save_checkpoint(
+                    state={
+                        f"param_idx_{idx}": param for idx, param in enumerate(jax.tree_util.tree_leaves(self.opt_state))
+                    },
+                    path=optim_path,
+                    float_dtype=float_dtype,
+                    mismatch_allowed=mismatch_allowed,
+                    verbose=verbose,
+                    enable=enable,
+                )
+                struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
+                buffer_struct = pickle.dumps((jax.tree_util.tree_structure(self.opt_state), self.step))
+                struct_path.write_bytes(buffer_struct)
             except Exception as e:
                 logger.error(f"Optimizer save failed: {e!s}")
                 raise

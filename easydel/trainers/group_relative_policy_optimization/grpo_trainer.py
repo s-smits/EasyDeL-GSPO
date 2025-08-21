@@ -1363,27 +1363,53 @@ class GRPOTrainer(Trainer):
                     cur_step = int(jax.device_get(state.step))
                 except Exception:
                     cur_step = 0
+                # Prefer global metrics in the immediate log to avoid confusion
                 immediate_keys = [
-                    "reward/success_rate_completions_local",
                     "reward/success_rate_completions_global",
-                    "reward/pass_at_k_local",
                     "reward/pass_at_k_global",
-                    "reward/mean_per_completion",
                     "reward/mean_per_completion_global",
                     "rollouts/completions_per_prompt",
-                    "rollouts/total_per_process",
                     "rollouts/total_global",
-                    "rollouts/lengths_local_mean",
                     "rollouts/lengths_global_mean",
                     "rollouts/derived_global_rollouts_per_step",
                     "termination/eos_stop_rate",
                     "generation_time",
                 ]
-                to_log = {
-                    f"train/{k}": float(processed_metrics_dict[k])
-                    for k in immediate_keys
-                    if k in processed_metrics_dict and isinstance(processed_metrics_dict[k], (int, float))
-                }
+                to_log = {}
+                for k in immediate_keys:
+                    v = processed_metrics_dict.get(k, None)
+                    if isinstance(v, (int, float)):
+                        to_log[f"train/{k}"] = float(v)
+                # Convenience duplicates with clearer names
+                if isinstance(processed_metrics_dict.get("reward/success_rate_completions_global"), (int, float)):
+                    to_log["train/global/success_rate_completions"] = float(
+                        processed_metrics_dict["reward/success_rate_completions_global"]
+                    )
+                if isinstance(processed_metrics_dict.get("reward/pass_at_k_global"), (int, float)):
+                    to_log["train/global/pass_at_k"] = float(
+                        processed_metrics_dict["reward/pass_at_k_global"]
+                    )
+
+                # Also log per-worker local rates as a vector for diagnostics (single process logs all)
+                try:
+                    if jax.process_count() > 1:
+                        _sr_local = jnp.array(processed_metrics_dict.get("reward/success_rate_completions_local", 0.0), dtype=jnp.float32)
+                        _pk_local = jnp.array(processed_metrics_dict.get("reward/pass_at_k_local", 0.0), dtype=jnp.float32)
+                        # allgather is more risky than just getting the local value
+                        try:
+                            _g_sr = jax.experimental.multihost_utils.process_allgather(_sr_local)
+                            _g_pk = jax.experimental.multihost_utils.process_allgather(_pk_local)
+                            print(f"[DEBUG] allgather succeeded")
+                        except Exception:
+                            _g_sr = _sr_local
+                            _g_pk = _pk_local
+                            print(f"[DEBUG] allgather failed, using local values")
+                        sr_list = [float(x) for x in list(jax.device_get(_g_sr).reshape(-1))]
+                        pk_list = [float(x) for x in list(jax.device_get(_g_pk).reshape(-1))]
+                        to_log["train/local/success_rate_completions_per_worker"] = sr_list
+                        to_log["train/local/pass_at_k_per_worker"] = pk_list
+                except Exception:
+                    pass
                 # Also log dataset-specific per-reward metrics if provided (e.g., gsm8k/accuracy, math/format_rate)
                 try:
                     for rf in self.reward_funcs:

@@ -1,6 +1,10 @@
 import re
 import logging
 from typing import List
+try:  # Optional JAX for proc-0 gating of logs
+    import jax
+except Exception:  # pragma: no cover
+    jax = None  # type: ignore
 
 try:
     # Math-Verify: robust evaluator for numeric expressions
@@ -156,6 +160,12 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         times = (target + len(gts) - 1) // len(gts)
         gt_list = (gts * times)[:target]
 
+    # Gate logs to process 0 only to avoid cross-host spam
+    try:
+        is_proc0 = (jax is None) or (jax.process_index() == 0)
+    except Exception:
+        is_proc0 = True
+
     rewards: List[float] = []
     verification_details = []
 
@@ -194,10 +204,11 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         if is_correct:
             detail["score"] = 1.0
             detail["parsed_successfully"] = True
-            logger.info(f"✓ GSM8K Math-Verify SUCCESS [idx={i}] - Method: {method}")
-            logger.info(f"  Ground truth: {gt}")
-            logger.info(f"  Extracted answer: {ans}")
-            logger.info(f"  Last 20 tokens: {detail['last_20_tokens']}")
+            if is_proc0:
+                logger.info(f"✓ GSM8K Math-Verify SUCCESS [idx={i}] - Method: {method}")
+                logger.info(f"  Ground truth: {gt}")
+                logger.info(f"  Extracted answer: {ans}")
+                logger.info(f"  Last 20 tokens: {detail['last_20_tokens']}")
         else:
             # Fallback to regex-based approach
             detail["fallback_used"] = True
@@ -208,17 +219,19 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             if not numbers:
                 detail["verification_method"] = "no_numbers_found"
                 # Enhanced debugging for no numbers found - this is likely the main issue
-                logger.warning(f"✗ NO NUMBERS FOUND [idx={i}]")
-                logger.warning(f"  Full original text: '{text}'")
-                logger.warning(f"  Extracted answer: '{ans}'")
-                logger.warning(f"  Ground truth: '{gt}'")
-                logger.warning(f"  Text length: {len(text)} chars")
+                if is_proc0:
+                    logger.warning(f"✗ NO NUMBERS FOUND [idx={i}]")
+                    logger.warning(f"  Full original text: '{text}'")
+                    logger.warning(f"  Extracted answer: '{ans}'")
+                    logger.warning(f"  Ground truth: '{gt}'")
+                    logger.warning(f"  Text length: {len(text)} chars")
                 # Try more patterns to see if there are any digits at all
                 all_digits = re.findall(r'\d+', norm_ans)
                 all_numbers_expanded = re.findall(r'-?\d*\.?\d+', norm_ans)
-                logger.warning(f"  Any digits found: {all_digits}")
-                logger.warning(f"  Numbers with expanded pattern: {all_numbers_expanded}")
-                logger.warning(f"  Math-Verify method: {method}")
+                if is_proc0:
+                    logger.warning(f"  Any digits found: {all_digits}")
+                    logger.warning(f"  Numbers with expanded pattern: {all_numbers_expanded}")
+                    logger.warning(f"  Math-Verify method: {method}")
             else:
                 last_number = numbers[-1]
                 detail["parsed_successfully"] = True
@@ -228,39 +241,123 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 is_correct = _answer_check(norm_ans, gt)
                 detail["score"] = 1.0 if is_correct else 0.0
 
-                if is_correct:
-                    logger.info(f"✓ GSM8K REGEX FALLBACK SUCCESS [idx={i}]")
-                    logger.info(f"  Extracted numbers: {numbers}")
-                    logger.info(f"  Last number: {last_number}")
-                    logger.info(f"  Ground truth: {gt}")
-                else:
-                    logger.warning(f"✗ GSM8K REGEX MISMATCH [idx={i}]")
-                    logger.warning(f"  Math-Verify method: {method}")
-                    logger.warning(f"  Regex extracted: '{last_number}' (type: {type(last_number)})")
-                    logger.warning(f"  Ground truth: '{gt}' (type: {type(gt)})")
-                    logger.warning(f"  All extracted numbers: {numbers}")
-                    logger.warning(f"  Full extracted answer: '{ans}'")
-                    logger.warning(f"  Full original text: '{text}'")
+                if is_proc0:
+                    if is_correct:
+                        logger.info(f"✓ GSM8K REGEX FALLBACK SUCCESS [idx={i}]")
+                        logger.info(f"  Extracted numbers: {numbers}")
+                        logger.info(f"  Last number: {last_number}")
+                        logger.info(f"  Ground truth: {gt}")
+                    else:
+                        logger.warning(f"✗ GSM8K REGEX MISMATCH [idx={i}]")
+                        logger.warning(f"  Math-Verify method: {method}")
+                        logger.warning(f"  Regex extracted: '{last_number}' (type: {type(last_number)})")
+                        logger.warning(f"  Ground truth: '{gt}' (type: {type(gt)})")
+                        logger.warning(f"  All extracted numbers: {numbers}")
+                        logger.warning(f"  Full extracted answer: '{ans}'")
+                        logger.warning(f"  Full original text: '{text}'")
 
         rewards.append(detail["score"])
         verification_details.append(detail)
 
-    # Enhanced summary statistics following Math-Verify patterns
+    # Enhanced summary statistics following Math-Verify patterns (proc0 only)
     successful_verifications = sum(1 for d in verification_details if d["score"] > 0.0)
     math_verify_successes = sum(1 for d in verification_details if d["verification_method"] == "math_verify_success")
     regex_fallback_successes = sum(1 for d in verification_details if d["verification_method"] == "regex_fallback" and d["score"] > 0.0)
     no_numbers_count = sum(1 for d in verification_details if d["verification_method"] == "no_numbers_found")
 
-    logger.info(f"GSM8K VERIFICATION SUMMARY:")
-    logger.info(f"  Total completions: {len(verification_details)}")
-    logger.info(f"  Successful verifications: {successful_verifications}")
-    logger.info(f"  Math-Verify successes: {math_verify_successes}")
-    logger.info(f"  Regex fallback successes: {regex_fallback_successes}")
-    logger.info(f"  No numbers found: {no_numbers_count}")
-    logger.info(f"  Success rate: {successful_verifications/len(verification_details):.2%}")
-    if successful_verifications > 0:
-        math_verify_rate = math_verify_successes / successful_verifications
-        logger.info(f"  Math-Verify usage: {math_verify_rate:.1%} of successful verifications")
+    if is_proc0:
+        # Derive per-prompt pass@k locally when prompts are provided
+        try:
+            total_comps = len(verification_details)
+            if prompts and isinstance(prompts, list) and len(prompts) == total_comps:
+                try:
+                    unique_prompts = []
+                    seen = set()
+                    for p in prompts:
+                        if p not in seen:
+                            seen.add(p)
+                            unique_prompts.append(p)
+                    B = len(unique_prompts)
+                    R = max(1, total_comps // max(1, B))
+                except Exception:
+                    B = total_comps
+                    R = 1
+            else:
+                B = total_comps
+                R = 1
+
+            # Pass@k across prompts
+            scores = [1.0 if d.get("score", 0.0) > 0.0 else 0.0 for d in verification_details]
+            pass_cnt = 0
+            if B > 0 and R > 0 and B * R == total_comps:
+                for i in range(B):
+                    grp = scores[i * R : (i + 1) * R]
+                    pass_cnt += 1 if any(s > 0 for s in grp) else 0
+            else:
+                # Fallback: treat each completion as a prompt (degenerate)
+                pass_cnt = sum(scores)
+                B = total_comps
+                R = 1
+
+            logger.info("GSM8K VERIFICATION SUMMARY (local):")
+            logger.info(f"  Local prompts: {B}")
+            logger.info(f"  Local completions: {total_comps} ({R} per prompt)")
+            logger.info(f"  Successful completions: {successful_verifications}")
+            logger.info(f"  Math-Verify successes: {math_verify_successes}")
+            logger.info(f"  Regex fallback successes: {regex_fallback_successes}")
+            logger.info(f"  No numbers found: {no_numbers_count}")
+            logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
+
+            # Global scalars via safe allgather (counts only)
+            try:
+                import jax
+                import jax.experimental.multihost_utils as mh
+                local_prompts = jnp.array(B, dtype=jnp.int32)
+                local_pass_prompts = jnp.array(pass_cnt, dtype=jnp.int32)
+                local_completions = jnp.array(total_comps, dtype=jnp.int32)
+
+                try:
+                    g_prompts = mh.process_allgather(local_prompts)
+                    g_pass_prompts = mh.process_allgather(local_pass_prompts)
+                    g_completions = mh.process_allgather(local_completions)
+                    print(f"[DEBUG] allgather succeeded")
+                except Exception:
+                    g_prompts = local_prompts
+                    g_pass_prompts = local_pass_prompts
+                    g_completions = local_completions
+                    print(f"[DEBUG] allgather failed, using local values")
+
+                try:
+                    g_prompts_sum = int(jnp.sum(g_prompts)) if hasattr(jnp, 'sum') else int(g_prompts)
+                except Exception:
+                    g_prompts_sum = int(local_prompts)
+                try:
+                    g_pass_prompts_sum = int(jnp.sum(g_pass_prompts)) if hasattr(jnp, 'sum') else int(g_pass_prompts)
+                except Exception:
+                    g_pass_prompts_sum = int(local_pass_prompts)
+                try:
+                    g_completions_sum = int(jnp.sum(g_completions)) if hasattr(jnp, 'sum') else int(g_completions)
+                except Exception:
+                    g_completions_sum = int(local_completions)
+
+                # Global Pass@R and totals
+                if g_prompts_sum > 0:
+                    g_pass_at_r = g_pass_prompts_sum / g_prompts_sum
+                else:
+                    g_pass_at_r = 0.0
+
+                logger.info("GSM8K VERIFICATION SUMMARY (global):")
+                logger.info(f"  Global prompts: {g_prompts_sum}")
+                logger.info(f"  Global completions: {g_completions_sum} ({R} per prompt)")
+                logger.info(f"  Global Pass@{R}: {g_pass_prompts_sum}/{g_prompts_sum} ({g_pass_at_r:.2%})")
+            except Exception:
+                # Best-effort: skip global if not available
+                pass
+        except Exception:
+            # Fallback to minimal summary
+            logger.info("GSM8K VERIFICATION SUMMARY (local):")
+            logger.info(f"  Local completions: {len(verification_details)}")
+            logger.info(f"  Successful completions: {successful_verifications} ({successful_verifications/len(verification_details):.2%})")
 
     # Store verification details in kwargs for potential external access
     if "verification_details" in kwargs:
