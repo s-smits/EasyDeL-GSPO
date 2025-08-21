@@ -1,7 +1,6 @@
 import re
 import logging
 from typing import List
-import hashlib
 try:  # Optional JAX for proc-0 gating of logs
     import jax
 except Exception:  # pragma: no cover
@@ -20,7 +19,6 @@ except Exception as _e:  # pragma: no cover
     ExprExtractionConfig = None  # type: ignore
 
 logger = logging.getLogger(__name__)
-_LAST_SUMMARY_FINGERPRINT: str | None = None
 
 
 def _extract_text(comp) -> str:
@@ -301,36 +299,21 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 B = total_comps
                 R = 1
 
-            # Suppress duplicate identical summaries within this process
-            try:
-                fingerprint = f"{B}|{total_comps}|{R}|{successful_verifications}|{math_verify_successes}|{regex_fallback_successes}|{no_numbers_count}|{pass_cnt}"
-            except Exception:
-                fingerprint = None
-            global _LAST_SUMMARY_FINGERPRINT
-            if fingerprint != _LAST_SUMMARY_FINGERPRINT:
-                _LAST_SUMMARY_FINGERPRINT = fingerprint
-                logger.info("GSM8K VERIFICATION SUMMARY (local):")
-                logger.info(f"  Local prompts: {B}")
-                logger.info(f"  Local completions: {total_comps} ({R} per prompt)")
-                logger.info(f"  Successful completions: {successful_verifications}")
-                logger.info(f"  Math-Verify successes: {math_verify_successes}")
-                logger.info(f"  Regex fallback successes: {regex_fallback_successes}")
-                logger.info(f"  No numbers found: {no_numbers_count}")
-                logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
+            logger.info("GSM8K VERIFICATION SUMMARY (local):")
+            logger.info(f"  Local prompts: {B}")
+            logger.info(f"  Local completions: {total_comps} ({R} per prompt)")
+            logger.info(f"  Successful completions: {successful_verifications}")
+            logger.info(f"  Math-Verify successes: {math_verify_successes}")
+            logger.info(f"  Regex fallback successes: {regex_fallback_successes}")
+            logger.info(f"  No numbers found: {no_numbers_count}")
+            logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
 
-            # Global aggregation is handled by the trainer to avoid cross-host collective issues here
+            # Global metrics are reported by the trainer; avoid cross-host collectives here.
         except Exception:
             # Fallback to minimal summary
-            try:
-                minimal_fingerprint = f"MIN|{len(verification_details)}|{successful_verifications}"
-                global _LAST_SUMMARY_FINGERPRINT
-                if minimal_fingerprint != _LAST_SUMMARY_FINGERPRINT:
-                    _LAST_SUMMARY_FINGERPRINT = minimal_fingerprint
-                    logger.info("GSM8K VERIFICATION SUMMARY (local):")
-                    logger.info(f"  Local completions: {len(verification_details)}")
-                    logger.info(f"  Successful completions: {successful_verifications} ({successful_verifications/len(verification_details):.2%})")
-            except Exception:
-                pass
+            logger.info("GSM8K VERIFICATION SUMMARY (local):")
+            logger.info(f"  Local completions: {len(verification_details)}")
+            logger.info(f"  Successful completions: {successful_verifications} ({successful_verifications/len(verification_details):.2%})")
 
     # Store verification details in kwargs for potential external access
     if "verification_details" in kwargs:
