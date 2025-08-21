@@ -19,9 +19,28 @@ except Exception as _e:  # pragma: no cover
     ExprExtractionConfig = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+try:
+    from .reward_utils import (
+        extract_text as _extract_text_util,
+        normalize_to_list_str,
+        replicate_to_length,
+        is_main_process,
+        safe_global_sum,
+    )
+except Exception:  # pragma: no cover
+    _extract_text_util = None  # type: ignore
+    normalize_to_list_str = None  # type: ignore
+    replicate_to_length = None  # type: ignore
+    is_main_process = lambda: True  # type: ignore
+    safe_global_sum = lambda x: x  # type: ignore
 
 
 def _extract_text(comp) -> str:
+    if _extract_text_util is not None:
+        try:
+            return _extract_text_util(comp)
+        except Exception:
+            pass
     if isinstance(comp, list) and comp:
         c0 = comp[0]
         if isinstance(c0, dict) and "content" in c0:
@@ -135,30 +154,35 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
 
     # Ground truths are provided directly as strings in batch["answer"]
     gt_raw = batch.get("answer", [])
-    # Normalize container to Python list of strings
-    if isinstance(gt_raw, list):
-        gts = gt_raw
+    if callable(normalize_to_list_str):
+        gts = normalize_to_list_str(gt_raw)  # type: ignore
     else:
-        try:
-            import numpy as np  # type: ignore
-            if isinstance(gt_raw, np.ndarray):
-                gts = gt_raw.tolist()
-            else:
-                gts = [gt_raw] if gt_raw is not None else []
-        except Exception:
-            gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
+        if isinstance(gt_raw, list):
+            gts = gt_raw
+        else:
+            try:
+                import numpy as np  # type: ignore
+                if isinstance(gt_raw, np.ndarray):
+                    gts = gt_raw.tolist()
+                else:
+                    gts = [gt_raw] if gt_raw is not None else []
+            except Exception:
+                gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
     # Replicate to match completions length (B * R)
     target = len(completions)
-    if len(gts) == 0:
-        gt_list: List[str] = [""] * target
-    elif len(gts) == target:
-        gt_list = gts
-    elif target % len(gts) == 0:
-        factor = target // len(gts)
-        gt_list = [x for x in gts for _ in range(factor)]
+    if callable(replicate_to_length):
+        gt_list: List[str] = replicate_to_length(gts, target)  # type: ignore
     else:
-        times = (target + len(gts) - 1) // len(gts)
-        gt_list = (gts * times)[:target]
+        if len(gts) == 0:
+            gt_list = [""] * target
+        elif len(gts) == target:
+            gt_list = gts
+        elif target % len(gts) == 0:
+            factor = target // len(gts)
+            gt_list = [x for x in gts for _ in range(factor)]
+        else:
+            times = (target + len(gts) - 1) // len(gts)
+            gt_list = (gts * times)[:target]
 
     # Gate logs to process 0 only to avoid cross-host spam
     try:
@@ -308,7 +332,30 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             logger.info(f"  No numbers found: {no_numbers_count}")
             logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
 
-            # Global metrics are reported by the trainer; avoid cross-host collectives here.
+            # Best-effort global aggregation for overall success ratio across completions
+            try:
+                sc_global = safe_global_sum(successful_verifications)
+                tot_global = safe_global_sum(total_comps)
+                try:
+                    scg = int(getattr(sc_global, "item", lambda: sc_global)())  # type: ignore
+                except Exception:
+                    try:
+                        scg = int(sc_global)
+                    except Exception:
+                        scg = successful_verifications
+                try:
+                    tg = int(getattr(tot_global, "item", lambda: tot_global)())  # type: ignore
+                except Exception:
+                    try:
+                        tg = int(tot_global)
+                    except Exception:
+                        tg = total_comps
+                if is_main_process():
+                    rate = (float(scg) / max(1.0, float(tg)))
+                    logger.info(f"GSM8K GLOBAL (best-effort): {scg}/{tg} successful ({rate:.1%}) [aggregation ok]")
+            except Exception as e:
+                if is_main_process():
+                    logger.info(f"GSM8K global aggregation failed: {e}")
         except Exception:
             # Fallback to minimal summary
             logger.info("GSM8K VERIFICATION SUMMARY (local):")

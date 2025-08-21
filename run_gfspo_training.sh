@@ -6,7 +6,7 @@ export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off
 
 echo "Setting up environment..."
-git pull origin main 2>/dev/null || true
+git pull origin math-only-improved 2>/dev/null || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -26,7 +26,7 @@ echo "Using dataset: ${DATASET}"
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
-  --total_batch_size 4 \
+  --total_batch_size 2 \
   --gfpo_group_size 8 \
   --gfpo_retain_count 4 \
   --rollout_chunk_size 1 \
@@ -43,7 +43,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 8 \
+  --gradient_accumulation_steps 16 \
   --microbatch_one_completion true \
   --beta 0.04 \
   --temperature 0.7 \

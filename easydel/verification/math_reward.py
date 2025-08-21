@@ -21,6 +21,19 @@ except Exception as _e:  # pragma: no cover
     math_metric = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+try:
+    # Shared reward utils
+    from .reward_utils import (
+        normalize_to_list_str,
+        replicate_to_length,
+        is_main_process,
+        safe_global_sum,
+    )
+except Exception:  # pragma: no cover
+    normalize_to_list_str = None  # type: ignore
+    replicate_to_length = None  # type: ignore
+    is_main_process = lambda: True  # type: ignore
+    safe_global_sum = lambda x: x  # type: ignore
 
 
 def _extract_text(comp) -> str:
@@ -241,29 +254,34 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     
     # Prefer normalized ground truth if provided by preprocessing
     gts = batch.get("solution_normalized", batch.get("solution", []))
-    # Normalize ground truths to a Python list of strings, robust to numpy/jax arrays
-    try:
-        # Convert array-like to list
-        if hasattr(gts, "tolist") and not isinstance(gts, list):
-            gts = gts.tolist()
-    except Exception:
-        pass
-    if gts is None:
-        gts = []
-    if isinstance(gts, str):
-        gts = [gts]
-    elif not isinstance(gts, list):
-        try:
-            gts = list(gts)
-        except Exception:
-            gts = [str(gts)]
-    # Ensure all entries are strings
-    gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
+    if callable(normalize_to_list_str):
+        gts = normalize_to_list_str(gts)  # type: ignore
+    else:
+        # Fallback normalization
+        if gts is None:
+            gts = []
+        if isinstance(gts, str):
+            gts = [gts]
+        elif not isinstance(gts, list):
+            try:
+                gts = list(gts)
+            except Exception:
+                gts = [str(gts)]
+        gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
     # Replicate to match B*R if needed
-    g_len = len(gts)
     c_len = len(completions)
-    repeat = (c_len // g_len) if g_len > 0 else 1
-    gts = gts * max(1, repeat)
+    if callable(replicate_to_length):
+        gts = replicate_to_length(gts, c_len)  # type: ignore
+    else:
+        g_len = len(gts)
+        if g_len == 0:
+            gts = [""] * c_len
+        elif c_len % g_len == 0:
+            factor = c_len // g_len
+            gts = [x for x in gts for _ in range(factor)]
+        else:
+            times = (c_len + g_len - 1) // g_len
+            gts = (gts * times)[:c_len]
 
     # Configure Math-Verify extraction following their patterns
     use_mv = callable(parse) and callable(verify)  # type: ignore
@@ -407,8 +425,34 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     total = len(verification_details)
     if total > 0:
         logger.info(f"Math verification ({problem_type}): {successful}/{total} successful ({successful/total:.1%})")
-        
-        # Method breakdown
+
+        # Attempt global aggregation (best-effort, proc0 logs only)
+        try:
+            sc_global = safe_global_sum(successful)
+            tot_global = safe_global_sum(total)
+            # Convert to python scalars if possible
+            try:
+                scg = int(getattr(sc_global, "item", lambda: sc_global)())  # type: ignore
+            except Exception:
+                try:
+                    scg = int(sc_global)
+                except Exception:
+                    scg = successful
+            try:
+                tg = int(getattr(tot_global, "item", lambda: tot_global)())  # type: ignore
+            except Exception:
+                try:
+                    tg = int(tot_global)
+                except Exception:
+                    tg = total
+            if is_main_process():
+                rate = (float(scg) / max(1.0, float(tg)))
+                logger.info(f"  Global (best-effort): {scg}/{tg} successful ({rate:.1%}) [aggregation ok]")
+        except Exception as e:
+            if is_main_process():
+                logger.info(f"  Global aggregation failed in math_reward: {e}")
+
+        # Method breakdown (local)
         methods = {}
         parsers = {}
         for detail in verification_details:
@@ -417,13 +461,15 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             methods[method] = methods.get(method, 0) + 1
             if parser != "none":
                 parsers[parser] = parsers.get(parser, 0) + 1
-        
+
         logger.info(f"  Problem type: {problem_type}")
-        logger.info(f"  Extraction configs: gold={len(gold_extraction_config) if gold_extraction_config else 0}, pred={len(pred_extraction_config) if pred_extraction_config else 0}")
-        
+        logger.info(
+            f"  Extraction configs: gold={len(gold_extraction_config) if gold_extraction_config else 0}, pred={len(pred_extraction_config) if pred_extraction_config else 0}"
+        )
+
         for method, count in methods.items():
             logger.debug(f"  Method {method}: {count}")
-            
+
         if parsers:
             logger.debug(f"  Parser usage: {dict(parsers)}")
 
