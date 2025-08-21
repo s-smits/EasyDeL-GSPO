@@ -154,7 +154,20 @@ def main():
     def build_math() -> tuple[Dataset, Dataset]:
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
         ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
-        ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{runtime.dataset_use_rate}%]")
+        try:
+            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{runtime.dataset_use_rate}%]")
+        except ValueError as e:
+            # Fallback for datasets that only provide a 'train' split
+            if "Unknown split" in str(e) or "test" in str(e):
+                if jax.process_index() == 0:
+                    print(
+                        "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
+                        "Using 10% of 'train' as validation (deterministic split, seed=17)."
+                    )
+                split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+                ds_train, ds_test = split_ds["train"], split_ds["test"]
+            else:
+                raise
 
         def map_ex(x):
             return {
