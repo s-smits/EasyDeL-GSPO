@@ -308,51 +308,7 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             logger.info(f"  No numbers found: {no_numbers_count}")
             logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
 
-            # Global scalars via safe allgather (counts only)
-            try:
-                import jax
-                import jax.experimental.multihost_utils as mh
-                local_prompts = jnp.array(B, dtype=jnp.int32)
-                local_pass_prompts = jnp.array(pass_cnt, dtype=jnp.int32)
-                local_completions = jnp.array(total_comps, dtype=jnp.int32)
-
-                try:
-                    g_prompts = mh.process_allgather(local_prompts)
-                    g_pass_prompts = mh.process_allgather(local_pass_prompts)
-                    g_completions = mh.process_allgather(local_completions)
-                    print(f"[DEBUG] allgather succeeded")
-                except Exception:
-                    g_prompts = local_prompts
-                    g_pass_prompts = local_pass_prompts
-                    g_completions = local_completions
-                    print(f"[DEBUG] allgather failed, using local values")
-
-                try:
-                    g_prompts_sum = int(jnp.sum(g_prompts)) if hasattr(jnp, 'sum') else int(g_prompts)
-                except Exception:
-                    g_prompts_sum = int(local_prompts)
-                try:
-                    g_pass_prompts_sum = int(jnp.sum(g_pass_prompts)) if hasattr(jnp, 'sum') else int(g_pass_prompts)
-                except Exception:
-                    g_pass_prompts_sum = int(local_pass_prompts)
-                try:
-                    g_completions_sum = int(jnp.sum(g_completions)) if hasattr(jnp, 'sum') else int(g_completions)
-                except Exception:
-                    g_completions_sum = int(local_completions)
-
-                # Global Pass@R and totals
-                if g_prompts_sum > 0:
-                    g_pass_at_r = g_pass_prompts_sum / g_prompts_sum
-                else:
-                    g_pass_at_r = 0.0
-
-                logger.info("GSM8K VERIFICATION SUMMARY (global):")
-                logger.info(f"  Global prompts: {g_prompts_sum}")
-                logger.info(f"  Global completions: {g_completions_sum} ({R} per prompt)")
-                logger.info(f"  Global Pass@{R}: {g_pass_prompts_sum}/{g_prompts_sum} ({g_pass_at_r:.2%})")
-            except Exception:
-                # Best-effort: skip global if not available
-                pass
+            # Global metrics are reported by the trainer; avoid cross-host collectives here.
         except Exception:
             # Fallback to minimal summary
             logger.info("GSM8K VERIFICATION SUMMARY (local):")
