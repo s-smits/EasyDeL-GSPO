@@ -28,6 +28,7 @@ try:
         replicate_to_length,
         is_main_process,
         safe_global_sum,
+        extract_answer_from_xml,
     )
 except Exception:  # pragma: no cover
     normalize_to_list_str = None  # type: ignore
@@ -323,16 +324,15 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         }
         
         # Prefer content inside <answer> block
-        if "<answer>" in text and "</answer>" in text:
-            try:
-                ans_text = text.split("<answer>", 1)[1].split("</answer>", 1)[0]
-                detail["extracted_answer"] = ans_text
-            except Exception:
+        try:
+            _ans = extract_answer_from_xml(text)
+            if _ans is not None:
+                ans_text = _ans
+            else:
                 ans_text = text
-                detail["extracted_answer"] = text
-        else:
+        except Exception:
             ans_text = text
-            detail["extracted_answer"] = text
+        detail["extracted_answer"] = ans_text
 
         if use_mv:
             try:

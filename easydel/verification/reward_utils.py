@@ -6,6 +6,7 @@ try:  # Optional JAX for multihost-safe aggregation
     import jax  # type: ignore
 except Exception:  # pragma: no cover
     jax = None  # type: ignore
+import re
 
 
 def extract_text(completion: Any) -> str:
@@ -114,5 +115,17 @@ def safe_global_sum(value: Any) -> Any:
                 return value
     except Exception:
         return value
+
+
+def extract_answer_from_xml(solution_str: str) -> str | None:
+    """Extract content inside <answer>...</answer>. Returns None if absent.
+
+    Shared across GSM8K and Math rewards.
+    """
+    try:
+        m = re.search(r"<answer>(.*?)</answer>", solution_str, re.DOTALL)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
 
 

@@ -29,7 +29,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --total_batch_size 2 \
   --gfpo_group_size 8 \
   --gfpo_retain_count 4 \
-  --rollout_chunk_size 1 \
+  --rollout_chunk_size 2 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 3584 \
@@ -40,7 +40,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --log_logprobs_metrics false \
   --log_global true \
   --log_steps 1 \
-  --save_steps 100 \
+  --save_steps 50 \
   --do_eval false \
   --weight_decay 0.01 \
   --gradient_accumulation_steps 16 \

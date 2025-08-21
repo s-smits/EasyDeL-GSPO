@@ -26,6 +26,7 @@ try:
         replicate_to_length,
         is_main_process,
         safe_global_sum,
+        extract_answer_from_xml,
     )
 except Exception:  # pragma: no cover
     _extract_text_util = None  # type: ignore
@@ -121,9 +122,7 @@ def _math_verify_numeric_check(solution_str: str, ground_truth: str, **kwargs) -
 
 
 def _extract_answer_from_xml(solution_str: str) -> str | None:
-    """Extract content inside <answer>...</answer>. Returns None if absent."""
-    m = re.search(r"<answer>(.*?)</answer>", solution_str, re.DOTALL)
-    return m.group(1).strip() if m else None
+    return extract_answer_from_xml(solution_str)
 
 
 def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwargs) -> List[float]:
