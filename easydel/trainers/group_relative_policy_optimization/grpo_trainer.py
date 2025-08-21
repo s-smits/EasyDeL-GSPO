@@ -993,8 +993,11 @@ class GRPOTrainer(Trainer):
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
                 # Safe global scalar aggregation (proc-local fallbacks on failure)
+                print("Entering outer try for global scalar aggregation")
                 try:
+                    print("Inside outer try: attempting global aggregation")
                     if jax.process_count() > 1:
+                        print("More than one process detected, using process_allgather")
                         _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
                         _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
                         _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
@@ -1003,21 +1006,27 @@ class GRPOTrainer(Trainer):
                         total_comp_global = jnp.sum(_tc)
                         pass_prompt_count_global = jnp.sum(_pp)
                         num_prompts_global = jnp.sum(_np)
+                        print("Global aggregation via allgather succeeded")
                     else:
+                        print("Single process detected, using local values for global metrics")
                         success_count_comp_global = success_count_comp_local
                         total_comp_global = total_comp_local
                         pass_prompt_count_global = pass_prompt_count_local
                         num_prompts_global = jnp.array(float(num_prompts_local))
                     success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
                     pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                except Exception:
+                    print("Global metrics computed successfully")
+                except Exception as e:
+                    print(f"Exception in global aggregation try block: {e}")
                     success_count_comp_global = success_count_comp_local
                     total_comp_global = total_comp_local
                     success_rate_comp_global = success_rate_comp_local
                     pass_prompt_count_global = pass_prompt_count_local
                     num_prompts_global = jnp.array(float(num_prompts_local))
                     pass_at_k_global = pass_at_k_local
-            except Exception:
+                print("Exiting outer try for global scalar aggregation")
+            except Exception as e:
+                print(f"Exception in outermost try block for local/global metrics: {e}")
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
                 total_comp_local = jnp.array(1)
@@ -1099,6 +1108,8 @@ class GRPOTrainer(Trainer):
             # Safe global scalars for display only
             "reward/success_rate_completions_global": float(success_rate_comp_global),
             "reward/pass_at_k_global": float(pass_at_k_global),
+            "rollouts/total_global": float(total_comp_global),
+            "rollouts/queries_global": float(num_prompts_global),
             "completion_length": completion_length,
             # Completion length stats (local only)
             "rollouts/lengths_min": lengths_local_min,
@@ -1268,6 +1279,8 @@ class GRPOTrainer(Trainer):
                     "reward/success_rate_completions_global",
                     "reward/pass_at_k_global",
                     "rollouts/completions_per_prompt",
+                    "rollouts/total_global",
+                    "rollouts/queries_global",
                     "rollouts/lengths_mean",
                     "termination/eos_stop_rate",
                     "generation_time",
