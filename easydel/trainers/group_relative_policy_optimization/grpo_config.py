@@ -1,16 +1,5 @@
-# Copyright 2025 The EasyDeL Author @erfanzar (Erfan Zare Chavoshi).
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# grpo_config.py
+
 import typing as tp
 from dataclasses import field
 
@@ -172,16 +161,6 @@ class GRPOConfig(TrainingArguments):
             "lower values (e.g., <1.0) make the output more deterministic."
         },
     )
-
-    # Memory-optimized microbatching: process one completion per prompt per microbatch
-    microbatch_one_completion: bool = field(
-        default=False,
-        metadata={
-            "help": "If True, set gradient_accumulation_steps = num_return_sequences so each microbatch holds one completion per prompt. "
-            "Also defaults completions_chunk_size (rollout_chunk_size) to 1 for lowest generation memory."
-        },
-    )
-
 
     def __post_init__(self):
         """Post initialization to set dependent parameters."""

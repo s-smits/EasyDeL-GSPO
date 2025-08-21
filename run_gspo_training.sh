@@ -16,7 +16,7 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-git pull origin math-code || true
+git pull origin math-only-improved || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 

@@ -19,6 +19,8 @@ from .dr_grpo_config import DRGRPOConfig
 from .dr_grpo_trainer import DRGRPOTrainer
 from .gspo_config import GSPOConfig
 from .gspo_trainer import GSPOTrainer
+from .gfspo_config import GFSPOConfig
+from .gfspo_trainer import GFSPOTrainer
 
 __all__ = [
     "GRPOConfig", 
@@ -29,4 +31,6 @@ __all__ = [
     "DRGRPOTrainer",
     "GSPOConfig",
     "GSPOTrainer",
+    "GFSPOConfig",
+    "GFSPOTrainer",
 ]
