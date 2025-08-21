@@ -665,14 +665,55 @@ class GRPOTrainer(Trainer):
         # Filter to unique prompts only
         if jax.process_index() == 0:
             logger.info(f"Filtered {len(prompts) - len(unique_indices)} duplicate prompts from local batch")
+            # Extra debug (stdout): show dedup indices
+            try:
+                print(f"[DEBUG] dedup: original={len(prompts)} unique={len(unique_indices)} indices_head={unique_indices[:8]}")
+            except Exception:
+                pass
         
         # Create filtered batch with unique prompts only
         filtered_batch = {}
         for key, values in batch.items():
-            if isinstance(values, jax.Array) and len(values) == len(prompts):
-                filtered_batch[key] = values[unique_indices]
+            try:
+                vlen = len(values)
+            except Exception:
+                vlen = None
+            if vlen == len(prompts):
+                # JAX array: direct indexing
+                if isinstance(values, jax.Array):
+                    filtered_batch[key] = values[unique_indices]
+                else:
+                    # numpy array or python sequence: slice by indices
+                    try:
+                        import numpy as _np  # local import safe
+                        if isinstance(values, _np.ndarray):
+                            filtered_batch[key] = values[unique_indices]
+                        elif isinstance(values, (list, tuple)):
+                            filtered_batch[key] = [values[i] for i in unique_indices]
+                        else:
+                            # Fallback: keep as-is if unsupported type
+                            filtered_batch[key] = values
+                    except Exception:
+                        filtered_batch[key] = values
             else:
                 filtered_batch[key] = values
+        
+        if jax.process_index() == 0:
+            # Extra debug: show filtered lengths for key fields
+            try:
+                pid = filtered_batch.get("input_ids", None)
+                ans = filtered_batch.get("answer", None)
+                pid_len = int(pid.shape[0]) if isinstance(pid, jax.Array) else (len(pid) if pid is not None else -1)
+                ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
+                ans_head = None
+                try:
+                    if hasattr(ans, "__getitem__"):
+                        ans_head = ans[:2]
+                except Exception:
+                    ans_head = None
+                print(f"[DEBUG] dedup: input_ids_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
+            except Exception:
+                pass
         
         return filtered_batch
 
@@ -697,6 +738,23 @@ class GRPOTrainer(Trainer):
             # Ensure unique prompts if enabled
             if getattr(self.arguments, "ensure_unique_prompts", True):
                 batch = self._ensure_unique_prompts(batch)
+                # IMPORTANT: re-bind prompt tensors after filtering to keep alignment with batch
+                try:
+                    prompt_ids = jnp.asarray(batch["input_ids"])  # rebind after dedup
+                    prompt_mask = jnp.asarray(batch["attention_mask"])  # rebind after dedup
+                except Exception as _e:
+                    # If conversion fails, keep previous tensors (better than crashing)
+                    pass
+                if jax.process_index() == 0:
+                    try:
+                        _pid_len = int(prompt_ids.shape[0])
+                    except Exception:
+                        _pid_len = -1
+                    try:
+                        _ans_len = len(batch.get("answer", [])) if batch.get("answer", None) is not None else -1
+                    except Exception:
+                        _ans_len = -1
+                    print(f"[DEBUG] preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
@@ -811,6 +869,27 @@ class GRPOTrainer(Trainer):
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+            if jax.process_index() == 0:
+                try:
+                    print(f"[DEBUG] preprocess: prompts_len={len(prompts)} completions_len={len(completions_text)} expected_completions={int(prompt_ids.shape[0]*self.num_generations)}")
+                    # Show small heads for inspection
+                    p_head = [p[:64].replace("\n", " ") for p in prompts[:2]] if isinstance(prompts, list) else []
+                    a_obj = batch.get("answer", None)
+                    if a_obj is not None:
+                        try:
+                            a_list = a_obj.tolist() if hasattr(a_obj, "tolist") else list(a_obj)
+                        except Exception:
+                            a_list = []
+                    else:
+                        a_list = []
+                    print(f"[DEBUG] preprocess: prompt_head={p_head} answer_head={a_list[:2]}")
+                    # First prompt's first few completions lengths
+                    first_r = min(self.num_generations, len(completions_text))
+                    comp_lens = [len(completions_text[i]) for i in range(first_r)]
+                    print(f"[DEBUG] preprocess: first_prompt_first_{first_r}_completion_lengths={comp_lens}")
+                except Exception:
+                    pass
 
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
             if is_conversational:
