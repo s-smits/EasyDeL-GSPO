@@ -621,15 +621,7 @@ class GRPOTrainer(Trainer):
             return jnp.concatenate([p.flatten() for p in parts])
         return jax.device_get(x).flatten()
 
-    @staticmethod
-    def _gather_unique_rows(x: jax.Array, row_size: int) -> jnp.ndarray:
-        """Gather array across processes and deduplicate by row content."""
-        local_flat = GRPOTrainer._to_local_flat(x)
-        local_rows = local_flat.reshape(-1, row_size)
-        gathered = jax.experimental.multihost_utils.process_allgather(local_rows)
-        all_rows = gathered.reshape(-1, row_size)
-        unique_rows, idx = np.unique(np.asarray(jax.device_get(all_rows)), axis=0, return_index=True)
-        return jnp.asarray(unique_rows[np.argsort(idx)])
+    # _gather_unique_rows method removed to avoid TPU collective issues
 
     def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
         """Actually ensure batch has unique prompts by filtering duplicates within this batch."""
@@ -1027,28 +1019,15 @@ class GRPOTrainer(Trainer):
 
                 # Global pass@k via proper gathering
                 try:
-                    if jax.process_count() > 1:
-                        try:
-                            # Gather per-prompt success using the new method
-                            gathered_per_prompt = self._gather_unique_rows(per_prompt_success.astype(jnp.float32).reshape(-1, 1), 1)
-                            pass_prompt_count_global = jnp.sum(gathered_per_prompt)
-                            num_prompts_global = gathered_per_prompt.size
-                        except Exception:
-                            g_pass = jax.experimental.multihost_utils.process_allgather(pass_prompt_count_local.astype(jnp.float32))
-                            g_prompts = jax.experimental.multihost_utils.process_allgather(
-                                jnp.array(float(num_prompts_local), dtype=jnp.float32)
-                            )
-                            pass_prompt_count_global = jnp.sum(g_pass)
-                            num_prompts_global = jnp.sum(g_prompts)
-                    else:
-                        pass_prompt_count_global = pass_prompt_count_local
-                        num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                except Exception:
-                    # Fallback to local if gathering fails
+                    # Use local values only to avoid TPU collective issues
                     pass_prompt_count_global = pass_prompt_count_local
                     num_prompts_global = jnp.array(float(num_prompts_local))
                     pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                except Exception:
+                    # Fallback to local if computation fails
+                    pass_prompt_count_global = pass_prompt_count_local
+                    num_prompts_global = jnp.array(float(num_prompts_local))
+                    pass_at_k_global = pass_prompt_count_local / jnp.maximum(1.0, num_prompts_local)
             except Exception:
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
@@ -1377,26 +1356,7 @@ class GRPOTrainer(Trainer):
                         processed_metrics_dict["reward/pass_at_k_global"]
                     )
 
-                # Also log per-worker local rates as a vector for diagnostics (single process logs all)
-                try:
-                    if jax.process_count() > 1:
-                        _sr_local = jnp.array(processed_metrics_dict.get("reward/success_rate_completions_local", 0.0), dtype=jnp.float32)
-                        _pk_local = jnp.array(processed_metrics_dict.get("reward/pass_at_k_local", 0.0), dtype=jnp.float32)
-                        # allgather is more risky than just getting the local value
-                        try:
-                            _g_sr = jax.experimental.multihost_utils.process_allgather(_sr_local)
-                            _g_pk = jax.experimental.multihost_utils.process_allgather(_pk_local)
-                            print(f"[DEBUG] allgather succeeded")
-                        except Exception:
-                            _g_sr = _sr_local
-                            _g_pk = _pk_local
-                            print(f"[DEBUG] allgather failed, using local values")
-                        sr_list = [float(x) for x in list(jax.device_get(_g_sr).reshape(-1))]
-                        pk_list = [float(x) for x in list(jax.device_get(_g_pk).reshape(-1))]
-                        to_log["train/local/success_rate_completions_per_worker"] = sr_list
-                        to_log["train/local/pass_at_k_per_worker"] = pk_list
-                except Exception:
-                    pass
+                # Per-worker metrics removed to avoid TPU collective issues
                 # Also log dataset-specific per-reward metrics if provided (e.g., gsm8k/accuracy, math/format_rate)
                 try:
                     for rf in self.reward_funcs:
