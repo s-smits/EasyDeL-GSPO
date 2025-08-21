@@ -222,6 +222,8 @@ def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwa
         has_one_box = (ans.count("\\boxed{") + ans.count("\\boxed ") == 1)
         out.append(1.0 if has_one_box else 0.0)
     weight = float(kwargs.get("format_weight", 1.0)) if kwargs else 1.0
+    # Allow weighting for consistency with other reward modules
+    weight = float(kwargs.get("format_weight", 1.0)) if kwargs else 1.0
     return [min(1.0, max(0.0, r * weight)) for r in out]
 
 

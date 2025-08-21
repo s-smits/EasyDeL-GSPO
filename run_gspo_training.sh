@@ -36,9 +36,9 @@ DATASET=${DATASET:-gsm8k}
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
   --dataset gsm8k \
-  --total_batch_size 8 \
+  --total_batch_size 2 \
   --num_return_sequences 4 \
-  --rollout_chunk_size 8 \
+  --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5632 \

@@ -186,16 +186,6 @@ class GRPOTrainer(Trainer):
                 arguments=arguments,
                 dataset_name="eval",
             )
-        log_table = None
-        if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
-            try:
-                log_table = wandb.Table(columns=["generations", "took", "length", "step"])
-            except Exception:
-                log_table = None
-        else:
-            log_table = None
-        self.log_table = log_table
-
         super().__init__(
             model_state=model,
             arguments=arguments,
@@ -205,6 +195,17 @@ class GRPOTrainer(Trainer):
         )
         
         # Validation not needed anymore, mesh config is handled in _get_or_create_mesh
+
+        # Initialize WandB artifacts after the run is initialized by BaseTrainer
+        log_table = None
+        if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
+            try:
+                log_table = wandb.Table(columns=["generations", "took", "length", "step"])
+            except Exception:
+                log_table = None
+        else:
+            log_table = None
+        self.log_table = log_table
 
     def _get_or_create_mesh(self):
         """Get mesh from arguments or create from adaptive config."""
@@ -833,124 +834,22 @@ class GRPOTrainer(Trainer):
                     _global_lengths_flat = None
                     _global_lengths_shaped = None
 
-            # Host-side diagnostic: print per-rollout completion token lengths
-            if jax.process_index() == 0:
+            # Host-side concise summary for completion token lengths
+            if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
-                    # Get mesh info for debugging
-                    try:
-                        mesh_shape = getattr(self.model.mesh, "shape", {})
-                        dp_sz = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                        tp_sz = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-                        logger.info(f"Actual mesh shape: {mesh_shape}")
-                        logger.info(f"Process count: {jax.process_count()}, local devices: {jax.local_device_count()}, total devices: {jax.device_count()}")
-                    except Exception:
-                        dp_sz = 1
-                        tp_sz = 1
-                    
-                    # Get unique local rows to deduplicate TP replicas
-                    r = int(self.num_generations)
-                    local_rows = self._to_local_flat(completion_lengths_per_seq).reshape(-1, r)
-                    unique_local, idx = jnp.unique(jnp.asarray(jax.device_get(local_rows)), axis=0, return_index=True)
-                    unique_local = unique_local[jnp.argsort(idx)]  # Preserve original order
-                    
-                    # Count actual queries from prompt_ids shape (local)
-                    num_queries = int(batch["input_ids"].shape[0])  # True local batch size without TP replication
-
-                    # Compute global unique prompt count across processes (based on input_ids hashes)
-                    global_unique_prompts = None
-                    total_expected_prompts = None
-                    try:
-                        local_ids_np = np.asarray(jax.device_get(batch["input_ids"]))  # [Q, L]
-
-                        def _hash_ids_u32(arr: np.ndarray) -> np.uint32:
-                            # 32-bit hash to avoid unsupported uint64 dtype on TPU all-gather
-                            h = hashlib.blake2b(arr.tobytes(), digest_size=4).digest()
-                            return np.frombuffer(h, dtype=np.uint32)[0]
-
-                        local_hashes_np = np.asarray([_hash_ids_u32(row) for row in local_ids_np], dtype=np.uint32)
-                        try:
-                            gathered_hashes = jax.experimental.multihost_utils.process_allgather(
-                                jnp.asarray(local_hashes_np, dtype=jnp.uint32)
-                            )
-                            all_hashes = np.asarray(jax.device_get(gathered_hashes)).reshape(-1)
-                            global_unique_prompts = int(np.unique(all_hashes).size)
-                            total_expected_prompts = int(jax.process_count()) * int(local_ids_np.shape[0])
-                        except Exception as e:
-                            logger.debug(f"Failed to compute global unique prompt count: {e}")
-                            global_unique_prompts = None
-                            total_expected_prompts = None
-                    except Exception as e:
-                        logger.debug(f"Failed to compute global unique prompt count: {e}")
-                    
-                    # Convert to list for logging
-                    lengths_list = [int(x) for x in unique_local.flatten()]
-                    
-                    if lengths_list:
-                        # Log local statistics (deduplicated)
-                        logger.info(
-                            f"per_query_completion_token_lengths (local): queries={num_queries}, rollouts_per_query={r}; "
-                            f"min={min(lengths_list)}, max={max(lengths_list)}, mean={sum(lengths_list)/len(lengths_list):.2f}; "
-                            f"mesh_config=(DP={dp_sz}, TP={tp_sz})"
-                        )
-                        
-                        # Print unique local per-query lengths (deduplicated)
-                        for qi, arr in enumerate(unique_local):
-                            logger.info(f"LOCAL query_{qi}_lengths (process {jax.process_index()}): {[int(x) for x in arr]}")
-                        
-                        # Log global statistics if enabled
-                        if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
-                            try:
-                                all_lengths_flat = _global_lengths_flat
-                                compressed_patterns = int(_global_lengths_shaped.shape[0]) if _global_lengths_shaped is not None else None
-                                # Prefer logging the true global unique prompts if available
-                                if global_unique_prompts is not None and total_expected_prompts is not None:
-                                    logger.info(
-                                        f"GLOBAL completion_token_lengths: unique_prompts={global_unique_prompts}/{total_expected_prompts}, "
-                                        f"compressed_patterns={compressed_patterns}, rollouts_per_query={r}, "
-                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
-                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"GLOBAL completion_token_lengths: compressed_patterns={compressed_patterns}, rollouts_per_query={r}, "
-                                        f"min={int(jnp.min(all_lengths_flat))}, max={int(jnp.max(all_lengths_flat))}, "
-                                        f"mean={float(jnp.mean(all_lengths_flat)):.2f}"
-                                    )
-                                
-                                # Per-query global breakdown
-                                if _global_lengths_shaped is not None:
-                                    max_queries_to_print = min(32, int(_global_lengths_shaped.shape[0]))  # Increased from 16
-                                    for qi in range(max_queries_to_print):
-                                        arr = [int(x) for x in list(jax.device_get(_global_lengths_shaped[qi]))]
-                                        logger.info(f"GLOBAL query_{qi}_lengths: {arr}")
-                                    
-                                    if _global_lengths_shaped.shape[0] > max_queries_to_print:
-                                        logger.info(f"... ({_global_lengths_shaped.shape[0] - max_queries_to_print} more queries not shown)")
-                            except Exception as e:
-                                logger.debug(f"Failed to log global statistics: {e}")
-                        
-                        # Check for suspicious patterns (FIX: use unique_local instead of grouped)
-                        if num_queries > 1 and unique_local.shape[0] > 1:
-                            as_tuples = {tuple(jax.device_get(x)) for x in unique_local}
-                            if len(as_tuples) == 1:
-                                logger.warning(
-                                    "All local per-query completion length patterns are identical. "
-                                    "This may indicate duplicated prompts or identical RNG streams."
-                                )
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to print completion lengths: {e}")
-                    
-                # Log prompt diagnostics
-                try:
-                    prompt_prefixes = [p[:64].replace("\n", " ") for p in prompts]
-                    unique_prompt_count = len(set(prompts))
-                    shard_idx = getattr(self.arguments, "grain_shard_index", None)
-                    shard_cnt = getattr(self.arguments, "grain_shard_count", None)
+                    lengths = jax.device_get(completion_lengths_per_seq)
+                    mean_v = float(jnp.mean(lengths))
+                    std_v = float(jnp.std(lengths))
+                    min_v = int(jnp.min(lengths))
+                    max_v = int(jnp.max(lengths))
                     logger.info(
-                        f"prompt_diagnostics: proc={jax.process_index()}, shard={shard_idx}/{shard_cnt}, "
-                        f"queries={len(prompts)}, unique={unique_prompt_count}; prefixes={prompt_prefixes}"
+                        f"completion_lengths: mean={mean_v:.2f}, std={std_v:.2f}, min={min_v}, max={max_v}"
                     )
+                except Exception as e:
+                    logger.debug(f"Could not compute completion length summary: {e}")
+                # Brief prompt count
+                try:
+                    logger.info(f"prompts: count={int(batch['input_ids'].shape[0])}")
                 except Exception:
                     pass
             
@@ -1122,8 +1021,20 @@ class GRPOTrainer(Trainer):
                 lengths_global_min = lengths_local_min
                 lengths_global_max = lengths_local_max
                 lengths_global_mean = lengths_local_mean
-                actual_global_completions = num_completions_local * dp_size
-                actual_global_queries = num_prompts_local * dp_size
+                # Safe fallback: estimate from local prompt count and effective DP
+                try:
+                    mesh_shape = getattr(self.model.mesh, "shape", {})
+                    mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+                    proc_count = jax.process_count()
+                    dp_size = max(1, min(int(mesh_dp), int(proc_count)))
+                except Exception:
+                    dp_size = 1
+                try:
+                    _local_prompt_count_est = int(prompt_ids.shape[0])
+                except Exception:
+                    _local_prompt_count_est = 0
+                actual_global_completions = int(_local_prompt_count_est * self.num_generations * dp_size)
+                actual_global_queries = int(_local_prompt_count_est * dp_size)
         else:
             lengths_global_min = lengths_local_min
             lengths_global_max = lengths_local_max
@@ -1358,20 +1269,7 @@ class GRPOTrainer(Trainer):
                     # Don't crash training over logging
                     pass
 
-        # Generate comprehensive verification report if verification details available
-        verification_report = None
-        if "verification_details" in kwargs and kwargs["verification_details"]:
-            try:
-                from .math_reward import generate_verification_report
-                verification_report = generate_verification_report(kwargs["verification_details"])
-                logger.info("Generated verification performance report")
-            except ImportError:
-                # Fallback to basic reporting if math_reward not available
-                verification_details = kwargs["verification_details"]
-                if verification_details:
-                    successful = sum(1 for d in verification_details if d.get("score", 0) > 0.0)
-                    total = len(verification_details)
-                    logger.info(f"Verification Summary: {successful}/{total} successful ({successful/total:.1%})")
+        # Verification report generation removed to reduce overhead
 
         # Immediately log a small set of lightweight generation/reward metrics every step (process 0 only)
         try:
@@ -1380,6 +1278,7 @@ class GRPOTrainer(Trainer):
                 and self.arguments.use_wandb
                 and self.arguments.can_log_metrics
                 and wandb is not None
+                and getattr(self, "wandb_runtime", None) is not None
             ):
                 try:
                     cur_step = int(jax.device_get(state.step))
@@ -1418,10 +1317,7 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     pass
 
-                # Log comprehensive verification report periodically (every 10 steps)
-                if verification_report and cur_step % 10 == 0:
-                    # Log as text artifact for detailed analysis
-                    wandb.log({"verification_report": wandb.Html(f"<pre>{verification_report}</pre>")}, step=cur_step)
+                # Periodic verification report logging removed
 
                 if len(to_log) > 0:
                     wandb.log(to_log, step=cur_step)
@@ -1468,7 +1364,7 @@ class GRPOTrainer(Trainer):
                                       If None, will use accumulated details from recent steps.
         """
         try:
-            from .math_reward import generate_verification_report
+            from easydel.verification.math_reward import generate_verification_report
 
             if verification_details_list is None:
                 # Try to collect from recent training if available

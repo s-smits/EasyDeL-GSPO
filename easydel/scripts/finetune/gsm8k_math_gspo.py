@@ -120,8 +120,12 @@ def main():
     # Dataset builders
     def build_gsm8k() -> tuple[Dataset, Dataset]:
         def extract_hash_answer(text: str):
+            if not isinstance(text, str):
+                return ""
             if "####" not in text:
-                return None
+                # Fallback: try last number if anchor missing
+                m = re.findall(r"-?\d+\.?\d*", text)
+                return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
         ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{runtime.dataset_use_rate}%]")

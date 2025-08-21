@@ -29,15 +29,26 @@ def _extract_text(comp) -> str:
         return comp
     return ""
 
+def _normalize_number_text(text: str) -> str:
+    """Normalize numeric text by stripping commas/currency/percent and whitespace."""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return ""
+    return text.replace(",", "").replace("$", "").replace("%", "").strip()
+
 def _answer_check(solution_str: str, ground_truth: str) -> bool:
     """Return True if the last number in solution_str equals ground_truth.
 
     Mirrors VERL's gsm8k reward: extract last number (int/float) and compare as string.
     """
-    numbers = re.findall(r"-?\d+\.?\d*", solution_str)
+    pred_norm = _normalize_number_text(solution_str)
+    gt_norm = _normalize_number_text(ground_truth)
+    numbers = re.findall(r"-?\d+\.?\d*", pred_norm)
     if not numbers:
         return False
-    return numbers[-1] == ground_truth
+    return numbers[-1] == gt_norm
 
 
 def _math_verify_numeric_check(solution_str: str, ground_truth: str, **kwargs) -> tuple[bool, str]:
@@ -190,7 +201,8 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         else:
             # Fallback to regex-based approach
             detail["fallback_used"] = True
-            numbers = re.findall(r"-?\d+\.?\d*", ans)
+            norm_ans = _normalize_number_text(ans)
+            numbers = re.findall(r"-?\d+\.?\d*", norm_ans)
             detail["extracted_numbers"] = numbers
 
             if not numbers:
@@ -202,8 +214,8 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 logger.warning(f"  Ground truth: '{gt}'")
                 logger.warning(f"  Text length: {len(text)} chars")
                 # Try more patterns to see if there are any digits at all
-                all_digits = re.findall(r'\d+', ans)
-                all_numbers_expanded = re.findall(r'-?\d*\.?\d+', ans)
+                all_digits = re.findall(r'\d+', norm_ans)
+                all_numbers_expanded = re.findall(r'-?\d*\.?\d+', norm_ans)
                 logger.warning(f"  Any digits found: {all_digits}")
                 logger.warning(f"  Numbers with expanded pattern: {all_numbers_expanded}")
                 logger.warning(f"  Math-Verify method: {method}")
@@ -213,7 +225,7 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 detail["verification_method"] = "regex_fallback"
 
                 # Check if the answer matches ground truth using regex
-                is_correct = _answer_check(ans, gt)
+                is_correct = _answer_check(norm_ans, gt)
                 detail["score"] = 1.0 if is_correct else 0.0
 
                 if is_correct:

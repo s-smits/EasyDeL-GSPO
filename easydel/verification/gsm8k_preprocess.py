@@ -21,12 +21,21 @@ import re
 
 import datasets
 
-from verl.utils.hdfs_io import copy, makedirs
+try:
+    from verl.utils.hdfs_io import copy, makedirs  # type: ignore
+except Exception:
+    copy = None  # type: ignore
+    makedirs = None  # type: ignore
 
 
 def extract_solution(solution_str):
     solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-    assert solution is not None
+    if solution is None:
+        # Fallback: try to extract last number in the string
+        numbers = re.findall(r"-?\d+\.?\d*", solution_str)
+        if numbers:
+            return numbers[-1].replace(",", "")
+        raise ValueError("Could not parse solution with '####' anchor")
     final_solution = solution.group(0)
     final_solution = final_solution.split("#### ")[1].replace(",", "")
     return final_solution
@@ -81,13 +90,13 @@ if __name__ == "__main__":
     train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
     test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
-    local_dir = args.local_dir
+    local_dir = os.path.expanduser(args.local_dir)
+    os.makedirs(local_dir, exist_ok=True)
     hdfs_dir = args.hdfs_dir
 
     train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
 
-    if hdfs_dir is not None:
+    if hdfs_dir is not None and makedirs is not None and copy is not None:
         makedirs(hdfs_dir)
-
         copy(src=local_dir, dst=hdfs_dir)
