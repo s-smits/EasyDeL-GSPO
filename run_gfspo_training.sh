@@ -20,7 +20,7 @@ fi
 echo "Starting GFSPO training with optimized configuration..."
 
 # Prefer positional arg over environment to avoid accidental overrides
-DATASET="${1:-math}"
+DATASET="${1:-math-ds}"
 echo "Using dataset: ${DATASET}"
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \

@@ -27,7 +27,9 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-DATASET=${DATASET:-gsm8k}
+# Prefer positional arg over environment to avoid accidental overrides
+DATASET="${1:-math-ds}"
+echo "Using dataset: ${DATASET}"
 
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \

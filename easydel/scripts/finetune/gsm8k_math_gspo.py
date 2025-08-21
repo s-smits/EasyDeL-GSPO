@@ -16,7 +16,10 @@ from easydel.modules import *  # noqa: F401,F403 — ensure kernels are register
 class RunTimeConfig:
     repo_id: str = field(metadata={"help": "The repository ID for the policy model."})
     processor_repo_id: str | None = field(default=None)
-    dataset: str = field(default="gsm8k", metadata={"help": "Dataset to use: 'gsm8k' or 'math'"})
+    dataset: str = field(
+        default="math-ds",
+        metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
+    )
     dataset_use_rate: int = field(default=100)
     kv_cache_quantization: ed.EasyDeLQuantizationMethods = field(
         default=ed.EasyDeLQuantizationMethods.NONE
@@ -45,6 +48,12 @@ def main():
         print("Training Arguments\n----------------------")
         print(gspo_config)
         print("----------------------")
+        try:
+            import os
+            print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}")
+            print(f"DEBUG: ENV DATASET={os.environ.get('DATASET')}")
+        except Exception:
+            pass
 
     tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
     tokenizer.padding_side = "left"
@@ -144,8 +153,8 @@ def main():
 
     def build_math() -> tuple[Dataset, Dataset]:
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = load_dataset("hendrycks/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
-        ds_test = load_dataset("hendrycks/competition_math", split=f"test[:{runtime.dataset_use_rate}%]")
+        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
+        ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{runtime.dataset_use_rate}%]")
 
         def map_ex(x):
             return {
@@ -159,7 +168,21 @@ def main():
 
         return ds_train.map(map_ex), ds_test.map(map_ex)
 
-    if runtime.dataset.lower() == "gsm8k":
+    # Normalize dataset names to support *-ds suffix
+    _raw_ds = (runtime.dataset or "").strip().lower()
+    if _raw_ds in ("gsm8k-ds", "gsm8k"):
+        _ds = "gsm8k"
+    elif _raw_ds in ("math-ds", "math"):
+        _ds = "math"
+    else:
+        raise ValueError(
+            f"Unknown dataset: {runtime.dataset}. Expected one of: math, math-ds, gsm8k, gsm8k-ds"
+        )
+
+    if jax.process_index() == 0:
+        print(f"DEBUG: dataset (normalized)={_ds}")
+
+    if _ds == "gsm8k":
         train_ds, test_ds = build_gsm8k()
         from easydel.verification.gsm8k_reward import format_reward as gsm8k_format_reward
         from easydel.verification.gsm8k_reward import answer_reward as gsm8k_answer_reward
@@ -192,7 +215,7 @@ def main():
 
         reward_funcs = [gsm8k_format_reward, gsm8k_answer_reward]
 
-    elif runtime.dataset.lower() == "math":
+    elif _ds == "math":
         train_ds, test_ds = build_math()
         from easydel.verification.math_reward import answer_reward as math_answer_reward
         from easydel.verification.math_reward import format_reward as math_format_reward
