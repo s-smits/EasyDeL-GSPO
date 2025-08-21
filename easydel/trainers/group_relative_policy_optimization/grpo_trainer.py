@@ -977,22 +977,8 @@ class GRPOTrainer(Trainer):
                 normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
                 advantages = normalized.reshape(-1)
             grouped_comp_time = grouped_comp_time_fn()
-            # Optionally aggregate rewards across processes to get true global means per step
-            if jax.process_count() > 1:
-                try:
-                    # Use the proper gathering method for rewards
-                    gathered_rewards = self._gather_unique_rows(rewards_per_func, rewards_per_func.shape[-1])
-                    global_rewards_per_func = gathered_rewards
-                except Exception:
-                    global_rewards_per_func = rewards_per_func
-            else:
-                global_rewards_per_func = rewards_per_func
-            # Also compute global mean for the sum-of-rewards metric
-            try:
-                global_rewards_sum = jnp.sum(global_rewards_per_func, axis=1)
-                global_mean_reward_per_completion = jnp.mean(global_rewards_sum)
-            except Exception:
-                global_mean_reward_per_completion = jnp.mean(rewards)
+            # Compute mean reward per completion locally (no cross-host ops)
+            # Global aggregation removed to avoid TPU collective issues
             # Compute success metrics (reward > 0) locally and globally
             try:
                 successes_local = (rewards > 0).astype(jnp.int32)
@@ -1006,40 +992,15 @@ class GRPOTrainer(Trainer):
                 num_prompts_local = int(prompt_ids.shape[0])
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
-                # Global completion success rate from gathered rewards
-                try:
-                    successes_global = (global_rewards_sum > 0).astype(jnp.int32)
-                    success_count_comp_global = jnp.sum(successes_global)
-                    total_comp_global = successes_global.shape[0]
-                    success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
-                except Exception:
-                    success_count_comp_global = success_count_comp_local
-                    total_comp_global = total_comp_local
-                    success_rate_comp_global = success_rate_comp_local
-
-                # Global pass@k via proper gathering
-                try:
-                    # Use local values only to avoid TPU collective issues
-                    pass_prompt_count_global = pass_prompt_count_local
-                    num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                except Exception:
-                    # Fallback to local if computation fails
-                    pass_prompt_count_global = pass_prompt_count_local
-                    num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_prompt_count_local / jnp.maximum(1.0, num_prompts_local)
+                # Global metrics removed; use local metrics only
             except Exception:
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
                 total_comp_local = jnp.array(1)
                 success_rate_comp_local = jnp.array(0.0)
-                success_count_comp_global = success_count_comp_local
-                total_comp_global = total_comp_local
-                success_rate_comp_global = success_rate_comp_local
+                # Global metrics removed; use local metrics only
                 pass_prompt_count_local = jnp.array(0)
-                pass_prompt_count_global = jnp.array(0)
                 pass_at_k_local = jnp.array(0.0)
-                pass_at_k_global = jnp.array(0.0)
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         # Compute local and global completion length stats for logging/metrics
@@ -1053,53 +1014,19 @@ class GRPOTrainer(Trainer):
             lengths_local_max = jnp.array(0.0)
             lengths_local_mean = jnp.array(0.0)
         
-        # Global length stats from properly gathered data
-        if getattr(self.arguments, "log_global", False) and _global_lengths_flat is not None:
-            try:
-                lengths_global_min = jnp.min(_global_lengths_flat)
-                lengths_global_max = jnp.max(_global_lengths_flat)
-                lengths_global_mean = jnp.mean(_global_lengths_flat)
-                # Use actual gathered count for global totals
-                actual_global_completions = int(_global_lengths_flat.size)
-                actual_global_queries = actual_global_completions // int(self.num_generations)
-            except Exception:
-                lengths_global_min = lengths_local_min
-                lengths_global_max = lengths_local_max
-                lengths_global_mean = lengths_local_mean
-                # Safe fallback: estimate from local prompt count and effective DP
-                try:
-                    mesh_shape = getattr(self.model.mesh, "shape", {})
-                    mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                    proc_count = jax.process_count()
-                    dp_size = max(1, min(int(mesh_dp), int(proc_count)))
-                except Exception:
-                    dp_size = 1
-                try:
-                    _local_prompt_count_est = int(prompt_ids.shape[0])
-                except Exception:
-                    _local_prompt_count_est = 0
-                actual_global_completions = int(_local_prompt_count_est * self.num_generations * dp_size)
-                actual_global_queries = int(_local_prompt_count_est * dp_size)
-        else:
-            lengths_global_min = lengths_local_min
-            lengths_global_max = lengths_local_max
-            lengths_global_mean = lengths_local_mean
-            # Estimate based on DP size and local prompt count (avoid referencing undeclared variables)
-            try:
-                mesh_shape = getattr(self.model.mesh, "shape", {})
-                mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-                proc_count = jax.process_count()
-                dp_size = max(1, min(int(mesh_dp), int(proc_count)))
-            except Exception:
-                dp_size = 1
-                tp_size = 1
-            try:
-                _local_prompt_count_est = int(prompt_ids.shape[0])
-            except Exception:
-                _local_prompt_count_est = 0
-            actual_global_completions = int(_local_prompt_count_est * self.num_generations * dp_size)
-            actual_global_queries = int(_local_prompt_count_est * dp_size)
+        # Global length aggregation removed; rely on local stats only
+        try:
+            mesh_shape = getattr(self.model.mesh, "shape", {})
+            mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+        except Exception:
+            mesh_dp = 1
+            tp_size = 1
+        try:
+            proc_count = jax.process_count()
+        except Exception:
+            proc_count = 1
+        dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         # Robust termination ratios: detect EOS presence directly in completions.
         # Works even when pad_token_id == eos_token_id because sequences that ended early are padded with EOS.
         eos_found = jnp.isin(
@@ -1141,42 +1068,20 @@ class GRPOTrainer(Trainer):
         except Exception:
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
-        # Use effective DP for global denominators and rollouts accounting
-        derived_global_rollouts = float(dp_size * num_prompts_local * self.num_generations)
+        # Local-only metrics (no global aggregation)
         metrics_dict = {
             "reward/mean_per_completion": per_completion_mean_reward,
-            "reward/denominator/completions_local": float(num_completions_local),
-            "reward/denominator/prompts_local": float(num_prompts_local),
-            "reward/mean_per_completion_global": global_mean_reward_per_completion,
-            "reward/denominator/completions_global": float(actual_global_completions),
-            "reward/denominator/prompts_global": float(actual_global_queries),
-            # Success metrics (reward > 0)
-            "reward/success_count_completions_local": float(success_count_comp_local),
-            "reward/success_rate_completions_local": float(success_rate_comp_local),
-            "reward/success_count_completions_global": float(success_count_comp_global),
-            "reward/success_rate_completions_global": float(success_rate_comp_global),
-            # Pass@k over prompts (at least one success among num_return_sequences)
-            "reward/success_count_prompts_local": float(pass_prompt_count_local),
-            "reward/pass_at_k_local": float(pass_at_k_local),
-            "reward/success_count_prompts_global": float(pass_prompt_count_global),
-            "reward/pass_at_k_global": float(pass_at_k_global),
+            "reward/success_rate_completions": float(success_rate_comp_local),
+            "reward/pass_at_k": float(pass_at_k_local),
             "completion_length": completion_length,
-            # Completion length stats (local/global)
-            "rollouts/lengths_local_min": lengths_local_min,
-            "rollouts/lengths_local_max": lengths_local_max,
-            "rollouts/lengths_local_mean": lengths_local_mean,
-            "rollouts/lengths_global_min": lengths_global_min,
-            "rollouts/lengths_global_max": lengths_global_max,
-            "rollouts/lengths_global_mean": lengths_global_mean,
-            # Rollout accounting to clarify totals
+            # Completion length stats (local only)
+            "rollouts/lengths_min": lengths_local_min,
+            "rollouts/lengths_max": lengths_local_max,
+            "rollouts/lengths_mean": lengths_local_mean,
+            # Rollout accounting (local only)
             "rollouts/completions_per_prompt": float(self.num_generations),
             "rollouts/total_per_process": float(num_completions_local),
-            "rollouts/total_global": float(actual_global_completions),
-            "rollouts/total_global_actual": float(actual_global_completions),
             "rollouts/queries_per_process": float(num_prompts_local),
-            "rollouts/queries_global": float(actual_global_queries),
-            "rollouts/queries_global_actual": float(actual_global_queries),
-            "rollouts/derived_global_rollouts_per_step": derived_global_rollouts,
             "rollouts/chunk_size": float(rollout_chunk_size),
             "rollouts/tp_size": float(tp_size or 1),
             "rollouts/dp_size": float(dp_size),
@@ -1329,15 +1234,13 @@ class GRPOTrainer(Trainer):
                     cur_step = int(jax.device_get(state.step))
                 except Exception:
                     cur_step = 0
-                # Prefer global metrics in the immediate log to avoid confusion
+                # Log a concise set of local metrics immediately every step
                 immediate_keys = [
-                    "reward/success_rate_completions_global",
-                    "reward/pass_at_k_global",
-                    "reward/mean_per_completion_global",
+                    "reward/success_rate_completions",
+                    "reward/pass_at_k",
+                    "reward/mean_per_completion",
                     "rollouts/completions_per_prompt",
-                    "rollouts/total_global",
-                    "rollouts/lengths_global_mean",
-                    "rollouts/derived_global_rollouts_per_step",
+                    "rollouts/lengths_mean",
                     "termination/eos_stop_rate",
                     "generation_time",
                 ]
@@ -1346,15 +1249,6 @@ class GRPOTrainer(Trainer):
                     v = processed_metrics_dict.get(k, None)
                     if isinstance(v, (int, float)):
                         to_log[f"train/{k}"] = float(v)
-                # Convenience duplicates with clearer names
-                if isinstance(processed_metrics_dict.get("reward/success_rate_completions_global"), (int, float)):
-                    to_log["train/global/success_rate_completions"] = float(
-                        processed_metrics_dict["reward/success_rate_completions_global"]
-                    )
-                if isinstance(processed_metrics_dict.get("reward/pass_at_k_global"), (int, float)):
-                    to_log["train/global/pass_at_k"] = float(
-                        processed_metrics_dict["reward/pass_at_k_global"]
-                    )
 
                 # Per-worker metrics removed to avoid TPU collective issues
                 # Also log dataset-specific per-reward metrics if provided (e.g., gsm8k/accuracy, math/format_rate)
