@@ -241,10 +241,28 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     
     # Prefer normalized ground truth if provided by preprocessing
     gts = batch.get("solution_normalized", batch.get("solution", []))
+    # Normalize ground truths to a Python list of strings, robust to numpy/jax arrays
+    try:
+        # Convert array-like to list
+        if hasattr(gts, "tolist") and not isinstance(gts, list):
+            gts = gts.tolist()
+    except Exception:
+        pass
+    if gts is None:
+        gts = []
     if isinstance(gts, str):
         gts = [gts]
+    elif not isinstance(gts, list):
+        try:
+            gts = list(gts)
+        except Exception:
+            gts = [str(gts)]
+    # Ensure all entries are strings
+    gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
     # Replicate to match B*R if needed
-    repeat = (len(completions) // len(gts)) if gts else 1
+    g_len = len(gts)
+    c_len = len(completions)
+    repeat = (c_len // g_len) if g_len > 0 else 1
     gts = gts * max(1, repeat)
 
     # Configure Math-Verify extraction following their patterns

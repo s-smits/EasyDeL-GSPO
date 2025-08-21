@@ -24,15 +24,15 @@ DATASET="${1:-math-ds}"
 echo "Using dataset: ${DATASET}"
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
-  --repo_id "Qwen/Qwen3-0.6B" \
+  --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
-  --total_batch_size 1 \
+  --total_batch_size 4 \
   --gfpo_group_size 8 \
   --gfpo_retain_count 4 \
   --rollout_chunk_size 1 \
   --num_train_epochs 2 \
-  --max_prompt_length 384 \
-  --max_completion_length 2048 \
+  --max_prompt_length 512 \
+  --max_completion_length 3584 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
@@ -43,7 +43,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 16 \
+  --gradient_accumulation_steps 8 \
   --microbatch_one_completion true \
   --beta 0.04 \
   --temperature 0.7 \
