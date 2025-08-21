@@ -978,7 +978,7 @@ class GRPOTrainer(Trainer):
                 advantages = normalized.reshape(-1)
             grouped_comp_time = grouped_comp_time_fn()
             # Compute mean reward per completion locally (no cross-host ops)
-            # Global aggregation removed to avoid TPU collective issues
+            # Optionally compute safe global scalars via allgather of scalars only
             # Compute success metrics (reward > 0) locally and globally
             try:
                 successes_local = (rewards > 0).astype(jnp.int32)
@@ -992,13 +992,36 @@ class GRPOTrainer(Trainer):
                 num_prompts_local = int(prompt_ids.shape[0])
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
-                # Global metrics removed; use local metrics only
+                # Safe global scalar aggregation (proc-local fallbacks on failure)
+                try:
+                    if jax.process_count() > 1:
+                        _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
+                        _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
+                        _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
+                        _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
+                        success_count_comp_global = jnp.sum(_sc)
+                        total_comp_global = jnp.sum(_tc)
+                        pass_prompt_count_global = jnp.sum(_pp)
+                        num_prompts_global = jnp.sum(_np)
+                    else:
+                        success_count_comp_global = success_count_comp_local
+                        total_comp_global = total_comp_local
+                        pass_prompt_count_global = pass_prompt_count_local
+                        num_prompts_global = jnp.array(float(num_prompts_local))
+                    success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
+                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                except Exception:
+                    success_count_comp_global = success_count_comp_local
+                    total_comp_global = total_comp_local
+                    success_rate_comp_global = success_rate_comp_local
+                    pass_prompt_count_global = pass_prompt_count_local
+                    num_prompts_global = jnp.array(float(num_prompts_local))
+                    pass_at_k_global = pass_at_k_local
             except Exception:
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
                 total_comp_local = jnp.array(1)
                 success_rate_comp_local = jnp.array(0.0)
-                # Global metrics removed; use local metrics only
                 pass_prompt_count_local = jnp.array(0)
                 pass_at_k_local = jnp.array(0.0)
         preprocessing_time = preprocessing_time_fn()
@@ -1068,11 +1091,14 @@ class GRPOTrainer(Trainer):
         except Exception:
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
-        # Local-only metrics (no global aggregation)
+        # Local metrics plus safe global scalars (if available)
         metrics_dict = {
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/success_rate_completions": float(success_rate_comp_local),
             "reward/pass_at_k": float(pass_at_k_local),
+            # Safe global scalars for display only
+            "reward/success_rate_completions_global": float(success_rate_comp_global),
+            "reward/pass_at_k_global": float(pass_at_k_global),
             "completion_length": completion_length,
             # Completion length stats (local only)
             "rollouts/lengths_min": lengths_local_min,
@@ -1234,11 +1260,13 @@ class GRPOTrainer(Trainer):
                     cur_step = int(jax.device_get(state.step))
                 except Exception:
                     cur_step = 0
-                # Log a concise set of local metrics immediately every step
+                # Log a concise set of metrics immediately every step (local + safe global scalars)
                 immediate_keys = [
                     "reward/success_rate_completions",
                     "reward/pass_at_k",
                     "reward/mean_per_completion",
+                    "reward/success_rate_completions_global",
+                    "reward/pass_at_k_global",
                     "rollouts/completions_per_prompt",
                     "rollouts/lengths_mean",
                     "termination/eos_stop_rate",
