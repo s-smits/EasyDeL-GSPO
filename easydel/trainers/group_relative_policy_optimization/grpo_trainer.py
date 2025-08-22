@@ -84,10 +84,10 @@ class GRPOTrainer(Trainer):
             try:
                 if jax.process_index() == 0:
                     print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
-            logger.info(
-                f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
-                f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
-            )
+                logger.info(
+                    f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
+                    f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
+                )
             except Exception as e:
                 print(f"DEBUG: Failed to log mesh configuration: {e}")
                 logger.warning(f"Failed to log mesh configuration: {e}")
