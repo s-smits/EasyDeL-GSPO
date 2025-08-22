@@ -20,6 +20,7 @@ import os
 import re
 
 import datasets
+from easydel.utils.hdfs_io import copy, makedirs
 
 
 def extract_solution(solution_str):
@@ -86,11 +87,9 @@ if __name__ == "__main__":
 
     local_dir = os.path.expanduser(args.local_dir)
     os.makedirs(local_dir, exist_ok=True)
-    hdfs_dir = args.hdfs_dir
-
     train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
 
-    if hdfs_dir is not None and makedirs is not None and copy is not None:
-        makedirs(hdfs_dir)
-        copy(src=local_dir, dst=hdfs_dir)
+    if args.hdfs_dir is not None:
+        makedirs(args.hdfs_dir, exist_ok=True)
+        copy(src=local_dir, dst=args.hdfs_dir)

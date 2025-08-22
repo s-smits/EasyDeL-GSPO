@@ -18,83 +18,17 @@ Preprocess the MATH-lighteval dataset to parquet format
 import argparse
 import json
 import os
-import shutil
-
 import datasets
 
-
-# Local implementation of last_boxed_only_string from VERL
-def last_boxed_only_string(string: str) -> str | None:
-    """Extract the last boxed expression from a string."""
-    idx = string.rfind("\\boxed")
-    if "\\boxed " in string:
-        return "\\boxed " + string.split("\\boxed ")[-1].split("$")[0]
-    if idx < 0:
-        idx = string.rfind("\\fbox")
-        if idx < 0:
-            return None
-    
-    i = idx
-    right_brace_idx = None
-    num_left_braces_open = 0
-    while i < len(string):
-        if string[i] == "{":
-            num_left_braces_open += 1
-        if string[i] == "}":
-            num_left_braces_open -= 1
-            if num_left_braces_open == 0:
-                right_brace_idx = i
-                break
-        i += 1
-    
-    return None if right_brace_idx is None else string[idx : right_brace_idx + 1]
-
-
-# Local implementation of remove_boxed from VERL
-def remove_boxed(s: str) -> str:
-    """Remove the \\boxed{} wrapper from a string."""
-    if "\\boxed " in s:
-        left = "\\boxed "
-        assert s[: len(left)] == left
-        return s[len(left) :]
-    
-    left = "\\boxed{"
-    assert s[: len(left)] == left
-    assert s[-1] == "}"
-    
-    return s[len(left) : -1]
-
-
-# Simplified local implementations of HDFS functions (using standard filesystem)
-def makedirs(path: str, exist_ok: bool = True) -> None:
-    """Create directory, supporting both local and (future) HDFS paths."""
-    if path.startswith("hdfs://"):
-        # For now, just skip HDFS paths or raise an error
-        print(f"WARNING: HDFS path {path} detected but not supported. Skipping.")
-        return
-    os.makedirs(path, exist_ok=exist_ok)
-
-
-def copy(src: str, dst: str) -> bool:
-    """Copy files or directories, supporting both local and (future) HDFS paths."""
-    if src.startswith("hdfs://") or dst.startswith("hdfs://"):
-        # For now, just skip HDFS paths
-        print(f"WARNING: HDFS path detected but not supported. Skipping copy from {src} to {dst}")
-        return False
-    
-    try:
-        if os.path.isdir(src):
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
-            shutil.copy2(src, dst)
-        return True
-    except Exception as e:
-        print(f"Error copying {src} to {dst}: {e}")
-        return False
+from easydel.utils.hdfs_io import copy, makedirs
+from easydel.utils.reward_score import last_boxed_only_string, remove_boxed
 
 
 def extract_solution(solution_str):
-    return remove_boxed(last_boxed_only_string(solution_str))
+    boxed = last_boxed_only_string(solution_str)
+    if boxed:
+        return remove_boxed(boxed)
+    return solution_str
 
 
 if __name__ == "__main__":
@@ -139,8 +73,6 @@ if __name__ == "__main__":
     test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
     local_dir = os.path.expanduser(args.local_dir)
-    hdfs_dir = args.hdfs_dir
-
     train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
     # Save one example as JSON for reference
@@ -150,6 +82,6 @@ if __name__ == "__main__":
     example = test_dataset[0]
     with open(os.path.join(local_dir, "test_example.json"), "w") as f:
         json.dump(example, f, indent=2)
-    if hdfs_dir is not None:
-        makedirs(hdfs_dir)
-        copy(src=local_dir, dst=hdfs_dir)
+    if args.hdfs_dir is not None:
+        makedirs(args.hdfs_dir, exist_ok=True)
+        copy(src=local_dir, dst=args.hdfs_dir)
