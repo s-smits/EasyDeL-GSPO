@@ -1024,17 +1024,10 @@ class GRPOTrainer(Trainer):
                                 print("DEBUG: Using math reward extraction")
                                 import re as _re
                                 from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
-                                _ans = None
-                                try:
-                                    if "<answer>" in example_pred_text and "</answer>" in example_pred_text:
-                                        _ans = example_pred_text.split("<answer>", 1)[1].split("</answer>", 1)[0]
-                                except Exception:
-                                    _ans = None
-                                if not _ans:
-                                    _b = _mv_last_boxed(example_pred_text)
-                                    if _b:
-                                        _ans = _mv_remove_boxed(_b)
-                                if not _ans:
+                                _b = _mv_last_boxed(example_pred_text)
+                                if _b:
+                                    _ans = _mv_remove_boxed(_b)
+                                else:
                                     _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
                                     _ans = _nums[-1] if _nums else example_pred_text[-200:]
                                 example_pred_value = _ans
