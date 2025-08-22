@@ -642,8 +642,16 @@ class BaseTrainer(BaseTrainerProtocol):
             )
 
         def calculate_steps(dataset, is_train: bool) -> int:
+            """Estimate steps to align with Grain DataLoader behavior.
+
+            Notes:
+            - DataLoader uses Batch(drop_remainder=True) and per-process sharding.
+            - Training batch size passed to Grain equals training_batch_size (includes gradient accumulation).
+            - Therefore, compute steps with FLOOR division on per-shard length.
+            """
+            # 1) Determine dataset length
             if hasattr(dataset, "__len__"):
-                total_data_len = len(dataset)
+                total_data_len = int(len(dataset))
             else:
                 total_data_len = (
                     self.arguments.per_epoch_training_steps if is_train else self.arguments.per_epoch_evaluation_steps
@@ -653,16 +661,27 @@ class BaseTrainer(BaseTrainerProtocol):
                         f"Specify the number of per epoch {'training' if is_train else 'evaluation'} "
                         "steps for a generator/streaming dataset."
                     )
-            batch_size = self.arguments.total_batch_size if is_train else self.evaluation_batch_size
-            num_steps = (
-                (total_data_len + batch_size - 1) // batch_size * (self.arguments.num_train_epochs if is_train else 1)
-            )
-            forced_steps = self.arguments.max_training_steps if is_train else self.arguments.max_evaluation_steps
-            steps = forced_steps if forced_steps is not None else num_steps
 
-            if is_train:
-                steps = steps // self.arguments.gradient_accumulation_steps
-            return steps
+            # 2) Account for per-process sharding (best-effort floor)
+            shard_count = int(self.arguments.grain_shard_count or 1)
+            shard_index = int(self.arguments.grain_shard_index or 0)
+            per_shard_len_base = total_data_len // max(1, shard_count)
+            remainder = total_data_len % max(1, shard_count)
+            # Distribute remainder to the first `remainder` shards deterministically
+            per_shard_len = per_shard_len_base + (1 if shard_index < remainder else 0)
+
+            # 3) Use the actual batch size each worker sees
+            batch_size = self.training_batch_size if is_train else self.evaluation_batch_size
+
+            # 4) Grain drops remainder, so use floor
+            steps_per_epoch = 0 if batch_size <= 0 else (per_shard_len // batch_size)
+            num_epochs = self.arguments.num_train_epochs if is_train else 1
+            num_steps = steps_per_epoch * num_epochs
+
+            # 5) Respect optional max steps overrides
+            forced_steps = self.arguments.max_training_steps if is_train else self.arguments.max_evaluation_steps
+            steps = int(forced_steps) if forced_steps is not None else int(num_steps)
+            return max(0, steps)
 
         max_training_steps = calculate_steps(self.dataset_train, is_train=True)
         dataloader_train = _create_grain_dataloader(self.dataset_train, is_train=True)
