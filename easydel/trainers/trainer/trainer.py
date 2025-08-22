@@ -328,7 +328,12 @@ class Trainer(BaseTrainer):
             def data_collator(x):
                 return x
 
-        for _ in range(self.max_training_steps // self.arguments.num_train_epochs):
+        # Ensure at least one iteration and avoid ZeroDivision
+        total_epochs = max(1, int(self.arguments.num_train_epochs))
+        total_steps = int(self.max_training_steps) if self.max_training_steps is not None else 0
+        iters = max(1, total_steps // total_epochs) if total_steps > 0 else max(1, self.max_training_steps or 1)
+        run_exception = None
+        for _ in range(iters):
             current_step = int(jax.device_get(state.step))
             try:
                 batch, train_iter = self._get_next_batch(train_iter, train_dataset)
@@ -338,7 +343,8 @@ class Trainer(BaseTrainer):
                 step_metrics.start_step()
                 state = self.on_step_start(state=state, step=current_step)
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, StopIteration) as exect:
-                return state, exect, train_iter
+                run_exception = exect
+                return state, run_exception, train_iter
 
             # Execute training step
             with self.train_tracker.trace_compilation():
@@ -391,7 +397,8 @@ class Trainer(BaseTrainer):
                 if self._should_run_evaluation(current_step):
                     for _ in self.eval(model_state=state):
                         ...
-            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError):
+            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError) as exect:
+                run_exception = exect if run_exception is None else run_exception
                 return state, run_exception, train_iter
             if run_exception is not None:
                 break
