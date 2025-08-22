@@ -57,11 +57,16 @@ class GFSPOTrainer(GSPOTrainer):
         # Ensure local alias to config type
         self.arguments = arguments
 
-        logger.info(
-            f"Initialized GFSPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, "
-            f"adaptive={arguments.gfpo_adaptive}, importance_sampling_level={arguments.importance_sampling_level}, "
-            f"epsilon={arguments.epsilon}, beta={arguments.beta}"
-        )
+        try:
+            print(f"DEBUG: Initializing GFSPO trainer - G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, importance_sampling={arguments.importance_sampling_level}")
+            logger.info(
+                f"Initialized GFSPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, "
+                f"adaptive={arguments.gfpo_adaptive}, importance_sampling_level={arguments.importance_sampling_level}, "
+                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+            )
+        except Exception as e:
+            print(f"DEBUG: Failed to log GFSPO trainer initialization: {e}")
+            logger.warning(f"Failed to log GFSPO trainer initialization: {e}")
 
     def _preprocess_batch_input(
         self,
@@ -117,11 +122,15 @@ class GFSPOTrainer(GSPOTrainer):
         grpo_batch["advantages"] = advantages_gfpo.reshape(-1)
 
         try:
-            metrics_dict["gfpo/retention_rate"] = float(jnp.mean(mask))
-            metrics_dict["gfpo/avg_retained_length"] = float(
+            retention_rate = float(jnp.mean(mask))
+            avg_retained_length = float(
                 jnp.sum(lengths * mask.reshape(-1)) / float(jnp.maximum(jnp.sum(mask), 1.0))
             )
-        except Exception:
+            print(f"DEBUG: GFSPO metrics - retention_rate={retention_rate:.3f}, avg_retained_length={avg_retained_length:.1f}")
+            metrics_dict["gfpo/retention_rate"] = retention_rate
+            metrics_dict["gfpo/avg_retained_length"] = avg_retained_length
+        except Exception as e:
+            print(f"DEBUG: Failed to compute GFSPO metrics: {e}")
             pass
 
         return grpo_batch, metrics_dict

@@ -60,12 +60,20 @@ class GFSPOConfig(GSPOConfig):
 
     def __post_init__(self):
         """Validate settings and set dependent parameters."""
-        super().__post_init__()
-        enforce_gfpo_constraints(self)
+        try:
+            print(f"DEBUG: GFSPOConfig post_init - gfpo_group_size={self.gfpo_group_size}, importance_sampling_level={getattr(self, 'importance_sampling_level', None)}")
+            super().__post_init__()
+            enforce_gfpo_constraints(self)
 
-        # For GSPO, sequence-level is the recommended default
-        if getattr(self, "importance_sampling_level", None) is None:
-            self.importance_sampling_level = "sequence"
+            # For GSPO, sequence-level is the recommended default
+            if getattr(self, "importance_sampling_level", None) is None:
+                self.importance_sampling_level = "sequence"
+                print("DEBUG: Set default importance_sampling_level=sequence")
+            
+            print("DEBUG: GFSPOConfig post_init completed successfully")
+        except Exception as e:
+            print(f"DEBUG: GFSPOConfig post_init failed: {e}")
+            raise
 
     __hash__ = hash_fn
 

@@ -105,8 +105,14 @@ class GFPOConfig(GRPOConfig):
 
     def __post_init__(self):
         """Post initialization to validate GFPO config and set generation count."""
-        super().__post_init__()
-        enforce_gfpo_constraints(self)
+        try:
+            print(f"DEBUG: GFPOConfig post_init - gfpo_group_size={self.gfpo_group_size}, gfpo_retain_count={self.gfpo_retain_count}")
+            super().__post_init__()
+            enforce_gfpo_constraints(self)
+            print("DEBUG: GFPOConfig post_init completed successfully")
+        except Exception as e:
+            print(f"DEBUG: GFPOConfig post_init failed: {e}")
+            raise
 
     __hash__ = hash_fn
 

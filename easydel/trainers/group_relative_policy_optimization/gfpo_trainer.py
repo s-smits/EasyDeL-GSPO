@@ -64,9 +64,14 @@ class GFPOTrainer(GRPOTrainer):
         # Ensure local alias to config type
         self.arguments = arguments
 
-        logger.info(
-            f"Initialized GFPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, adaptive={arguments.gfpo_adaptive}"
-        )
+        try:
+            print(f"DEBUG: Initializing GFPO trainer - G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}")
+            logger.info(
+                f"Initialized GFPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, adaptive={arguments.gfpo_adaptive}"
+            )
+        except Exception as e:
+            print(f"DEBUG: Failed to log GFPO trainer initialization: {e}")
+            logger.warning(f"Failed to log GFPO trainer initialization: {e}")
 
     def _filter_mask_per_prompt(
         self,
@@ -185,11 +190,15 @@ class GFPOTrainer(GRPOTrainer):
 
         # Minimal GFPO metrics
         try:
-            metrics_dict["gfpo/retention_rate"] = float(jnp.mean(mask))
-            metrics_dict["gfpo/avg_retained_length"] = float(
+            retention_rate = float(jnp.mean(mask))
+            avg_retained_length = float(
                 jnp.sum(lengths * mask.reshape(-1)) / float(jnp.maximum(jnp.sum(mask), 1.0))
             )
-        except Exception:
+            print(f"DEBUG: GFPO metrics - retention_rate={retention_rate:.3f}, avg_retained_length={avg_retained_length:.1f}")
+            metrics_dict["gfpo/retention_rate"] = retention_rate
+            metrics_dict["gfpo/avg_retained_length"] = avg_retained_length
+        except Exception as e:
+            print(f"DEBUG: Failed to compute GFPO metrics: {e}")
             pass
 
         return grpo_batch, metrics_dict
