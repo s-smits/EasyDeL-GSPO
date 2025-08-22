@@ -1,5 +1,6 @@
 import re
 from dataclasses import field
+import os
 
 import jax
 from datasets import load_dataset, Dataset, concatenate_datasets
@@ -10,6 +11,31 @@ from transformers import AutoConfig, AutoTokenizer
 import easydel as ed
 from easydel.infra.factory import registry
 from easydel.modules import *  # noqa: F401,F403 — ensure kernels are registered
+
+
+def safe_call(desc, fn, *args, default=None, swallow=True, **kwargs):
+    """Run fn safely.
+
+    - On success: prints a cleanup hint so we know this wrapper can be removed later.
+    - On failure: prints a concise failure note; returns default (or re-raises if swallow=False).
+    """
+    try:
+        result = fn(*args, **kwargs)
+        try:
+            if jax.process_index() == 0:
+                print(f"CLEANUP_HINT: '{desc}' succeeded — consider removing safe_call wrapper.")
+        except Exception:
+            ...
+        return default if result is None else result
+    except Exception as e:
+        try:
+            if jax.process_index() == 0:
+                print(f"SAFE_CALL_FAIL: '{desc}' failed with: {e}")
+        except Exception:
+            ...
+        if not swallow:
+            raise
+        return default
 
 
 @auto_pytree
@@ -52,12 +78,13 @@ def main():
         print("Training Arguments\n----------------------")
         print(gfspo_config)
         print("----------------------")
-        try:
-            import os
-            print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}")
-            print(f"DEBUG: ENV DATASET={os.environ.get('DATASET')}")
-        except Exception:
-            pass
+        safe_call(
+            "print runtime + env dataset",
+            lambda: (
+                print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}"),
+                print(f"DEBUG: ENV DATASET={os.environ.get('DATASET')}")
+            ),
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
     tokenizer.padding_side = "left"
@@ -229,10 +256,10 @@ def main():
         train_ds, test_ds = build_math()
         from easydel.verification.math_reward import answer_reward as math_answer_reward
         # Set metric-friendly names for logging
-        try:
-            math_answer_reward.__name__ = "math/accuracy"  # type: ignore
-        except Exception:
-            pass
+        safe_call(
+            "rename math reward metric",
+            lambda: setattr(math_answer_reward, "__name__", "math/accuracy"),
+        )
 
         def data_tokenize_fn(batch, tokenizer, tools):
             ids = tokenizer(
@@ -489,11 +516,7 @@ def main():
             print(f"{'='*60}")
         
         # Now it's safe to call finish() to clean up wandb and other resources
-        try:
-            original_finish(None)  # Call the original finish method
-        except Exception as e:
-            if jax.process_index() == 0:
-                print(f"WARNING: Could not call finish(): {e}")
+        safe_call("finalize finish()", lambda: original_finish(None))
         
         # Return final trained state
         return current_state
