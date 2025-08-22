@@ -200,26 +200,17 @@ def _is_equiv(str1: str | None, str2: str | None) -> bool:
 
 
 def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwargs) -> List[float]:
-    """Structural reward for MATH: enforce exactly one \boxed{...} inside <answer>.
+    """Structural reward for MATH: enforce at least one \boxed{...} in the response.
 
-    Returns 1.0 if there is exactly one <answer>...</answer> block and within it exactly one \boxed{...}, else 0.0.
+    Returns 1.0 if there is at least one \boxed{...} in the response, else 0.0.
+    Following VERL's simpler approach without complex XML parsing.
     """
     out: List[float] = []
     for comp in completions:
         text = _extract_text(comp)
-        # Must contain one think and one answer block
-        ok_blocks = (text.count("<think>") == 1 and text.count("</think>") == 1 and text.count("<answer>") == 1 and text.count("</answer>") == 1)
-        if not ok_blocks:
-            out.append(0.0)
-            continue
-        # Extract answer body and check boxed count
-        try:
-            ans = text.split("<answer>", 1)[1].split("</answer>", 1)[0]
-        except Exception:
-            out.append(0.0)
-            continue
-        has_one_box = (ans.count("\\boxed{") + ans.count("\\boxed ") == 1)
-        out.append(1.0 if has_one_box else 0.0)
+        # Simply check if there's at least one boxed expression
+        has_boxed = ("\\boxed{" in text or "\\boxed " in text)
+        out.append(1.0 if has_boxed else 0.0)
 
     # Allow weighting for consistency with other reward modules
     weight = float(kwargs.get("format_weight", 1.0)) if kwargs else 1.0
@@ -303,17 +294,31 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             }
         }
         
-        # Prefer content inside <answer> block
-        try:
-            _ans = extract_answer_from_xml(text)
-            if _ans is not None:
-                ans_text = _ans
-            else:
-                ans_text = text
-        except Exception:
-            ans_text = text
+        # Use the full text for answer extraction (VERL approach)
+        ans_text = text
         detail["extracted_answer"] = ans_text
 
+        # Primary approach: VERL-style boxed extraction (simple and robust)
+        boxed = _last_boxed_only_string(ans_text)
+        if boxed is not None:
+            ans = _remove_boxed(boxed)
+            detail["extracted_answer"] = ans
+            detail["verification_method"] = "boxed_primary"
+            detail["parser_used"] = "boxed_extraction"
+            
+            is_correct = _is_equiv(ans, gt)
+            detail["score"] = 1.0 if is_correct else 0.0
+            
+            if is_correct:
+                logger.debug(f"✓ Boxed primary success: '{ans}' == '{gt}'")
+            else:
+                logger.debug(f"✗ Boxed primary failed: '{ans}' != '{gt}'")
+                
+            out.append(detail["score"])
+            verification_details.append(detail)
+            continue
+
+        # Fallback: Math-Verify for complex cases
         if use_mv:
             try:
                 # Parse using Math-Verify's structured approach
@@ -329,7 +334,6 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                     elif any("expr" in str(type(p)).lower() for p in ans_parsed):
                         detail["parser_used"] += "_expr"
                     
-                    # Prefer math_metric when available (simpler, robust), fallback to verify loop
                     # Try all parsed candidates from the end (often contains the final answer)
                     is_correct = False
                     try_candidates = list(reversed(ans_parsed))
@@ -347,14 +351,14 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                         if is_correct:
                             break
                     
-                    detail["verification_method"] = "math_verify"
+                    detail["verification_method"] = "math_verify_fallback"
                     detail["score"] = 1.0 if is_correct else 0.0
                     
                     # Log following Math-Verify's patterns
                     if is_correct:
-                        logger.debug(f"✓ Math-Verify success: {detail['parser_used']}")
+                        logger.debug(f"✓ Math-Verify fallback success: {detail['parser_used']}")
                     else:
-                        logger.debug(f"✗ Math-Verify mismatch: {detail['parser_used']}")
+                        logger.debug(f"✗ Math-Verify fallback failed: {detail['parser_used']}")
                     
                     out.append(detail["score"])
                     verification_details.append(detail)
@@ -368,32 +372,11 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 detail["error_message"] = str(e)
                 detail["verification_method"] = "math_verify_error"
                 logger.debug(f"Math-Verify error: {e}")
-                # Fall through to boxed-based heuristic
 
-        # Fallback heuristic: compare last \boxed{...} with normalized GT
-        # This follows Math-Verify's fallback patterns
-        boxed = _last_boxed_only_string(ans_text)
-        if boxed is None:
-            # as a last resort, try whole response
-            boxed = _last_boxed_only_string(text)
-            
-        if boxed is None:
-            detail["verification_method"] = "no_boxed_found"
-            detail["score"] = 0.0
-            logger.debug(f"✗ No boxed content found in: {ans_text[:50]}...")
-        else:
-            ans = _remove_boxed(boxed)
-            detail["extracted_answer"] = ans
-            detail["verification_method"] = "boxed_fallback"
-            detail["parser_used"] = "boxed_extraction"
-            
-            is_correct = _is_equiv(ans, gt)
-            detail["score"] = 1.0 if is_correct else 0.0
-            
-            if is_correct:
-                logger.debug(f"✓ Boxed fallback success: '{ans}' == '{gt}'")
-            else:
-                logger.debug(f"✗ Boxed fallback failed: '{ans}' != '{gt}'")
+        # Final fallback: no valid answer found
+        detail["verification_method"] = "no_answer_found"
+        detail["score"] = 0.0
+        logger.debug(f"✗ No valid answer found in: {ans_text[:50]}...")
                 
         out.append(detail["score"])
         verification_details.append(detail)
@@ -596,10 +579,8 @@ def create_math_verify_demo():
 
 __all__ = [
     "format_reward",
-    "answer_reward", 
+    "answer_reward",
     "create_math_verify_demo",
-    "get_extraction_config",
-    "get_verification_params",
 ]
 
 

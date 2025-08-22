@@ -114,16 +114,11 @@ def main():
     # Dataset-specific system prompts with strict formatting aligned to rewards
     SYSTEM_PROMPT_GSM8K = (
         "You are a helpful math tutor. Solve the user's problem. "
-        "Think step-by-step inside <think>...</think>, then output ONLY the final numeric answer inside <answer>...</answer>. "
-        "Formatting rules: <answer> must contain exactly one number and nothing else; use an integer with no trailing '.0' if the result is an integer, "
-        "otherwise a decimal number. Do not include commas, units, or extra text. Do not write anything outside <think> and <answer>."
+        "The answer must contain exactly one number and nothing else; use an integer with no trailing '.0' if the result is an integer, otherwise a decimal number. Do not include commas, units, or extra text."
     )
 
     SYSTEM_PROMPT_MATH = (
-        "You are a competitive math solver. Solve the problem inside <think>...</think>, then present ONLY the final result inside <answer>...</answer>. "
-        "Inside <answer>, write exactly one LaTeX box with the final answer: \\boxed{...}. "
-        "Rules: exactly one \\boxed{...} in <answer> with no other text; the boxed content is the fully simplified final result (integer, fraction, expression) in standard LaTeX. "
-        "Do not write anything outside <think> and <answer>."
+        "You are a competitive math solver. Solve the problem step by step and output the final answer within \\boxed{}."
     )
 
     # Dataset builders
