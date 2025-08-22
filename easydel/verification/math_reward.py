@@ -195,22 +195,7 @@ def _is_equiv(str1: str | None, str2: str | None) -> bool:
         return str1 == str2
 
 
-def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwargs) -> List[float]:
-    """Structural reward for MATH: enforce at least one \boxed{...} in the response.
-
-    Returns 1.0 if there is at least one \boxed{...} in the response, else 0.0.
-    Following VERL's simpler approach without complex XML parsing.
-    """
-    out: List[float] = []
-    for comp in completions:
-        text = _extract_text(comp)
-        # Simply check if there's at least one boxed expression
-        has_boxed = ("\\boxed{" in text or "\\boxed " in text)
-        out.append(1.0 if has_boxed else 0.0)
-
-    # Allow weighting for consistency with other reward modules
-    weight = float(kwargs.get("format_weight", 1.0)) if kwargs else 1.0
-    return [min(1.0, max(0.0, r * weight)) for r in out]
+# format_reward removed — not used anymore (we measure only correctness)
 
 
 def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> List[float]:
@@ -435,7 +420,6 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
 
 
 __all__ = [
-    "format_reward",
     "answer_reward",
 ]
 

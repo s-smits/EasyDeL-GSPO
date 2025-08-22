@@ -201,14 +201,7 @@ def main():
 
     if _ds == "gsm8k":
         train_ds, test_ds = build_gsm8k()
-        from easydel.verification.gsm8k_reward import format_reward as gsm8k_format_reward
         from easydel.verification.gsm8k_reward import answer_reward as gsm8k_answer_reward
-        # Set metric-friendly names for logging
-        try:
-            gsm8k_format_reward.__name__ = "gsm8k/format_rate"  # type: ignore
-            gsm8k_answer_reward.__name__ = "gsm8k/accuracy"  # type: ignore
-        except Exception:
-            pass
 
         def data_tokenize_fn(batch, tokenizer, tools):
             ids = tokenizer(
@@ -230,15 +223,13 @@ def main():
             ids.update({"answer": normed})
             return ids
 
-        reward_funcs = [gsm8k_format_reward, gsm8k_answer_reward]
+        reward_funcs = [gsm8k_answer_reward]
 
     elif _ds == "math":
         train_ds, test_ds = build_math()
         from easydel.verification.math_reward import answer_reward as math_answer_reward
-        from easydel.verification.math_reward import format_reward as math_format_reward
         # Set metric-friendly names for logging
         try:
-            math_format_reward.__name__ = "math/format_rate"  # type: ignore
             math_answer_reward.__name__ = "math/accuracy"  # type: ignore
         except Exception:
             pass
@@ -297,7 +288,7 @@ def main():
             ids.update({"solution": sol, "solution_normalized": normalized})
             return ids
 
-        reward_funcs = [math_format_reward, math_answer_reward]
+        reward_funcs = [math_answer_reward]
 
     else:
         raise ValueError("dataset must be 'gsm8k' or 'math'")

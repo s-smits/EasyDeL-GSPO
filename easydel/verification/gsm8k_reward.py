@@ -125,21 +125,7 @@ def _extract_answer_from_xml(solution_str: str) -> str | None:
     return extract_answer_from_xml(solution_str)
 
 
-def format_reward(completions: List[list[dict]], prompts=None, batch=None, **kwargs) -> List[float]:
-    """Simple structural reward encouraging <think> and <answer> tags.
-
-    completions: [[{"role": "assistant", "content": text}], ...]
-    Returns a float per completion in [0, 1].
-    """
-    out: List[float] = []
-    for comp in completions:
-        text = _extract_text(comp)
-        has_think = (text.count("<think>") == 1 and text.count("</think>") == 1)
-        has_answer = (text.count("<answer>") == 1 and text.count("</answer>") == 1)
-        out.append(1.0 if (has_think and has_answer) else 0.0)
-    # Allow weighting from kwargs for logging consistency
-    weight = float(kwargs.get("format_weight", 1.0)) if kwargs else 1.0
-    return [min(1.0, max(0.0, r * weight)) for r in out]
+# format_reward removed — not used anymore (we measure only correctness)
 
 
 def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> List[float]:
@@ -492,7 +478,6 @@ def test_verification_with_sample_data():
 
 
 __all__ = [
-    "format_reward",
     "answer_reward",
     "debug_model_outputs",
     "test_verification_with_sample_data",
