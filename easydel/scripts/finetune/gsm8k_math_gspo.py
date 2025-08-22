@@ -121,9 +121,6 @@ def main():
 
     SYSTEM_PROMPT_MATH = (
         "You are a competitive math solver. Solve the problem inside <think>...</think>, then present ONLY the final result inside <answer>...</answer>. "
-        "Inside <answer>, write exactly one LaTeX box with the final answer: \\boxed{...}. "
-        "Rules: exactly one \\boxed{...} in <answer> with no other text; the boxed content is the fully simplified final result (integer, fraction, expression) in standard LaTeX. "
-        "Do not write anything outside <think> and <answer>."
     )
 
     # Dataset builders

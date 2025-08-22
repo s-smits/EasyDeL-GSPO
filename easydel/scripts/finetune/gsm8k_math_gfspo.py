@@ -114,7 +114,9 @@ def main():
     # Dataset-specific system prompts with strict formatting aligned to rewards
     SYSTEM_PROMPT_GSM8K = (
         "You are a helpful math tutor. Solve the user's problem. "
-        "The answer must contain exactly one number and nothing else; use an integer with no trailing '.0' if the result is an integer, otherwise a decimal number. Do not include commas, units, or extra text."
+        "Think step-by-step inside <think>...</think>, then output ONLY the final numeric answer inside <answer>...</answer>. "
+        "Formatting rules: <answer> must contain exactly one number and nothing else; use an integer with no trailing '.0' if the result is an integer, "
+        "otherwise a decimal number. Do not include commas, units, or extra text. Do not write anything outside <think> and <answer>."
     )
 
     SYSTEM_PROMPT_MATH = (

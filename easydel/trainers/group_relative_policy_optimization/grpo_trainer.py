@@ -80,11 +80,17 @@ class GRPOTrainer(Trainer):
             arguments.force_tensor_parallel or arguments.force_data_parallel
         ) else None
 
-        if self._mesh_plan and jax.process_index() == 0:
-            logger.info(
-                f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
-                f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
-            )
+        if self._mesh_plan:
+            try:
+                if jax.process_index() == 0:
+                    print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
+                    logger.info(
+                        f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
+                        f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
+                    )
+            except Exception as e:
+                print(f"DEBUG: Failed to log mesh configuration: {e}")
+                logger.warning(f"Failed to log mesh configuration: {e}")
         
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
@@ -938,6 +944,106 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     pass
 
+            # Print one local example per process each step: prompt, ground truth, extracted prediction
+            if getattr(self.arguments, "verbose", True):
+                try:
+                    example_idx = 0
+                    # Extract prompt string
+                    example_prompt = ""
+                    try:
+                        if isinstance(prompts, list) and len(prompts) > 0:
+                            example_prompt = prompts[example_idx]
+                        else:
+                            example_prompt = str(prompts)
+                    except Exception:
+                        example_prompt = ""
+
+                    # Extract raw completion text for first generation of first prompt
+                    example_pred_text = ""
+                    try:
+                        if isinstance(completions_text, list) and len(completions_text) > example_idx:
+                            example_pred_text = completions_text[example_idx]
+                        else:
+                            example_pred_text = str(completions_text)
+                    except Exception:
+                        example_pred_text = ""
+
+                    # Determine ground truth value from batch (dataset-dependent)
+                    def _get_gt(_batch, idx: int):
+                        try:
+                            if "solution_normalized" in _batch and _batch["solution_normalized"] is not None:
+                                print("DEBUG: Using 'solution_normalized' from batch")
+                                v = _batch["solution_normalized"]
+                            elif "solution" in _batch and _batch["solution"] is not None:
+                                print("DEBUG: Using 'solution' from batch")
+                                v = _batch["solution"]
+                            elif "answer" in _batch and _batch["answer"] is not None:
+                                print("DEBUG: Using 'answer' from batch")
+                                v = _batch["answer"]
+                            else:
+                                print("DEBUG: No ground truth key found in batch")
+                                return None
+                            if hasattr(v, "__getitem__"):
+                                try:
+                                    print(f"DEBUG: Attempting to index ground truth with idx={idx}")
+                                    return v[idx]
+                                except Exception as e:
+                                    print(f"DEBUG: Exception indexing ground truth with idx={idx}: {e}, falling back to v[0]")
+                                    return v[0]
+                            return v
+                        except Exception as e:
+                            print(f"DEBUG: Exception in _get_gt: {e}")
+                            return None
+
+                    example_gt = _get_gt(batch, example_idx)
+
+                    # Extract final value from completion using reward-specific logic (reuse reward modules)
+                    example_pred_value = example_pred_text
+                    try:
+                        # Detect dataset type based on configured reward functions
+                        rf_names = [getattr(rf, "__name__", "") for rf in self.reward_funcs]
+                        rf_mods = [getattr(rf, "__module__", "") for rf in self.reward_funcs]
+                        is_math = any((name.startswith("math/") or mod.endswith("math_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
+                        is_gsm8k = any((name.startswith("gsm8k/") or mod.endswith("gsm8k_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
+
+                        if is_math:
+                            try:
+                                from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
+                                _b = _mv_last_boxed(example_pred_text)
+                                example_pred_value = _mv_remove_boxed(_b) if _b else example_pred_text
+                            except Exception:
+                                pass
+                        elif is_gsm8k:
+                            try:
+                                import re as _re
+                                from easydel.verification.gsm8k_reward import _extract_answer_from_xml as _gx_extract_xml, _normalize_number_text as _gx_norm  # type: ignore
+                                _ans = _gx_extract_xml(example_pred_text) or example_pred_text
+                                _norm = _gx_norm(_ans)
+                                _nums = _re.findall(r"-?\d+\.?\d*", _norm)
+                                example_pred_value = _nums[-1] if _nums else _ans
+                            except Exception:
+                                pass
+                        # else: keep example_pred_value as raw text
+                    except Exception:
+                        pass
+
+                    # Clip long prompt/output for readability
+                    def _clip(s: str, n: int = 180) -> str:
+                        try:
+                            ss = s.replace("\n", " ")
+                            return ss if len(ss) <= n else (ss[:n] + "…")
+                        except Exception:
+                            return str(s)
+
+                    logger.info(
+                        f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
+                    )
+                except Exception as _e:
+                    try:
+                        logger.debug(f"example/local logging failed: {_e}")
+                    except Exception:
+                        pass
+
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
             if is_conversational:
                 completions = [[{"role": "assistant", "content": completion}] for completion in completions_text]
@@ -959,6 +1065,12 @@ class GRPOTrainer(Trainer):
                     logger.info(
                         f"completion_lengths: mean={mean_v:.2f}, std={std_v:.2f}, min={min_v}, max={max_v}"
                     )
+                    # Also print a small head of the per-completion token lengths
+                    try:
+                        head_n = int(min(16, lengths.shape[0]))
+                        logger.info(f"completion_lengths_head={lengths[:head_n].tolist()} (n={int(lengths.shape[0])})")
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.debug(f"Could not compute completion length summary: {e}")
                 # Brief prompt count
