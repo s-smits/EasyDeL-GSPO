@@ -102,7 +102,12 @@ class GFPOTrainer(GRPOTrainer):
             try:
                 # Host step value for warmup logic
                 try:
-                    state_step = int(jax.device_get(getattr(self, 'state', state).step))
+                    # Try to get step from model_state if available, otherwise use 0
+                    model_state = getattr(self, 'model_state', None)
+                    if model_state is not None and hasattr(model_state, 'step'):
+                        state_step = int(jax.device_get(model_state.step))
+                    else:
+                        state_step = 0
                 except Exception:
                     state_step = 0
                 warmup_steps = int(getattr(self.arguments, 'gfpo_adaptive_warmup_steps', 10))

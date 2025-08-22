@@ -547,7 +547,7 @@ class GRPOTrainer(Trainer):
                 )
                 
                 # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
-                def _hash_u32(ids: jnp.ndarray) -> jnp.uint32:
+                def _hash_u32(ids):
                     h = jnp.uint32(2166136261)
                     def body(hh, x):
                         hh = jnp.uint32((hh ^ jnp.uint32(x)) * jnp.uint32(16777619))
@@ -771,8 +771,10 @@ class GRPOTrainer(Trainer):
                 ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
                 ans_head = None
                 try:
-                    if hasattr(ans, "__getitem__"):
+                    if ans is not None and hasattr(ans, "__getitem__"):
                         ans_head = ans[:2]
+                    else:
+                        ans_head = None
                 except Exception:
                     ans_head = None
                 logger.debug(f"dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
@@ -1189,6 +1191,12 @@ class GRPOTrainer(Trainer):
                 num_prompts_local = int(prompt_ids.shape[0])
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
+                # Initialize global variables with local fallbacks
+                success_rate_comp_global = success_rate_comp_local
+                pass_at_k_global = pass_at_k_local
+                total_comp_global = total_comp_local
+                num_prompts_global = jnp.array(float(num_prompts_local))
+
                 # Safe global scalar aggregation (proc-local fallbacks on failure)
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
@@ -1204,25 +1212,17 @@ class GRPOTrainer(Trainer):
                         total_comp_global = jnp.sum(_tc)
                         pass_prompt_count_global = jnp.sum(_pp)
                         num_prompts_global = jnp.sum(_np)
+                        success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
+                        pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
                         print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
                     else:
                         print("DEBUG: Single-process fallback for global metrics")
-                        success_count_comp_global = success_count_comp_local
-                        total_comp_global = total_comp_local
-                        pass_prompt_count_global = pass_prompt_count_local
-                        num_prompts_global = jnp.array(float(num_prompts_local))
-                    success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
-                    pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                        # Global variables already initialized above with local values
                 except Exception as e:
                     print(f"DEBUG: Global aggregation failed: {e}")
                     if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                         logger.debug(f"global aggregation: failed {e}")
-                    success_count_comp_global = success_count_comp_local
-                    total_comp_global = total_comp_local
-                    success_rate_comp_global = success_rate_comp_local
-                    pass_prompt_count_global = pass_prompt_count_local
-                    num_prompts_global = jnp.array(float(num_prompts_local))
-                    pass_at_k_global = pass_at_k_local
+                    # Global variables already initialized above with fallback values
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: end")
             except Exception as e:
@@ -1234,6 +1234,11 @@ class GRPOTrainer(Trainer):
                 success_rate_comp_local = jnp.array(0.0)
                 pass_prompt_count_local = jnp.array(0)
                 pass_at_k_local = jnp.array(0.0)
+                # Initialize global variables with safe fallbacks
+                success_rate_comp_global = success_rate_comp_local
+                pass_at_k_global = pass_at_k_local
+                total_comp_global = total_comp_local
+                num_prompts_global = jnp.array(1.0)
         preprocessing_time = preprocessing_time_fn()
         completion_length = jnp.mean(completion_lengths_per_seq)  # Average for metrics
         # Compute local and global completion length stats for logging/metrics
