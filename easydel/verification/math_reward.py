@@ -5,20 +5,16 @@ import time
 try:
     # Math-Verify: robust evaluator for math expressions with full feature set
     from math_verify import (
-        parse, 
-        verify, 
-        LatexExtractionConfig, 
+        parse,
+        verify,
+        LatexExtractionConfig,
         ExprExtractionConfig,
-        StringExtractionConfig,
-        math_metric
     )  # type: ignore
 except Exception as _e:  # pragma: no cover
     parse = None  # type: ignore
     verify = None  # type: ignore
     LatexExtractionConfig = None  # type: ignore
     ExprExtractionConfig = None  # type: ignore
-    StringExtractionConfig = None  # type: ignore
-    math_metric = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 try:
@@ -438,149 +434,9 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     return [min(1.0, max(0.0, r * weight)) for r in out]
 
 
-def create_math_verify_demo():
-    """Demonstrate Math-Verify's structured verification features.
-    
-    This function showcases how to use Math-Verify's built-in classes and functions
-    following their recommended patterns and documentation.
-    """
-    if not (parse and verify and LatexExtractionConfig and ExprExtractionConfig):
-        print("Math-Verify not available - cannot run demo")
-        return
-    
-    print("=" * 80)
-    print("MATH-VERIFY STRUCTURED VERIFICATION DEMO")
-    print("Following Math-Verify's official patterns and documentation")
-    print("=" * 80)
-    
-    # Demo cases showing Math-Verify's extraction capabilities
-    demo_cases = [
-        {
-            "description": "LaTeX fraction with boxed format",
-            "gold": "1/2", 
-            "prediction": "The answer is $\\boxed{\\frac{1}{2}}$",
-            "expected_config": [LatexExtractionConfig(), ExprExtractionConfig()]
-        },
-        {
-            "description": "Plain expression format",
-            "gold": "42",
-            "prediction": "The final answer is 42",
-            "expected_config": [ExprExtractionConfig()]
-        },
-        {
-            "description": "Complex mathematical expression",
-            "gold": "\\sqrt{3}",
-            "prediction": "After calculation: $\\sqrt{3}$",
-            "expected_config": [LatexExtractionConfig(), ExprExtractionConfig()]
-        },
-        {
-            "description": "Answer with units (should extract number)",
-            "gold": "15",
-            "prediction": "The result is 15 cm",
-            "expected_config": [ExprExtractionConfig()]
-        }
-    ]
-    
-    print("\n1. EXTRACTION CONFIGURATION DEMO")
-    print("-" * 40)
-    print("Math-Verify provides three main ExtractionTarget classes:")
-    print("  - LatexExtractionConfig: For LaTeX expressions")
-    print("  - ExprExtractionConfig: For plain mathematical expressions") 
-    print("  - StringExtractionConfig: For literal strings (A, B, C, D)")
-    
-    print("\n2. PARSING AND VERIFICATION DEMO")
-    print("-" * 40)
-    
-    for i, case in enumerate(demo_cases):
-        print(f"\nCase {i+1}: {case['description']}")
-        print(f"Gold: {case['gold']}")
-        print(f"Prediction: {case['prediction']}")
-        
-        try:
-            # Parse using Math-Verify's official API
-            gold_parsed = parse(case['gold'], extraction_config=[ExprExtractionConfig()])
-            pred_parsed = parse(case['prediction'], extraction_config=case['expected_config'])
-            
-            print(f"Gold parsed: {gold_parsed}")
-            print(f"Prediction parsed: {pred_parsed}")
-            
-            if gold_parsed and pred_parsed:
-                # Use Math-Verify's verify function with their recommended parameters
-                result = verify(
-                    gold=gold_parsed[0],
-                    target=pred_parsed[0], 
-                    float_rounding=6,  # Math-Verify default
-                    numeric_precision=15,  # Math-Verify default
-                    strict=True,  # Math-Verify default
-                    allow_set_relation_comp=False,  # Math-Verify default
-                    timeout_seconds=5,  # Math-Verify default
-                    raise_on_error=False  # Math-Verify default
-                )
-                print(f"✓ Verification result: {result}")
-            else:
-                print("✗ Parsing failed")
-                
-        except Exception as e:
-            print(f"✗ Error: {e}")
-    
-    print("\n3. MATH-VERIFY CONFIGURATION OPTIONS")
-    print("-" * 40)
-    print("Key Math-Verify parameters:")
-    print("  - float_rounding: Decimal places for float rounding (default: 6)")
-    print("  - numeric_precision: Precision for numeric comparisons (default: 15)")
-    print("  - strict: Variable matching mode (default: True)")
-    print("  - allow_set_relation_comp: Set-relation comparison (default: False)")
-    print("  - timeout_seconds: Timeout for operations (default: 5)")
-    print("  - raise_on_error: Error handling mode (default: False)")
-    
-    print("\n4. EXTRACTION TARGET CONFIGURATION")
-    print("-" * 40)
-    
-    # Demonstrate extraction configuration following Math-Verify patterns
-    latex_config = LatexExtractionConfig(
-        try_extract_without_anchor=True,
-        boxed_match_priority=50  # Math-Verify default
-    )
-    
-    expr_config = ExprExtractionConfig(
-        try_extract_without_anchor=True
-    )
-    
-    print(f"LatexExtractionConfig: boxed_match_priority={latex_config.boxed_match_priority}")
-    print(f"ExprExtractionConfig: try_extract_without_anchor={expr_config.try_extract_without_anchor}")
-    
-    print("\n5. MATH METRIC FUNCTION DEMO")
-    print("-" * 40)
-    
-    if math_metric:
-        # Use Math-Verify's math_metric function following their documentation
-        metric_fn = math_metric(
-            gold_extraction_target=[ExprExtractionConfig()],
-            pred_extraction_target=[LatexExtractionConfig(), ExprExtractionConfig()],
-            precision=6
-        )
-        
-        # Test the metric
-        test_golds = ["1/2", "42"] 
-        test_preds = ["$\\boxed{\\frac{1}{2}}$", "The answer is 42"]
-        
-        try:
-            score, debug_info = metric_fn(test_golds, test_preds)
-            print(f"Math metric score: {score}")
-            if debug_info:
-                print(f"Debug info: {debug_info}")
-        except Exception as e:
-            print(f"Math metric error: {e}")
-    
-    print("\n" + "=" * 80)
-    print("DEMO COMPLETE - Following Math-Verify's official patterns")
-    print("=" * 80)
-
-
 __all__ = [
     "format_reward",
     "answer_reward",
-    "create_math_verify_demo",
 ]
 
 

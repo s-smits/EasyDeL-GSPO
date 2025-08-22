@@ -21,12 +21,6 @@ import re
 
 import datasets
 
-try:
-    from verl.utils.hdfs_io import copy, makedirs  # type: ignore
-except Exception:
-    copy = None  # type: ignore
-    makedirs = None  # type: ignore
-
 
 def extract_solution(solution_str):
     solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
