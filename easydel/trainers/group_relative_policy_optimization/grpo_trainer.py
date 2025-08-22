@@ -17,6 +17,8 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec
 from transformers import AutoTokenizer, GenerationConfig, ProcessorMixin
 
+
+
 from easydel.infra.base_module import EasyDeLBaseModule
 from easydel.infra.base_state import EasyDeLState
 from easydel.infra.utils import ProcessingClassType
@@ -1343,38 +1345,28 @@ class GRPOTrainer(Trainer):
                 processed_metrics_dict[key] = float(value)
             else:
                 processed_metrics_dict[key] = value
-        def _record_per_reward_metrics(_rewards_per_func):
+
+        # Per-reward metrics (local)
         for i, reward_func in enumerate(self.reward_funcs):
             _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
             try:
-                try:
-                    if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
-                        global_vals = global_rewards_per_func[:, i]
-                        global_mean = jnp.mean(global_vals)
-                        global_std = jnp.std(global_vals)
-                    else:
-                            global_mean = jnp.mean(_rewards_per_func[:, i])
-                            global_std = jnp.std(_rewards_per_func[:, i])
-                except Exception:
-                        global_mean = jnp.mean(_rewards_per_func[:, i])
-                        global_std = jnp.std(_rewards_per_func[:, i])
-                
+                global_mean = jnp.mean(rewards_per_func[:, i])
+                global_std = jnp.std(rewards_per_func[:, i])
+
                 metrics_dict[f"rewards/{_name}/mean"] = global_mean
                 metrics_dict[f"rewards/{_name}/std"] = global_std
                 metrics_dict[_name] = global_mean
-                
-                    local_mean = jnp.mean(_rewards_per_func[:, i])
+
+                local_mean = jnp.mean(rewards_per_func[:, i])
                 per_prompt_means = jnp.mean(
-                        _rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
+                    rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
                 )
                 local_mean_of_prompt_means = jnp.mean(per_prompt_means)
                 metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
                 metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
                 metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
             except Exception:
-                    metrics_dict[_name] = jnp.mean(_rewards_per_func[:, i])
-
-        _record_per_reward_metrics(rewards_per_func)
+                metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None and jax.process_index() == 0:
             try:
                 cur_step = int(jax.device_get(state.step))
