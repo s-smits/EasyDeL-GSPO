@@ -624,6 +624,23 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
+            # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
+            try:
+                num_records = int(len(data_source))
+            except Exception:
+                try:
+                    num_records = int(len(dataset))  # type: ignore[arg-type]
+                except Exception:
+                    num_records = 0
+            per_shard_base = num_records // max(1, shard_count)
+            remainder = num_records % max(1, shard_count)
+            per_shard_len = per_shard_base + (1 if shard_index < remainder else 0)
+            effective_batch_size = max(1, min(int(batch_size), int(per_shard_len)))
+            if effective_batch_size < int(batch_size):
+                logger.warning(
+                    f"Batch size {int(batch_size)} reduced to {effective_batch_size} for shard {shard_index}/{shard_count} "
+                    f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
+                )
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,
                 truncation_mode=self.arguments.truncation_mode,
@@ -634,7 +651,7 @@ class BaseTrainer(BaseTrainerProtocol):
                 operations=[
                     ToNumpy(),
                     CollateMapTransform(collate_fn=collate_fn),
-                    grain.Batch(batch_size=batch_size, drop_remainder=True),
+                    grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
                 ],
                 worker_count=1,
                 worker_buffer_size=1,
@@ -671,10 +688,14 @@ class BaseTrainer(BaseTrainerProtocol):
             per_shard_len = per_shard_len_base + (1 if shard_index < remainder else 0)
 
             # 3) Use the actual batch size each worker sees
-            batch_size = self.training_batch_size if is_train else self.evaluation_batch_size
+            try:
+                batch_size_val = int(self.training_batch_size if is_train else self.evaluation_batch_size)
+            except Exception:
+                batch_size_val = int(self.arguments.total_batch_size) if is_train else int(self.evaluation_batch_size)
+            batch_size = max(1, batch_size_val)
 
             # 4) Grain drops remainder, so use floor
-            steps_per_epoch = 0 if batch_size <= 0 else (per_shard_len // batch_size)
+            steps_per_epoch = per_shard_len // batch_size
             num_epochs = self.arguments.num_train_epochs if is_train else 1
             num_steps = steps_per_epoch * num_epochs
 

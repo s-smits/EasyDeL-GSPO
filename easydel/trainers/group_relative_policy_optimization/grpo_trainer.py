@@ -1193,6 +1193,10 @@ class GRPOTrainer(Trainer):
                 success_count_comp_local = jnp.sum(successes_local)
                 total_comp_local = successes_local.shape[0]
                 success_rate_comp_local = success_count_comp_local / jnp.maximum(1, total_comp_local)
+                if total_comp_local == 0:
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        logger.warning("No completions available in this step; skipping metric logging for success rates.")
+                    success_rate_comp_local = jnp.array(0.0)
                 
                 # Debug: Show why success_rate might be misleading
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
@@ -1229,7 +1233,7 @@ class GRPOTrainer(Trainer):
                         total_comp_global = jnp.sum(_tc)
                         pass_prompt_count_global = jnp.sum(_pp)
                         num_prompts_global = jnp.sum(_np)
-                        success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
+                        success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
                         pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
                         print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
                     else:

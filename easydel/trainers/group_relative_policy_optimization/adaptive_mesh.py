@@ -273,6 +273,11 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
                 f"Dataset configuration: shard {arguments.grain_shard_index}/{arguments.grain_shard_count} "
                 f"(process {jax.process_index()}/{proc_count}, mesh_dp={plan.dp}, mesh_tp={plan.tp})"
             )
+        # Clamp invalid shard settings as a failsafe
+        if arguments.grain_shard_count is None or arguments.grain_shard_count <= 0:
+            arguments.grain_shard_count = 1
+        if arguments.grain_shard_index is None or arguments.grain_shard_index < 0:
+            arguments.grain_shard_index = 0
     except Exception as e:
         logger.warning(f"Failed to configure dataset sharding: {e}")
         # Fallback to safe defaults
