@@ -1158,7 +1158,15 @@ class GRPOTrainer(Trainer):
                             completion_lengths=jax.device_get(completion_lengths_per_seq),
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
-                                    # Debug output removed to prevent host divergence
+                        # Debug: Log individual reward function values
+                        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                            try:
+                                _fname = getattr(reward_func, "__name__", f"reward_{i}")
+                                _mean = float(jnp.mean(rew))
+                                _success_rate = float(jnp.mean(rew > 0.0))
+                                print(f"DEBUG: {_fname} - mean={_mean:.4f}, success_rate={_success_rate:.4f}")
+                            except Exception as e:
+                                print(f"DEBUG: Failed to log reward {i}: {e}")
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             
@@ -1179,11 +1187,20 @@ class GRPOTrainer(Trainer):
             # Compute mean reward per completion locally (no cross-host ops)
             # Optionally compute safe global scalars via allgather of scalars only
             # Compute success metrics (reward > 0) locally and globally
+            # NOTE: This is based on SUM of all rewards, not individual reward correctness
             try:
                 successes_local = (rewards > 0).astype(jnp.int32)
                 success_count_comp_local = jnp.sum(successes_local)
                 total_comp_local = successes_local.shape[0]
                 success_rate_comp_local = success_count_comp_local / jnp.maximum(1, total_comp_local)
+                
+                # Debug: Show why success_rate might be misleading
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    try:
+                        print(f"DEBUG: reward/success_rate={float(success_rate_comp_local):.4f} (based on sum of rewards > 0)")
+                        print(f"DEBUG: This can be misleading if format_reward=1.0 but answer_reward=0.0")
+                    except Exception:
+                        pass
 
                 # Per-prompt pass@k (at least one success among num_return_sequences)
                 per_prompt_success = jnp.max(successes_local.reshape(-1, self.num_generations), axis=1)
@@ -1357,9 +1374,13 @@ class GRPOTrainer(Trainer):
             try:
                 global_mean = jnp.mean(rewards_per_func[:, i])
                 global_std = jnp.std(rewards_per_func[:, i])
+                
+                # Add success rate for individual reward functions
+                individual_success_rate = jnp.mean(rewards_per_func[:, i] > 0.0)
 
                 metrics_dict[f"rewards/{_name}/mean"] = global_mean
                 metrics_dict[f"rewards/{_name}/std"] = global_std
+                metrics_dict[f"rewards/{_name}/success_rate"] = individual_success_rate
                 metrics_dict[_name] = global_mean
 
                 local_mean = jnp.mean(rewards_per_func[:, i])
@@ -1370,6 +1391,10 @@ class GRPOTrainer(Trainer):
                 metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
                 metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
                 metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
+                
+                # If this is the answer reward (contains "accuracy" or "answer"), track it separately
+                if "accuracy" in _name.lower() or "answer" in _name.lower():
+                    metrics_dict["reward/answer_accuracy"] = individual_success_rate
             except Exception:
                 metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
         if self.log_table is not None and jax.process_index() == 0:
