@@ -635,12 +635,28 @@ class BaseTrainer(BaseTrainerProtocol):
             per_shard_base = num_records // max(1, shard_count)
             remainder = num_records % max(1, shard_count)
             per_shard_len = per_shard_base + (1 if shard_index < remainder else 0)
-            effective_batch_size = max(1, min(int(batch_size), int(per_shard_len)))
-            if effective_batch_size < int(batch_size):
+            base_eff = max(1, min(int(batch_size), int(per_shard_len)))
+            if base_eff < int(batch_size):
                 logger.warning(
-                    f"Batch size {int(batch_size)} reduced to {effective_batch_size} for shard {shard_index}/{shard_count} "
+                    f"Batch size {int(batch_size)} reduced to {base_eff} for shard {shard_index}/{shard_count} "
                     f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
                 )
+            # Align batch size to a multiple of DP axis to satisfy pjit sharding requirements
+            dp_axis = int(self.arguments.grain_shard_count or 1)
+            aligned_eff = (base_eff // max(1, dp_axis)) * max(1, dp_axis)
+            if aligned_eff == 0:
+                # Cannot form any DP-consistent batch on this shard; keep base_eff to let drop_remainder yield 0 steps
+                effective_batch_size = base_eff
+                logger.warning(
+                    f"No DP-aligned batch can be formed on shard {shard_index}/{shard_count} (per-shard={per_shard_len}, dp={dp_axis}). "
+                    f"This shard will likely yield 0 steps due to drop_remainder."
+                )
+            else:
+                effective_batch_size = aligned_eff
+                if effective_batch_size != base_eff:
+                    logger.warning(
+                        f"Batch size aligned to DP multiple: {base_eff} -> {effective_batch_size} (dp={dp_axis})"
+                    )
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,
                 truncation_mode=self.arguments.truncation_mode,
