@@ -21,6 +21,10 @@ class RunTimeConfig:
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
     dataset_use_rate: int = field(default=100)
+    curriculum_math: bool = field(
+        default=False,
+        metadata={"help": "Enable curriculum learning for math datasets, progressing from Level 1 to Level 5"},
+    )
     kv_cache_quantization: ed.EasyDeLQuantizationMethods = field(
         default=ed.EasyDeLQuantizationMethods.NONE
     )
@@ -124,7 +128,7 @@ def main():
     )
 
     # Dataset builders
-    def build_gsm8k() -> tuple[Dataset, Dataset]:
+    def build_gsm8k():
         def extract_hash_answer(text: str):
             if not isinstance(text, str):
                 return ""
@@ -148,7 +152,7 @@ def main():
 
         return ds_train.map(map_ex), ds_test.map(map_ex)
 
-    def build_math() -> tuple[Dataset, Dataset]:
+    def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
         ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
         try:
@@ -174,6 +178,9 @@ def main():
                 ],
                 # keep full solution text for reward; must contain \\boxed{...}
                 "solution": x.get("solution", ""),
+                # keep level information for curriculum learning
+                "level": x.get("level", ""),
+                "type": x.get("type", ""),
             }
 
         return ds_train.map(map_ex), ds_test.map(map_ex)
@@ -295,6 +302,94 @@ def main():
     else:
         raise ValueError("dataset must be 'gsm8k' or 'math'")
 
+    # Curriculum Learning Functions
+    def filter_dataset_by_level(dataset: Dataset, level: str) -> Dataset:
+        """Filter dataset to include only problems from a specific level."""
+        return dataset.filter(lambda x: x.get("level", "").strip() == level)
+    
+    def get_available_levels(dataset: Dataset) -> list[str]:
+        """Get all available levels in the dataset."""
+        if "level" not in dataset.column_names:
+            return []
+        levels = set()
+        for item in dataset:
+            level = item.get("level", "").strip()
+            if level:
+                levels.add(level)
+        return sorted(list(levels))
+    
+    def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int):
+        """
+        Train with curriculum learning, progressing through levels.
+        Each level is trained for the specified number of epochs.
+        """
+        available_levels = get_available_levels(train_ds)
+        if not available_levels:
+            if jax.process_index() == 0:
+                print("WARNING: No levels found in dataset. Falling back to regular training.")
+            return trainer.train()
+        
+        if jax.process_index() == 0:
+            print(f"DEBUG: Starting curriculum learning with levels: {available_levels}")
+            print(f"DEBUG: Each level will be trained for {epochs_per_level} epochs")
+            
+            # Print dataset distribution by level
+            print("\nDataset distribution by level:")
+            for level in available_levels:
+                level_data = filter_dataset_by_level(train_ds, level)
+                print(f"  {level}: {len(level_data)} examples")
+            
+            # Show a few examples from each level
+            print("\nSample problems by level:")
+            for level in available_levels[:3]:  # Show only first 3 levels to avoid too much output
+                level_data = filter_dataset_by_level(train_ds, level)
+                if len(level_data) > 0:
+                    sample = level_data[0]
+                    problem_text = sample["prompt"][1]["content"] if len(sample["prompt"]) > 1 else "N/A"
+                    print(f"  {level}: {problem_text[:100]}...")
+        
+        original_epochs = trainer.arguments.num_train_epochs
+        
+        for level in available_levels:
+            if jax.process_index() == 0:
+                print(f"\n{'='*60}")
+                print(f"Starting curriculum training for {level}")
+                print(f"Training for {epochs_per_level} epochs")
+                print(f"{'='*60}")
+            
+            # Filter datasets for current level
+            level_train_ds = filter_dataset_by_level(train_ds, level)
+            level_test_ds = filter_dataset_by_level(test_ds, level) if test_ds else None
+            
+            if len(level_train_ds) == 0:
+                if jax.process_index() == 0:
+                    print(f"WARNING: No training examples found for {level}. Skipping.")
+                continue
+            
+            if jax.process_index() == 0:
+                print(f"Level {level}: {len(level_train_ds)} training examples")
+                if level_test_ds:
+                    print(f"Level {level}: {len(level_test_ds)} test examples")
+            
+            # Update trainer with level-specific datasets and epochs
+            trainer.train_dataset = level_train_ds
+            trainer.eval_dataset = level_test_ds
+            trainer.arguments.num_train_epochs = epochs_per_level
+            
+            # Train on this level
+            trainer.train()
+            
+            if jax.process_index() == 0:
+                print(f"Completed training for {level}")
+        
+        # Restore original epochs setting
+        trainer.arguments.num_train_epochs = original_epochs
+        
+        if jax.process_index() == 0:
+            print(f"\n{'='*60}")
+            print("Curriculum learning completed!")
+            print(f"{'='*60}")
+
     if jax.process_index() == 0:
         print(f"DEBUG: About to initialize trainer with reward_funcs: {[f.__name__ for f in reward_funcs]}")
         print(f"DEBUG: reward_funcs modules: {[f.__module__ for f in reward_funcs]}")
@@ -309,7 +404,19 @@ def main():
         data_tokenize_fn=data_tokenize_fn,
     )
 
-    trainer.train()
+    # Decide whether to use curriculum learning
+    if runtime.curriculum_math and _ds == "math":
+        if jax.process_index() == 0:
+            print("DEBUG: Curriculum learning enabled for math dataset")
+            print(f"DEBUG: num_train_epochs={gfspo_config.num_train_epochs}")
+        
+        curriculum_train(trainer, train_ds, test_ds, gfspo_config.num_train_epochs)
+    else:
+        if runtime.curriculum_math and _ds != "math":
+            if jax.process_index() == 0:
+                print("WARNING: curriculum_math flag is enabled but dataset is not 'math'. Using regular training.")
+        
+        trainer.train()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,16 @@
 #!/bin/bash
 # GSPO Training Script with TPU Optimizations
+#
+# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
+# 
+# Arguments:
+#   DATASET        - Dataset to use: 'math-ds' or 'gsm8k-ds' (default: math-ds)
+#   CURRICULUM_MATH - Enable curriculum learning: 'true' or 'false' (default: false)
+#
+# Examples:
+#   ./run_gspo_training.sh math-ds true    # Enable curriculum learning on math dataset
+#   ./run_gspo_training.sh math-ds false   # Disable curriculum learning
+#   ./run_gspo_training.sh gsm8k-ds        # Use GSM8K dataset (curriculum learning has no effect)
 
 # Set environment variables for TPU
 export JAX_PLATFORMS=tpu
@@ -27,13 +38,16 @@ cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
 
-# Prefer positional arg over environment to avoid accidental overrides
+# Parse command line arguments
 DATASET="${1:-math-ds}"
+CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
+echo "Curriculum math: ${CURRICULUM_MATH}"
 
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
   --dataset ${DATASET} \
+  --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
   --num_return_sequences 2 \
   --rollout_chunk_size 4 \
