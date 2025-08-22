@@ -308,15 +308,28 @@ def main():
         return dataset.filter(lambda x: x.get("level", "").strip() == level)
     
     def get_available_levels(dataset: Dataset) -> list[str]:
-        """Get all available levels in the dataset."""
+        """Get all available levels in the dataset, sorted numerically when possible."""
         if "level" not in dataset.column_names:
             return []
         levels = set()
         for item in dataset:
-            level = item.get("level", "").strip()
-            if level:
-                levels.add(level)
-        return sorted(list(levels))
+            lvl = item.get("level", "")
+            try:
+                lvl = lvl.strip()
+            except Exception:
+                pass
+            if lvl:
+                levels.add(lvl)
+
+        def _level_key(s: str):
+            try:
+                import re as _re
+                m = _re.search(r"(\d+)", s)
+                return (int(m.group(1)) if m else 10**9, s)
+            except Exception:
+                return (10**9, s)
+
+        return sorted(list(levels), key=_level_key)
     
     def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int):
         """
@@ -332,6 +345,10 @@ def main():
         if jax.process_index() == 0:
             print(f"DEBUG: Starting curriculum learning with levels: {available_levels}")
             print(f"DEBUG: Each level will be trained for {epochs_per_level} epochs")
+            try:
+                print(f"Columns: {train_ds.column_names}")
+            except Exception:
+                pass
             
             # Print dataset distribution by level
             print("\nDataset distribution by level:")
@@ -347,6 +364,12 @@ def main():
                     sample = level_data[0]
                     problem_text = sample["prompt"][1]["content"] if len(sample["prompt"]) > 1 else "N/A"
                     print(f"  {level}: {problem_text[:100]}...")
+            # Show raw level strings to confirm formatting
+            try:
+                raw_levels_preview = [train_ds[i].get("level", "") for i in range(min(5, len(train_ds)))]
+                print(f"\nRaw level string preview: {raw_levels_preview}")
+            except Exception:
+                pass
         
         original_epochs = trainer.arguments.num_train_epochs
         
@@ -371,13 +394,26 @@ def main():
                 if level_test_ds:
                     print(f"Level {level}: {len(level_test_ds)} test examples")
             
-            # Update trainer with level-specific datasets and epochs
-            trainer.train_dataset = level_train_ds
-            trainer.eval_dataset = level_test_ds
+            # Rebuild a fresh trainer for this level to reconfigure dataloaders and steps
+            original_epochs = trainer.arguments.num_train_epochs
             trainer.arguments.num_train_epochs = epochs_per_level
-            
-            # Train on this level
-            trainer.train()
+
+            # Recreate trainer with the previous state to continue training seamlessly
+            new_trainer = ed.GFSPOTrainer(
+                model=trainer.model_state,
+                reward_funcs=trainer.reward_funcs,
+                processing_class=trainer.processing_class,
+                eval_dataset=level_test_ds,
+                train_dataset=level_train_ds,
+                arguments=trainer.arguments,
+                data_tokenize_fn=trainer.data_tokenize_fn,
+            )
+
+            new_trainer.train()
+
+            # Carry the updated state forward and restore epochs for safety
+            trainer = new_trainer
+            trainer.arguments.num_train_epochs = original_epochs
             
             if jax.process_index() == 0:
                 print(f"Completed training for {level}")

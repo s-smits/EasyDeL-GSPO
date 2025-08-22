@@ -21,6 +21,10 @@ class RunTimeConfig:
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
     dataset_use_rate: int = field(default=100)
+    curriculum_math: bool = field(
+        default=False,
+        metadata={"help": "Enable curriculum learning for math datasets, progressing from Level 1 to Level 5"},
+    )
     kv_cache_quantization: ed.EasyDeLQuantizationMethods = field(
         default=ed.EasyDeLQuantizationMethods.NONE
     )
@@ -124,7 +128,7 @@ def main():
     )
 
     # Dataset builders
-    def build_gsm8k() -> tuple[Dataset, Dataset]:
+    def build_gsm8k():
         def extract_hash_answer(text: str):
             if not isinstance(text, str):
                 return ""
@@ -148,7 +152,7 @@ def main():
 
         return ds_train.map(map_ex), ds_test.map(map_ex)
 
-    def build_math() -> tuple[Dataset, Dataset]:
+    def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
         ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
         try:
@@ -174,6 +178,9 @@ def main():
                 ],
                 # keep full solution text for reward; must contain \\boxed{...}
                 "solution": x.get("solution", ""),
+                # keep level/type for curriculum
+                "level": x.get("level", ""),
+                "type": x.get("type", ""),
             }
 
         return ds_train.map(map_ex), ds_test.map(map_ex)
@@ -305,7 +312,82 @@ def main():
         data_tokenize_fn=data_tokenize_fn,
     )
 
-    trainer.train()
+    # Curriculum Learning Utilities (mirror gfspo script)
+    def filter_dataset_by_level(dataset: Dataset, level: str) -> Dataset:
+        return dataset.filter(lambda x: x.get("level", "").strip() == level)
+
+    def get_available_levels(dataset: Dataset) -> list[str]:
+        if "level" not in dataset.column_names:
+            return []
+        levels = set()
+        for item in dataset:
+            lvl = item.get("level", "")
+            try:
+                lvl = lvl.strip()
+            except Exception:
+                pass
+            if lvl:
+                levels.add(lvl)
+        def _level_key(s: str):
+            try:
+                import re as _re
+                m = _re.search(r"(\d+)", s)
+                return (int(m.group(1)) if m else 10**9, s)
+            except Exception:
+                return (10**9, s)
+        return sorted(list(levels), key=_level_key)
+
+    def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int):
+        levels = get_available_levels(train_ds)
+        if not levels:
+            if jax.process_index() == 0:
+                print("WARNING: No levels found; falling back to regular training.")
+            return trainer.train()
+        if jax.process_index() == 0:
+            print(f"DEBUG: Curriculum levels: {levels}")
+            print(f"Columns: {train_ds.column_names}")
+            for lvl in levels:
+                print(f"  {lvl}: {len(filter_dataset_by_level(train_ds, lvl))} examples")
+            try:
+                raw_preview = [train_ds[i].get("level", "") for i in range(min(5, len(train_ds)))]
+                print(f"Raw level preview: {raw_preview}")
+            except Exception:
+                pass
+
+        for lvl in levels:
+            lvl_train = filter_dataset_by_level(train_ds, lvl)
+            lvl_test = filter_dataset_by_level(test_ds, lvl) if test_ds else None
+            if len(lvl_train) == 0:
+                continue
+            if jax.process_index() == 0:
+                print(f"\n==== Training {lvl} for {epochs_per_level} epochs ====")
+
+            original_epochs = trainer.arguments.num_train_epochs
+            trainer.arguments.num_train_epochs = epochs_per_level
+
+            new_trainer = ed.GSPOTrainer(
+                model=trainer.model_state,
+                reward_funcs=trainer.reward_funcs,
+                processing_class=trainer.processing_class,
+                eval_dataset=lvl_test,
+                train_dataset=lvl_train,
+                arguments=trainer.arguments,
+                data_tokenize_fn=trainer.data_tokenize_fn,
+            )
+            new_trainer.train()
+            trainer = new_trainer
+            trainer.arguments.num_train_epochs = original_epochs
+
+        return trainer
+
+    if runtime.curriculum_math and _ds == "math":
+        if jax.process_index() == 0:
+            print("DEBUG: Curriculum learning enabled for math dataset (GSPO)")
+        _ = curriculum_train(trainer, train_ds, test_ds, gspo_config.num_train_epochs)
+    else:
+        if runtime.curriculum_math and _ds != "math" and jax.process_index() == 0:
+            print("WARNING: curriculum_math set but dataset != math; running regular training.")
+        trainer.train()
 
 
 if __name__ == "__main__":
