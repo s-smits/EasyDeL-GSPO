@@ -1028,11 +1028,25 @@ class GRPOTrainer(Trainer):
                         if is_math:
                             try:
                                 print("DEBUG: Using math reward extraction")
-                                # Just show a preview - Math-Verify handles actual extraction
+                                # Preview for logs
                                 preview = example_pred_text[-200:] if len(example_pred_text) > 200 else example_pred_text
                                 preview = preview[:180] + "…" if len(preview) > 180 else preview
                                 print(f"DEBUG: Math extraction preview: '{preview}'")
-                                example_pred_value = preview
+                                # Extract last boxed or fallback to last number
+                                try:
+                                    from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
+                                    _boxed = _mv_last_boxed(example_pred_text)
+                                    if _boxed is not None:
+                                        example_pred_value = _mv_remove_boxed(_boxed)
+                                    else:
+                                        import re as _re
+                                        _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
+                                        example_pred_value = _nums[-1] if _nums else preview
+                                except Exception:
+                                    import re as _re
+                                    _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
+                                    example_pred_value = _nums[-1] if _nums else preview
+                                print(f"DEBUG: Math extraction result: '{example_pred_value}'")
                             except Exception as e:
                                 print(f"DEBUG: Math extraction failed: {e}")
                                 example_pred_value = example_pred_text
