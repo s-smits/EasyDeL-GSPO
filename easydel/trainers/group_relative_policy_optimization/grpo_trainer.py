@@ -5,7 +5,6 @@ from __future__ import annotations
 import typing as tp
 from functools import cached_property, partial
 import inspect
-import hashlib
 
 import flax
 import flax.nnx
@@ -312,6 +311,34 @@ class GRPOTrainer(Trainer):
                 **map_kwargs,
             )
 
+        # Shard dataset per JAX process to balance difficulty and avoid excessive duplicates
+        try:
+            import jax as _jax  # local import to avoid top-level overhead
+            if isinstance(dataset, Dataset):
+                # Deterministic shuffle before sharding to interleave difficulty evenly
+                try:
+                    _seed = int(getattr(arguments, "seed", 17))
+                except Exception:
+                    _seed = 17
+                dataset = dataset.shuffle(seed=_seed)
+                shard_count = getattr(arguments, "grain_shard_count", None)
+                shard_index = getattr(arguments, "grain_shard_index", None)
+                if shard_count is None:
+                    shard_count = max(1, int(_jax.process_count()))
+                if shard_index is None:
+                    shard_index = max(0, int(_jax.process_index()))
+                # Only shard when more than one process
+                if int(shard_count) > 1:
+                    dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
+                    if _jax.process_index() == 0:
+                        logger.info(
+                            f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
+                        )
+        except Exception as _e:
+            # Best-effort: continue without sharding if anything goes wrong
+            if jax.process_index() == 0:
+                logger.debug(f"Skipping dataset sharding for {dataset_name}: {_e}")
+
         def _tokenize(example):
             return processing_class(
                 example["prompt"],
@@ -613,75 +640,107 @@ class GRPOTrainer(Trainer):
         ).astype(jnp.int32)
 
 
-    @staticmethod
-    def _to_local_flat(x: jax.Array) -> jnp.ndarray:
-        """Reconstruct full local array from all shards."""
-        if hasattr(x, 'addressable_shards') and x.addressable_shards:
-            parts = [jax.device_get(s.data) for s in x.addressable_shards]
-            return jnp.concatenate([p.flatten() for p in parts])
-        return jax.device_get(x).flatten()
-
     # _gather_unique_rows method removed to avoid TPU collective issues
 
     def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
-        """Actually ensure batch has unique prompts by filtering duplicates within this batch."""
+        """Ensure batch has unique prompts without changing the batch size.
+
+        Duplicated prompts are replaced in-place by cycling over the first
+        occurrences so that the leading dimension remains unchanged. This
+        preserves divisibility requirements for DP sharding.
+        """
         # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-        
-        # Find unique prompts within this local batch
-        seen_prompts = set()
-        unique_indices = []
-        
+
+        original_size = len(prompts)
+        seen_prompts: set[str] = set()
+        first_occurrence_indices: list[int] = []
+
+        # Track unique first occurrences
         for i, prompt in enumerate(prompts):
             if prompt not in seen_prompts:
                 seen_prompts.add(prompt)
-                unique_indices.append(i)
-        
-        # If all prompts are unique, return original batch
-        if len(unique_indices) == len(prompts):
+                first_occurrence_indices.append(i)
+
+        # Fast path: nothing to change
+        if len(first_occurrence_indices) == original_size:
             return batch
-        
-        # Filter to unique prompts only
+
+        # Build a replacement index list that keeps shape == original_size
+        # Keep first occurrences, replace duplicates by cycling over unique ones
+        if not first_occurrence_indices:
+            # Extremely unlikely, but guard: keep batch unchanged
+            return batch
+
+        # Cycle helper
+        def _cycled_indices(count: int) -> list[int]:
+            base = first_occurrence_indices
+            times = (count + len(base) - 1) // len(base)
+            return (base * times)[:count]
+
+        replacement_indices: list[int] = []
+        used = set()
+        for i, prompt in enumerate(prompts):
+            if prompt in used:
+                replacement_indices.append(i)  # placeholder, will be replaced
+            else:
+                used.add(prompt)
+                replacement_indices.append(i)
+
+        # Identify duplicate positions (beyond first occurrences)
+        duplicate_positions = []
+        seen_prompts.clear()
+        for i, prompt in enumerate(prompts):
+            if prompt in seen_prompts:
+                duplicate_positions.append(i)
+            else:
+                seen_prompts.add(prompt)
+
+        fills = _cycled_indices(len(duplicate_positions))
+
+        # Final per-position indices to take from the original batch
+        final_indices = list(range(original_size))
+        for pos, fill_idx in zip(duplicate_positions, fills, strict=False):
+            final_indices[pos] = fill_idx
+
         if jax.process_index() == 0:
-            logger.info(f"Filtered {len(prompts) - len(unique_indices)} duplicate prompts from local batch")
-            # Extra debug (stdout): show dedup indices
             try:
-                print(f"[DEBUG] dedup: original={len(prompts)} unique={len(unique_indices)} indices_head={unique_indices[:8]}")
+                print(
+                    f"[DEBUG] dedup: original={original_size} unique={len(first_occurrence_indices)} "
+                    f"replaced={len(duplicate_positions)} head_replacements={final_indices[:8]}"
+                )
             except Exception:
                 pass
-        
-        # Create filtered batch with unique prompts only
-        filtered_batch = {}
+
+        # Rebuild batch in-place using final_indices, preserving leading dimension
+        rebuilt_batch: dict[str, tp.Any] = {}
         for key, values in batch.items():
             try:
                 vlen = len(values)
             except Exception:
                 vlen = None
-            if vlen == len(prompts):
-                # JAX array: direct indexing
+
+            if vlen == original_size:
                 if isinstance(values, jax.Array):
-                    filtered_batch[key] = values[unique_indices]
+                    rebuilt_batch[key] = values[final_indices]
                 else:
-                    # numpy array or python sequence: slice by indices
                     try:
                         import numpy as _np  # local import safe
                         if isinstance(values, _np.ndarray):
-                            filtered_batch[key] = values[unique_indices]
+                            rebuilt_batch[key] = values[final_indices]
                         elif isinstance(values, (list, tuple)):
-                            filtered_batch[key] = [values[i] for i in unique_indices]
+                            rebuilt_batch[key] = [values[i] for i in final_indices]
                         else:
-                            # Fallback: keep as-is if unsupported type
-                            filtered_batch[key] = values
+                            rebuilt_batch[key] = values
                     except Exception:
-                        filtered_batch[key] = values
+                        rebuilt_batch[key] = values
             else:
-                filtered_batch[key] = values
-        
+                rebuilt_batch[key] = values
+
         if jax.process_index() == 0:
-            # Extra debug: show filtered lengths for key fields
             try:
-                pid = filtered_batch.get("input_ids", None)
-                ans = filtered_batch.get("answer", None)
+                pid = rebuilt_batch.get("input_ids", None)
+                ans = rebuilt_batch.get("answer", None)
                 pid_len = int(pid.shape[0]) if isinstance(pid, jax.Array) else (len(pid) if pid is not None else -1)
                 ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
                 ans_head = None
@@ -690,11 +749,11 @@ class GRPOTrainer(Trainer):
                         ans_head = ans[:2]
                 except Exception:
                     ans_head = None
-                print(f"[DEBUG] dedup: input_ids_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
+                print(f"[DEBUG] dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
             except Exception:
                 pass
-        
-        return filtered_batch
+
+        return rebuilt_batch
 
     def _preprocess_batch_input(
         self,
@@ -849,9 +908,12 @@ class GRPOTrainer(Trainer):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
-            if jax.process_index() == 0:
+            if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
-                    print(f"[DEBUG] preprocess: prompts_len={len(prompts)} completions_len={len(completions_text)} expected_completions={int(prompt_ids.shape[0]*self.num_generations)}")
+                    logger.debug(
+                        f"preprocess: prompts_len={len(prompts)} completions_len={len(completions_text)} "
+                        f"expected_completions={int(prompt_ids.shape[0]*self.num_generations)}"
+                    )
                     # Show small heads for inspection
                     p_head = [p[:64].replace("\n", " ") for p in prompts[:2]] if isinstance(prompts, list) else []
                     a_obj = batch.get("answer", None)
@@ -862,11 +924,11 @@ class GRPOTrainer(Trainer):
                             a_list = []
                     else:
                         a_list = []
-                    print(f"[DEBUG] preprocess: prompt_head={p_head} answer_head={a_list[:2]}")
+                    logger.debug(f"preprocess: prompt_head={p_head} answer_head={a_list[:2]}")
                     # First prompt's first few completions lengths
                     first_r = min(self.num_generations, len(completions_text))
                     comp_lens = [len(completions_text[i]) for i in range(first_r)]
-                    print(f"[DEBUG] preprocess: first_prompt_first_{first_r}_completion_lengths={comp_lens}")
+                    logger.debug(f"preprocess: first_prompt_first_{first_r}_completion_lengths={comp_lens}")
                 except Exception:
                     pass
 
@@ -878,19 +940,7 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
-            # Global gathering for logging (if enabled) with TP dedupe by row-content
-            _global_lengths_flat = None
-            _global_lengths_shaped = None
-            if getattr(self.arguments, "log_global", False):
-                try:
-                    r = int(self.num_generations)
-                    unique_rows = self._gather_unique_rows(completion_lengths_per_seq, r)
-                    _global_lengths_shaped = unique_rows
-                    _global_lengths_flat = jnp.ravel(_global_lengths_shaped)
-                except Exception as e:
-                    logger.debug(f"Failed to gather unique completion lengths: {e}")
-                    _global_lengths_flat = None
-                    _global_lengths_shaped = None
+            # Global gathering removed to reduce collective overhead
 
             # Host-side concise summary for completion token lengths
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
@@ -993,11 +1043,10 @@ class GRPOTrainer(Trainer):
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
                 # Safe global scalar aggregation (proc-local fallbacks on failure)
-                print("Entering outer try for global scalar aggregation")
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    logger.debug("global aggregation: start")
                 try:
-                    print("Inside outer try: attempting global aggregation")
                     if jax.process_count() > 1:
-                        print("More than one process detected, using process_allgather")
                         _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
                         _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
                         _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
@@ -1006,27 +1055,27 @@ class GRPOTrainer(Trainer):
                         total_comp_global = jnp.sum(_tc)
                         pass_prompt_count_global = jnp.sum(_pp)
                         num_prompts_global = jnp.sum(_np)
-                        print("Global aggregation via allgather succeeded")
                     else:
-                        print("Single process detected, using local values for global metrics")
                         success_count_comp_global = success_count_comp_local
                         total_comp_global = total_comp_local
                         pass_prompt_count_global = pass_prompt_count_local
                         num_prompts_global = jnp.array(float(num_prompts_local))
                     success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
                     pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                    print("Global metrics computed successfully")
                 except Exception as e:
-                    print(f"Exception in global aggregation try block: {e}")
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        logger.debug(f"global aggregation: failed {e}")
                     success_count_comp_global = success_count_comp_local
                     total_comp_global = total_comp_local
                     success_rate_comp_global = success_rate_comp_local
                     pass_prompt_count_global = pass_prompt_count_local
                     num_prompts_global = jnp.array(float(num_prompts_local))
                     pass_at_k_global = pass_at_k_local
-                print("Exiting outer try for global scalar aggregation")
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    logger.debug("global aggregation: end")
             except Exception as e:
-                print(f"Exception in outermost try block for local/global metrics: {e}")
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    logger.debug(f"metrics aggregation error: {e}")
                 # Safe fallbacks
                 success_count_comp_local = jnp.array(0)
                 total_comp_local = jnp.array(1)
@@ -1312,9 +1361,6 @@ class GRPOTrainer(Trainer):
             # Safe best-effort logging; never crash the step
             pass
 
-        # i don't care who you are and what you do.
-        # ill find you and ill gather u...
-                
         # Ensure all arrays are moved to host memory (unsharded) before returning
         # This is necessary because the training step expects empty_sharding on inputs
         # and arrays from generation/computation may have device sharding that conflicts

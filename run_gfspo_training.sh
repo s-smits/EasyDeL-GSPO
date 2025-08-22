@@ -26,13 +26,13 @@ echo "Using dataset: ${DATASET}"
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
-  --total_batch_size 1 \
-  --gfpo_group_size 4 \
+  --total_batch_size 2 \
+  --gfpo_group_size 8 \
   --gfpo_retain_count 4 \
-  --rollout_chunk_size 1 \
+  --rollout_chunk_size 8 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 2048 \
+  --max_completion_length 3584 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
