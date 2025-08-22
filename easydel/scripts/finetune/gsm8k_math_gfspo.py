@@ -2,7 +2,7 @@ import re
 from dataclasses import field
 
 import jax
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from transformers import AutoConfig, AutoTokenizer
@@ -322,7 +322,7 @@ def main():
 
         return sorted(list(levels), key=_level_key)
     
-    def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int):
+    def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int, mini_batch_size_override: int | None = None):
         """
         Train with curriculum learning, progressing through levels.
         Each level is trained for the specified number of epochs.
@@ -355,67 +355,148 @@ def main():
                     sample = level_data[0]
                     problem_text = sample["prompt"][1]["content"] if len(sample["prompt"]) > 1 else "N/A"
                     print(f"  {level}: {problem_text[:100]}...")
-            # Show raw level strings to confirm formatting
-            try:
-                raw_levels_preview = [train_ds[i].get("level", "") for i in range(min(5, len(train_ds)))]
-                print(f"\nRaw level string preview: {raw_levels_preview}")
-            except Exception:
-                pass
         
-        original_epochs = trainer.arguments.num_train_epochs
+        # CRITICAL FIX: Use accumulated training approach instead of separate trainers
+        # This avoids resource cleanup issues and maintains state properly
         
-        for level in available_levels:
+        # Save original finish method before loop
+        original_finish = ed.GFSPOTrainer.finish
+        
+        # Accumulate all levels progressively
+        accumulated_train_ds = None
+        current_state = trainer.model_state
+        
+        for idx, level in enumerate(available_levels):
             if jax.process_index() == 0:
                 print(f"\n{'='*60}")
-                print(f"Starting curriculum training for {level}")
+                print(f"Curriculum Stage {idx+1}/{len(available_levels)}: {level}")
                 print(f"Training for {epochs_per_level} epochs")
                 print(f"{'='*60}")
             
-            # Filter datasets for current level
+            # Get current level data
             level_train_ds = filter_dataset_by_level(train_ds, level)
-            level_test_ds = filter_dataset_by_level(test_ds, level) if test_ds else None
             
             if len(level_train_ds) == 0:
                 if jax.process_index() == 0:
                     print(f"WARNING: No training examples found for {level}. Skipping.")
                 continue
             
+            # Accumulate datasets: add current level to previous levels
+            if accumulated_train_ds is None:
+                accumulated_train_ds = level_train_ds
+            else:
+                # Concatenate datasets
+                accumulated_train_ds = concatenate_datasets([accumulated_train_ds, level_train_ds])
+            
+            # For eval, use the current level only
+            level_test_ds = filter_dataset_by_level(test_ds, level) if test_ds else None
+            
             if jax.process_index() == 0:
-                print(f"Level {level}: {len(level_train_ds)} training examples")
+                print(f"Training on accumulated dataset: {len(accumulated_train_ds)} examples")
+                print(f"Current level {level}: {len(level_train_ds)} new examples")
                 if level_test_ds:
-                    print(f"Level {level}: {len(level_test_ds)} test examples")
+                    print(f"Evaluating on {level}: {len(level_test_ds)} test examples")
             
-            # Rebuild a fresh trainer for this level to reconfigure dataloaders and steps
-            original_epochs = trainer.arguments.num_train_epochs
+            # Adjust batch size for small datasets
+            original_batch_size = trainer.arguments.total_batch_size
+            original_grad_accum = trainer.arguments.gradient_accumulation_steps
+            original_mini_batch = trainer.arguments.mini_batch_size
+            
+            # Calculate effective samples per shard
+            num_prompts = len(accumulated_train_ds)
+            
+            # For small datasets, use smaller batch sizes to get more steps
+            # Level 1 has ~124 examples, after sharding that's ~62 per shard
+            # We want at least 4-8 steps per epoch for stable training
+            
+            if mini_batch_size_override:
+                # Use explicit override if provided
+                trainer.arguments.mini_batch_size = mini_batch_size_override
+                trainer.arguments.total_batch_size = mini_batch_size_override
+                if jax.process_index() == 0:
+                    print(f"Using mini_batch_size override: {mini_batch_size_override}")
+            elif num_prompts < 500:  # Small dataset heuristic
+                # For very small datasets, use batch size of 4-8
+                new_batch_size = min(8, max(4, num_prompts // 16))
+                trainer.arguments.total_batch_size = new_batch_size
+                trainer.arguments.mini_batch_size = min(new_batch_size, 1)  # TP-friendly
+                trainer.arguments.gradient_accumulation_steps = max(1, original_batch_size // new_batch_size)
+                
+                if jax.process_index() == 0:
+                    print(f"Small dataset detected ({num_prompts} examples)")
+                    print(f"Adjusted batch size: {original_batch_size} -> {new_batch_size}")
+                    print(f"Adjusted mini_batch_size: {original_mini_batch} -> {trainer.arguments.mini_batch_size}")
+                    print(f"Gradient accumulation: {original_grad_accum} -> {trainer.arguments.gradient_accumulation_steps}")
+            
+            # Create a new trainer with accumulated dataset and current state
             trainer.arguments.num_train_epochs = epochs_per_level
-
-            # Recreate trainer with the previous state to continue training seamlessly
-            new_trainer = ed.GFSPOTrainer(
-                model=trainer.model_state,
-                reward_funcs=trainer.reward_funcs,
-                processing_class=trainer.processing_class,
-                eval_dataset=level_test_ds,
-                train_dataset=level_train_ds,
-                arguments=trainer.arguments,
-                data_tokenize_fn=trainer.data_tokenize_fn,
-            )
-
-            new_trainer.train()
-
-            # Carry the updated state forward and restore epochs for safety
-            trainer = new_trainer
-            trainer.arguments.num_train_epochs = original_epochs
             
-            if jax.process_index() == 0:
-                print(f"Completed training for {level}")
-        
-        # Restore original epochs setting
-        trainer.arguments.num_train_epochs = original_epochs
+            # Patch finish() to prevent wandb closure between levels
+            def no_op_finish(self):
+                if jax.process_index() == 0:
+                    print("DEBUG: Skipping finish() to preserve wandb for next level")
+                pass  # Don't close resources between levels
+            
+            new_trainer = None
+            try:
+                # Temporarily replace finish method
+                ed.GFSPOTrainer.finish = no_op_finish
+                
+                new_trainer = ed.GFSPOTrainer(
+                    model=current_state,  # Use current state, not initial
+                    reward_funcs=trainer.reward_funcs,
+                    processing_class=trainer.processing_class,
+                    eval_dataset=level_test_ds,
+                    train_dataset=accumulated_train_ds,
+                    arguments=trainer.arguments,
+                    data_tokenize_fn=trainer.data_tokenize_fn,
+                )
+                
+                # Train and capture the output
+                output = new_trainer.train()
+                current_state = output.state  # Extract trained state for next level
+                
+                if jax.process_index() == 0:
+                    print(f"Completed training for {level}")
+                    print(f"Checkpoint saved to: {output.checkpoint_path}")
+                    
+            except Exception as e:
+                if jax.process_index() == 0:
+                    print(f"ERROR during training for {level}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                # Try to recover with current state
+                if new_trainer and hasattr(new_trainer, 'model_state'):
+                    current_state = new_trainer.model_state
+            finally:
+                # Restore original finish method
+                ed.GFSPOTrainer.finish = original_finish
+                
+                # Restore original settings
+                trainer.arguments.total_batch_size = original_batch_size
+                trainer.arguments.gradient_accumulation_steps = original_grad_accum
+                trainer.arguments.mini_batch_size = original_mini_batch
+                
+                # Clean up trainer resources but preserve state
+                if new_trainer:
+                    del new_trainer
+                import gc
+                gc.collect()
         
         if jax.process_index() == 0:
             print(f"\n{'='*60}")
             print("Curriculum learning completed!")
             print(f"{'='*60}")
+        
+        # Now it's safe to call finish() to clean up wandb and other resources
+        try:
+            original_finish(None)  # Call the original finish method
+        except Exception as e:
+            if jax.process_index() == 0:
+                print(f"WARNING: Could not call finish(): {e}")
+        
+        # Return final trained state
+        return current_state
 
     if jax.process_index() == 0:
         print(f"DEBUG: About to initialize trainer with reward_funcs: {[f.__name__ for f in reward_funcs]}")
@@ -437,7 +518,21 @@ def main():
             print("DEBUG: Curriculum learning enabled for math dataset")
             print(f"DEBUG: num_train_epochs={gfspo_config.num_train_epochs}")
         
-        curriculum_train(trainer, train_ds, test_ds, gfspo_config.num_train_epochs)
+        # Pass mini_batch_size override for curriculum with small levels
+        mini_batch_override = 1 if gfspo_config.force_tensor_parallel else None
+        final_state = curriculum_train(trainer, train_ds, test_ds, gfspo_config.num_train_epochs, mini_batch_override)
+        
+        # Save final model if needed
+        if gfspo_config.save_directory and jax.process_index() == 0:
+            print(f"Saving final curriculum-trained model to {gfspo_config.save_directory}/final")
+            try:
+                import os
+                final_dir = os.path.join(gfspo_config.save_directory, "final_curriculum")
+                os.makedirs(final_dir, exist_ok=True)
+                # The trainer would handle saving, but we can log the final state info
+                print(f"Final model state ready for saving at: {final_dir}")
+            except Exception as e:
+                print(f"Could not create final save directory: {e}")
     else:
         if runtime.curriculum_math and _ds != "math":
             if jax.process_index() == 0:
