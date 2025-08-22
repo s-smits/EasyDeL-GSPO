@@ -32,7 +32,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --rollout_chunk_size 2 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 3584 \
+  --max_completion_length 6144 \
   --learning_rate 2e-6 \
   --dataset_use_rate 10 \
   --force_tensor_parallel 4 \
@@ -51,5 +51,3 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --advantage_epsilon 1e-6
 
 echo "Training completed!"
-
-

@@ -98,7 +98,7 @@ def create_training_args(
         max_sequence_length=sequence_length,
         track_memory=True,
         use_wandb=False,
-        weight_distribution_log_steps=5,
+        weight_distribution_log_steps=1,
         learning_rate=learning_rate,
         do_last_save=DO_LAST_SAVE,
         save_steps=SAVE_STEPS,

@@ -52,9 +52,31 @@ class GFSPOConfig(GSPOConfig):
     )
 
     gfpo_adaptive: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": "Enable adaptive k based on per-prompt difficulty (average reward).",
+        },
+    )
+
+    # Adaptive difficulty controls (Algorithm 2)
+    gfpo_adaptive_warmup_steps: int = field(
+        default=10,
+        metadata={
+            "help": "Warmup steps retaining k=8 for all prompts before using percentiles.",
+        },
+    )
+
+    gfpo_adaptive_k_map: dict[str, int] = field(
+        default_factory=lambda: {"very_hard": 8, "hard": 8, "medium": 6, "easy": 4},
+        metadata={
+            "help": "Difficulty bucket to k mapping used after warmup (Algorithm 2).",
+        },
+    )
+
+    gfpo_adaptive_history_max: int = field(
+        default=20000,
+        metadata={
+            "help": "Maximum number of historical per-prompt difficulties to retain in the rolling buffer.",
         },
     )
 
@@ -69,6 +91,18 @@ class GFSPOConfig(GSPOConfig):
             if getattr(self, "importance_sampling_level", None) is None:
                 self.importance_sampling_level = "sequence"
                 print("DEBUG: Set default importance_sampling_level=sequence")
+            # Validate adaptive fields
+            if not isinstance(self.gfpo_adaptive_warmup_steps, int) or self.gfpo_adaptive_warmup_steps < 0:
+                raise ValueError("gfpo_adaptive_warmup_steps must be a non-negative integer")
+            if not isinstance(self.gfpo_adaptive_k_map, dict):
+                raise ValueError("gfpo_adaptive_k_map must be a dict")
+            for _k in ["very_hard", "hard", "medium", "easy"]:
+                if _k not in self.gfpo_adaptive_k_map:
+                    raise ValueError(f"gfpo_adaptive_k_map missing key: {_k}")
+                if int(self.gfpo_adaptive_k_map[_k]) < 1:
+                    raise ValueError(f"gfpo_adaptive_k_map[{_k}] must be >= 1")
+            if int(self.gfpo_adaptive_history_max) < 100:
+                raise ValueError("gfpo_adaptive_history_max must be >= 100")
             
             print("DEBUG: GFSPOConfig post_init completed successfully")
         except Exception as e:

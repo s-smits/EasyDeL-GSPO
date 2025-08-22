@@ -95,7 +95,7 @@ def main():
         max_completion_length=max_completion_length,
         learning_rate=1e-6,
         learning_rate_end=6e-7,
-        log_steps=5,
+        log_steps=1,
         report_steps=10,
         progress_bar_type="json",
         num_train_epochs=3,

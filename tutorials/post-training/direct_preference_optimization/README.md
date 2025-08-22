@@ -226,7 +226,7 @@ def main():
         weight_distribution_log_steps=100, # Log weight distributions every 100 steps.
         warmup_steps=0, # Number of warmup steps for the scheduler.
         report_steps=10, # Report to WandB (if enabled) every 10 steps.
-        log_steps=5, # Log metrics to console/logger every 5 steps.
+        log_steps=1, # Log metrics to console/logger every 5 steps.
         progress_bar_type="json", # Type of progress bar display.
         # save_directory="gs://your-bucket/dpo-qwen-mix" # Optional: Specify a GCS bucket for saving.
     )

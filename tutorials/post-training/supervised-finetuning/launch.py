@@ -156,7 +156,7 @@ def main():
         weight_distribution_log_steps=100,  # Log weight distribution histograms every 100 steps (for debugging).
         warmup_steps=0,  # Number of warmup steps for the learning rate scheduler.
         report_steps=10,  # Log metrics to WandB (if enabled) every 10 steps.
-        log_steps=5,  # Log metrics to console/logger every 5 steps.
+        log_steps=1,  # Log metrics to console/logger every 5 steps.
         progress_bar_type="json",  # Type of progress bar display.
         packing=False,  # you can also try packing.
         # save_directory="gs://your-bucket/sft-checkpoints"

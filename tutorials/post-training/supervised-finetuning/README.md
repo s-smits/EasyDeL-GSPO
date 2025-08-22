@@ -192,7 +192,7 @@ def main():
         save_optimizer_state=False,
         clip_grad=1.0,
         report_steps=10,
-        log_steps=5,
+        log_steps=1,
     )
 
     # --- Trainer Setup and Execution ---

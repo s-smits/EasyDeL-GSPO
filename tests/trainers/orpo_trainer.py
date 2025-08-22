@@ -45,7 +45,7 @@ def main():
         max_length=600,
         num_train_epochs=1,
         total_batch_size=1,
-        log_steps=5,
+        log_steps=1,
         do_last_save=True,
         use_wandb=False,
         shuffle_train_dataset=False,

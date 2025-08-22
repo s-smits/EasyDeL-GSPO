@@ -84,10 +84,10 @@ class GRPOTrainer(Trainer):
             try:
                 if jax.process_index() == 0:
                     print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
-                    logger.info(
-                        f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
-                        f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
-                    )
+            logger.info(
+                f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
+                f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
+            )
             except Exception as e:
                 print(f"DEBUG: Failed to log mesh configuration: {e}")
                 logger.warning(f"Failed to log mesh configuration: {e}")
@@ -470,17 +470,17 @@ class GRPOTrainer(Trainer):
             derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
             self.arguments.rollouts_per_step = int(derived_rps)
             try:
-                if jax.process_index() == 0:
-                    per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
-                    # Use effective dp for expected global actually running this process configuration
-                    global_total = int(effective_dp) * per_process
+            if jax.process_index() == 0:
+                per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+                # Use effective dp for expected global actually running this process configuration
+                global_total = int(effective_dp) * per_process
                     print(f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}")
-                    logger.info(
-                        f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                        f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
-                        f"per_process_rollouts={per_process}, "
-                        f"batch_size={self.arguments.total_batch_size}"
-                    )
+                logger.info(
+                    f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
+                    f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
+                    f"per_process_rollouts={per_process}, "
+                    f"batch_size={self.arguments.total_batch_size}"
+                )
             except Exception as e:
                 print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")
@@ -673,7 +673,7 @@ class GRPOTrainer(Trainer):
         """
         # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-
+        
         original_size = len(prompts)
         seen_prompts: set[str] = set()
         first_occurrence_indices: list[int] = []
@@ -683,11 +683,11 @@ class GRPOTrainer(Trainer):
             if prompt not in seen_prompts:
                 seen_prompts.add(prompt)
                 first_occurrence_indices.append(i)
-
+        
         # Fast path: nothing to change
         if len(first_occurrence_indices) == original_size:
             return batch
-
+        
         # Build a replacement index list that keeps shape == original_size
         # Keep first occurrences, replace duplicates by cycling over unique ones
         if not first_occurrence_indices:
@@ -733,7 +733,7 @@ class GRPOTrainer(Trainer):
                 )
             except Exception:
                 pass
-
+        
         # Rebuild batch in-place using final_indices, preserving leading dimension
         rebuilt_batch: dict[str, tp.Any] = {}
         for key, values in batch.items():
@@ -758,7 +758,7 @@ class GRPOTrainer(Trainer):
                         rebuilt_batch[key] = values
             else:
                 rebuilt_batch[key] = values
-
+        
         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
             try:
                 pid = rebuilt_batch.get("input_ids", None)
@@ -774,7 +774,7 @@ class GRPOTrainer(Trainer):
                 logger.debug(f"dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
             except Exception:
                 pass
-
+        
         return rebuilt_batch
 
     def _preprocess_batch_input(
@@ -1065,8 +1065,8 @@ class GRPOTrainer(Trainer):
                 except Exception as _e:
                     try:
                         logger.debug(f"example/local logging failed: {_e}")
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
             if is_conversational:
@@ -1243,16 +1243,16 @@ class GRPOTrainer(Trainer):
             lengths_local_mean = jnp.array(0.0)
         
         # Global length aggregation removed; rely on local stats only
-        try:
-            mesh_shape = getattr(self.model.mesh, "shape", {})
-            mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-            tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-        except Exception:
+            try:
+                mesh_shape = getattr(self.model.mesh, "shape", {})
+                mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+            except Exception:
             mesh_dp = 1
-            tp_size = 1
-        try:
+                tp_size = 1
+            try:
             proc_count = jax.process_count()
-        except Exception:
+            except Exception:
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         # Robust termination ratios: detect EOS presence directly in completions.
@@ -1341,34 +1341,34 @@ class GRPOTrainer(Trainer):
             else:
                 processed_metrics_dict[key] = value
         def _record_per_reward_metrics(_rewards_per_func):
-            for i, reward_func in enumerate(self.reward_funcs):
-                _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
+        for i, reward_func in enumerate(self.reward_funcs):
+            _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
+            try:
                 try:
-                    try:
-                        if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
-                            global_vals = global_rewards_per_func[:, i]
-                            global_mean = jnp.mean(global_vals)
-                            global_std = jnp.std(global_vals)
-                        else:
+                    if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
+                        global_vals = global_rewards_per_func[:, i]
+                        global_mean = jnp.mean(global_vals)
+                        global_std = jnp.std(global_vals)
+                    else:
                             global_mean = jnp.mean(_rewards_per_func[:, i])
                             global_std = jnp.std(_rewards_per_func[:, i])
-                    except Exception:
+                except Exception:
                         global_mean = jnp.mean(_rewards_per_func[:, i])
                         global_std = jnp.std(_rewards_per_func[:, i])
-
-                    metrics_dict[f"rewards/{_name}/mean"] = global_mean
-                    metrics_dict[f"rewards/{_name}/std"] = global_std
-                    metrics_dict[_name] = global_mean
-
+                
+                metrics_dict[f"rewards/{_name}/mean"] = global_mean
+                metrics_dict[f"rewards/{_name}/std"] = global_std
+                metrics_dict[_name] = global_mean
+                
                     local_mean = jnp.mean(_rewards_per_func[:, i])
-                    per_prompt_means = jnp.mean(
+                per_prompt_means = jnp.mean(
                         _rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
-                    )
-                    local_mean_of_prompt_means = jnp.mean(per_prompt_means)
-                    metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
-                    metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
-                    metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
-                except Exception:
+                )
+                local_mean_of_prompt_means = jnp.mean(per_prompt_means)
+                metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
+                metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
+                metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
+            except Exception:
                     metrics_dict[_name] = jnp.mean(_rewards_per_func[:, i])
 
         _record_per_reward_metrics(rewards_per_func)
@@ -1503,7 +1503,7 @@ class GRPOTrainer(Trainer):
         except Exception:
             # Safe best-effort logging; never crash the step
             pass
-
+                
         # Ensure all arrays are moved to host memory (unsharded) before returning
         # This is necessary because the training step expects empty_sharding on inputs
         # and arrays from generation/computation may have device sharding that conflicts
