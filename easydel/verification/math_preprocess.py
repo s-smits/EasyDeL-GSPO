@@ -18,16 +18,48 @@ Preprocess the MATH-lighteval dataset to parquet format
 import argparse
 import json
 import os
+import shutil
 import datasets
 
-from easydel.utils.hdfs_io import copy, makedirs
-from easydel.utils.reward_score import last_boxed_only_string, remove_boxed
+def _last_boxed_only_string(string: str) -> str | None:
+    idx = string.rfind("\\boxed")
+    if "\\boxed " in string:
+        return "\\boxed " + string.split("\\boxed ")[-1].split("$")[0]
+    if idx < 0:
+        idx = string.rfind("\\fbox")
+        if idx < 0:
+            return None
+    i = idx
+    right_brace_idx = None
+    num_left_braces_open = 0
+    while i < len(string):
+        if string[i] == "{":
+            num_left_braces_open += 1
+        if string[i] == "}":
+            num_left_braces_open -= 1
+            if num_left_braces_open == 0:
+                right_brace_idx = i
+                break
+        i += 1
+    return None if right_brace_idx is None else string[idx : right_brace_idx + 1]
+
+
+def _remove_boxed(s: str) -> str:
+    if "\\boxed " in s:
+        left = "\\boxed "
+        if s.startswith(left):
+            return s[len(left):]
+        return s
+    left = "\\boxed{"
+    if s.startswith(left) and s.endswith("}"):
+        return s[len(left):-1]
+    return s
 
 
 def extract_solution(solution_str):
-    boxed = last_boxed_only_string(solution_str)
+    boxed = _last_boxed_only_string(solution_str)
     if boxed:
-        return remove_boxed(boxed)
+        return _remove_boxed(boxed)
     return solution_str
 
 
@@ -73,6 +105,7 @@ if __name__ == "__main__":
     test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
     local_dir = os.path.expanduser(args.local_dir)
+    os.makedirs(local_dir, exist_ok=True)
     train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
     # Save one example as JSON for reference
@@ -83,5 +116,8 @@ if __name__ == "__main__":
     with open(os.path.join(local_dir, "test_example.json"), "w") as f:
         json.dump(example, f, indent=2)
     if args.hdfs_dir is not None:
-        makedirs(args.hdfs_dir, exist_ok=True)
-        copy(src=local_dir, dst=args.hdfs_dir)
+        os.makedirs(args.hdfs_dir, exist_ok=True)
+        if os.path.isdir(local_dir):
+            shutil.copytree(local_dir, args.hdfs_dir, dirs_exist_ok=True)
+        else:
+            shutil.copy2(local_dir, args.hdfs_dir)
