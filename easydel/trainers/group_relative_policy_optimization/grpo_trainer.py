@@ -183,8 +183,14 @@ class GRPOTrainer(Trainer):
         # Validation not needed anymore, mesh config is handled in _get_or_create_mesh
 
         # Initialize WandB artifacts after the run is initialized by BaseTrainer
+        # Guard table logging behind a dedicated flag to avoid memory overhead by default
         log_table = None
-        if self.arguments.use_wandb and self.arguments.can_log_metrics and wandb is not None:
+        if (
+            getattr(self.arguments, "log_generations_table", False)
+            and self.arguments.use_wandb
+            and self.arguments.can_log_metrics
+            and wandb is not None
+        ):
             try:
                 log_table = wandb.Table(columns=["generations", "took", "length", "step"])
             except Exception:
@@ -703,10 +709,10 @@ class GRPOTrainer(Trainer):
         for pos, fill_idx in zip(duplicate_positions, fills, strict=False):
             final_indices[pos] = fill_idx
 
-        if jax.process_index() == 0:
+        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
             try:
-                print(
-                    f"[DEBUG] dedup: original={original_size} unique={len(first_occurrence_indices)} "
+                logger.debug(
+                    f"dedup: original={original_size} unique={len(first_occurrence_indices)} "
                     f"replaced={len(duplicate_positions)} head_replacements={final_indices[:8]}"
                 )
             except Exception:
@@ -737,7 +743,7 @@ class GRPOTrainer(Trainer):
             else:
                 rebuilt_batch[key] = values
 
-        if jax.process_index() == 0:
+        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
             try:
                 pid = rebuilt_batch.get("input_ids", None)
                 ans = rebuilt_batch.get("answer", None)
@@ -749,7 +755,7 @@ class GRPOTrainer(Trainer):
                         ans_head = ans[:2]
                 except Exception:
                     ans_head = None
-                print(f"[DEBUG] dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
+                logger.debug(f"dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
             except Exception:
                 pass
 
@@ -783,7 +789,7 @@ class GRPOTrainer(Trainer):
                 except Exception as _e:
                     # If conversion fails, keep previous tensors (better than crashing)
                     pass
-                if jax.process_index() == 0:
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     try:
                         _pid_len = int(prompt_ids.shape[0])
                     except Exception:
@@ -792,7 +798,7 @@ class GRPOTrainer(Trainer):
                         _ans_len = len(batch.get("answer", [])) if batch.get("answer", None) is not None else -1
                     except Exception:
                         _ans_len = -1
-                    print(f"[DEBUG] preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
+                    logger.debug(f"preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
@@ -1193,42 +1199,38 @@ class GRPOTrainer(Trainer):
                 processed_metrics_dict[key] = float(value)
             else:
                 processed_metrics_dict[key] = value
-        # Add per-reward metrics following TRL's approach for better clarity
-        for i, reward_func in enumerate(self.reward_funcs):
-            _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
-            try:
-                # TRL-style per-reward-function metrics with global aggregation
+        def _record_per_reward_metrics(_rewards_per_func):
+            for i, reward_func in enumerate(self.reward_funcs):
+                _name = getattr(reward_func, "__name__", None) or reward_func.__class__.__name__
                 try:
-                    if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
-                        global_vals = global_rewards_per_func[:, i]
-                        global_mean = jnp.mean(global_vals)
-                        global_std = jnp.std(global_vals)
-                    else:
-                        global_mean = jnp.mean(rewards_per_func[:, i])
-                        global_std = jnp.std(rewards_per_func[:, i])
+                    try:
+                        if jax.process_count() > 1 and 'global_rewards_per_func' in locals():
+                            global_vals = global_rewards_per_func[:, i]
+                            global_mean = jnp.mean(global_vals)
+                            global_std = jnp.std(global_vals)
+                        else:
+                            global_mean = jnp.mean(_rewards_per_func[:, i])
+                            global_std = jnp.std(_rewards_per_func[:, i])
+                    except Exception:
+                        global_mean = jnp.mean(_rewards_per_func[:, i])
+                        global_std = jnp.std(_rewards_per_func[:, i])
+
+                    metrics_dict[f"rewards/{_name}/mean"] = global_mean
+                    metrics_dict[f"rewards/{_name}/std"] = global_std
+                    metrics_dict[_name] = global_mean
+
+                    local_mean = jnp.mean(_rewards_per_func[:, i])
+                    per_prompt_means = jnp.mean(
+                        _rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
+                    )
+                    local_mean_of_prompt_means = jnp.mean(per_prompt_means)
+                    metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
+                    metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
+                    metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
                 except Exception:
-                    global_mean = jnp.mean(rewards_per_func[:, i])
-                    global_std = jnp.std(rewards_per_func[:, i])
-                
-                # TRL-compatible reward function metrics
-                metrics_dict[f"rewards/{_name}/mean"] = global_mean
-                metrics_dict[f"rewards/{_name}/std"] = global_std
-                # Flat names for dashboards (e.g., "gsm8k/accuracy", "math/format_rate")
-                # Duplicate for convenience alongside the TRL-style names
-                metrics_dict[_name] = global_mean
-                
-                # Additional granularity metrics for debugging
-                local_mean = jnp.mean(rewards_per_func[:, i])
-                per_prompt_means = jnp.mean(
-                    rewards_per_func[:, i].reshape(-1, self.num_generations), axis=1
-                )
-                local_mean_of_prompt_means = jnp.mean(per_prompt_means)
-                metrics_dict[f"rewards/{_name}/mean_per_completion_local"] = local_mean
-                metrics_dict[f"rewards/{_name}/mean_per_prompt_local"] = local_mean_of_prompt_means
-                metrics_dict[f"rewards/{_name}/mean_per_completion_global"] = global_mean
-            except Exception:
-                # Fallback for backward compatibility
-                metrics_dict[_name] = jnp.mean(rewards_per_func[:, i])
+                    metrics_dict[_name] = jnp.mean(_rewards_per_func[:, i])
+
+        _record_per_reward_metrics(rewards_per_func)
         if self.log_table is not None and jax.process_index() == 0:
             try:
                 cur_step = int(jax.device_get(state.step))

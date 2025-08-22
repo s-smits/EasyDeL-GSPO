@@ -166,17 +166,6 @@ class GRPOConfig(TrainingArguments):
         """Post initialization to set dependent parameters."""
         self.max_sequence_length = self.max_prompt_length + self.max_completion_length
         
-        # No aliasing: prefer explicit num_return_sequences and rollout_chunk_size
-
-        # If enabled, only tune rollout chunking for minimal generation memory
-        if self.microbatch_one_completion:
-            # Generate one completion per chunk to bound peak KV/logit memory
-            self.rollout_chunk_size = 1
-
-        # Note: rollouts_per_step will be handled by the trainer after mesh planning
-        # We can't properly compute num_return_sequences here because we don't know 
-        # the final DP size until after adaptive mesh planning
-
         # Validate tensor parallelism configuration
         if self.force_tensor_parallel is not None:
             if self.force_tensor_parallel < 1:

@@ -49,92 +49,9 @@ def _extract_text(comp) -> str:
         return comp
     return ""
 
-def get_extraction_config(problem_type: str = "math", is_gold: bool = True):
-    """Get Math-Verify extraction config based on problem type, following their task patterns.
-    
-    Args:
-        problem_type: Type of mathematical problem ("gsm8k", "math", "math_hard", "aime", "amc", "multiple_choice")
-        is_gold: Whether this is for gold answer (simpler) or prediction (more flexible)
-        
-    Returns:
-        List of extraction configs following Math-Verify's task-specific patterns
-    """
-    if not (LatexExtractionConfig and ExprExtractionConfig):
-        return None
-    
-    # Following Math-Verify's tasks.py patterns
-    if problem_type.lower() == "gsm8k":
-        # GSM8K: simple numeric answers
-        return [ExprExtractionConfig(try_extract_without_anchor=True)]
-    
-    elif problem_type.lower() in ["math_hard", "math_500"]:
-        if is_gold:
-            # Gold answers often in boxed format - prioritize boxed extraction
-            return [LatexExtractionConfig(boxed_match_priority=0)]
-        else:
-            # Predictions can be LaTeX or plain expressions
-            return [LatexExtractionConfig(), ExprExtractionConfig()]
-    
-    elif problem_type.lower() in ["aime24", "aime"]:
-        # AIME problems typically have LaTeX format
-        return [LatexExtractionConfig(try_extract_without_anchor=True)]
-    
-    elif problem_type.lower() in ["amc23", "amc"]:
-        if is_gold:
-            return [ExprExtractionConfig()]
-        else:
-            return [LatexExtractionConfig(), ExprExtractionConfig()]
-    
-    else:
-        # Default: flexible extraction for general math problems
-        if is_gold:
-            return [ExprExtractionConfig()]
-        else:
-            return [LatexExtractionConfig(), ExprExtractionConfig()]
+# Removed math_metric cache and indirection to adhere strictly to parse+verify + boxed fallback.
 
-
-def get_verification_params(problem_type: str = "math") -> dict:
-    """Get Math-Verify verification parameters optimized for problem type.
-    
-    Args:
-        problem_type: Type of mathematical problem
-        
-    Returns:
-        Dictionary of verification parameters for Math-Verify's verify() function
-    """
-    base_params = {
-        "float_rounding": 6,
-        "numeric_precision": 15,
-        "strict": True,
-        "allow_set_relation_comp": False,
-        "timeout_seconds": 5,
-        "raise_on_error": False
-    }
-    
-    # Problem-specific adjustments
-    if problem_type.lower() == "gsm8k":
-        # GSM8K: shorter timeout, allow looser comparison for units
-        base_params.update({
-            "timeout_seconds": 3,
-            "strict": False,  # Allow variable matching for word problems
-        })
-    
-    elif problem_type.lower() in ["math_hard", "math_500"]:
-        # Complex math: higher precision, longer timeout
-        base_params.update({
-            "numeric_precision": 20,
-            "timeout_seconds": 8,
-            "allow_set_relation_comp": True,  # Allow set-relation comparisons
-        })
-    
-    elif problem_type.lower() in ["aime", "amc"]:
-        # Competition problems: strict matching
-        base_params.update({
-            "strict": True,
-            "timeout_seconds": 6,
-        })
-    
-    return base_params
+# Removed task-specific extraction/verification param helpers to keep evaluation strict and simple.
 
 
 def _remove_boxed(s: str) -> str:
@@ -284,22 +201,17 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             times = (c_len + g_len - 1) // g_len
             gts = (gts * times)[:c_len]
 
-    # Configure Math-Verify extraction following their patterns
+    # Configure Math-Verify extraction (fixed, strict) and parameters
     use_mv = callable(parse) and callable(verify)  # type: ignore
-    
-    # Get task-specific extraction configs (auto-detect or use provided type)
     problem_type = kwargs.get("problem_type", "math")
-    if use_mv:
-        gold_extraction_config = get_extraction_config(problem_type, is_gold=True)
-        pred_extraction_config = get_extraction_config(problem_type, is_gold=False)
-        verification_params = get_verification_params(problem_type)
-        # Allow kwargs to override default params
-        for key, value in verification_params.items():
-            if key not in kwargs:
-                kwargs[key] = value
-    else:
-        gold_extraction_config = None
-        pred_extraction_config = None
+    gold_extraction_config = [ExprExtractionConfig()] if use_mv else None
+    pred_extraction_config = [LatexExtractionConfig(), ExprExtractionConfig()] if use_mv else None
+    # Strict defaults; allow kwargs to override explicitly if passed by caller
+    kwargs.setdefault("float_rounding", 6)
+    kwargs.setdefault("numeric_precision", 15)
+    kwargs.setdefault("strict", True)
+    kwargs.setdefault("allow_set_relation_comp", False)
+    kwargs.setdefault("timeout_seconds", 5)
 
     out: List[float] = []
     
@@ -337,16 +249,8 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         if use_mv:
             try:
                 # Parse using Math-Verify's structured approach
-                gold_parsed = parse(
-                    gt, 
-                    extraction_config=gold_extraction_config,
-                    raise_on_error=False  # Follow Math-Verify's error handling pattern
-                )
-                ans_parsed = parse(
-                    ans_text, 
-                    extraction_config=pred_extraction_config,
-                    raise_on_error=False
-                )
+                gold_parsed = parse(gt, extraction_config=gold_extraction_config, raise_on_error=False)
+                ans_parsed = parse(ans_text, extraction_config=pred_extraction_config, raise_on_error=False)
                 
                 # Track parser information following Math-Verify patterns
                 if gold_parsed and ans_parsed:
@@ -357,17 +261,23 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                     elif any("expr" in str(type(p)).lower() for p in ans_parsed):
                         detail["parser_used"] += "_expr"
                     
-                    # Use Math-Verify's verify function with task-specific parameters
-                    is_correct = verify(
-                        gold=gold_parsed[0] if gold_parsed else gt,
-                        target=ans_parsed[0] if ans_parsed else ans_text,
-                        float_rounding=kwargs.get("float_rounding", 6),
-                        numeric_precision=kwargs.get("numeric_precision", 15),
-                        strict=kwargs.get("strict", True),
-                        allow_set_relation_comp=kwargs.get("allow_set_relation_comp", False),
-                        timeout_seconds=kwargs.get("timeout_seconds", 5),
-                        raise_on_error=False  # Follow Math-Verify's error handling
-                    )
+                    # Prefer math_metric when available (simpler, robust), fallback to verify loop
+                    # Try all parsed candidates from the end (often contains the final answer)
+                    is_correct = False
+                    try_candidates = list(reversed(ans_parsed))
+                    for cand in try_candidates:
+                        is_correct = verify(
+                            gold=gold_parsed[0] if gold_parsed else gt,
+                            target=cand,
+                            float_rounding=kwargs.get("float_rounding", 6),
+                            numeric_precision=kwargs.get("numeric_precision", 15),
+                            strict=kwargs.get("strict", True),
+                            allow_set_relation_comp=kwargs.get("allow_set_relation_comp", False),
+                            timeout_seconds=kwargs.get("timeout_seconds", 5),
+                            raise_on_error=False
+                        )
+                        if is_correct:
+                            break
                     
                     detail["verification_method"] = "math_verify"
                     detail["score"] = 1.0 if is_correct else 0.0
