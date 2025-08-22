@@ -87,6 +87,79 @@ def _last_boxed_only_string(string: str) -> str | None:
     return None if right_brace_idx is None else string[idx : right_brace_idx + 1]
 
 
+def _fix_fracs(string: str) -> str:
+    substrs = string.split("\\frac")
+    new_str = substrs[0]
+    if len(substrs) > 1:
+        substrs = substrs[1:]
+        for substr in substrs:
+            new_str += "\\frac"
+            if substr and substr[0] == "{":
+                new_str += substr
+            else:
+                try:
+                    assert len(substr) >= 2
+                except Exception:
+                    return string
+                a = substr[0]
+                b = substr[1]
+                if b != "{":
+                    if len(substr) > 2:
+                        post_substr = substr[2:]
+                        new_str += "{" + a + "}{" + b + "}" + post_substr
+                    else:
+                        new_str += "{" + a + "}{" + b + "}"
+                else:
+                    if len(substr) > 2:
+                        post_substr = substr[2:]
+                        new_str += "{" + a + "}" + b + post_substr
+                    else:
+                        new_str += "{" + a + "}" + b
+    return new_str
+
+
+def _fix_a_slash_b(string: str) -> str:
+    if len(string.split("/")) != 2:
+        return string
+    a = string.split("/")[0]
+    b = string.split("/")[1]
+    try:
+        a_int = int(a)
+        b_int = int(b)
+        if string == f"{a_int}/{b_int}":
+            return f"\\frac{{{a_int}}}{{{b_int}}}"
+        return string
+    except Exception:
+        return string
+
+
+def _remove_right_units(string: str) -> str:
+    # "\\text{ " only ever occurs (at least in the val set) when describing units
+    if "\\text{ " in string:
+        splits = string.split("\\text{ ")
+        if len(splits) == 2:
+            return splits[0]
+    return string
+
+
+def _fix_sqrt(string: str) -> str:
+    if "\\sqrt" not in string:
+        return string
+    splits = string.split("\\sqrt")
+    new_string = splits[0]
+    for split in splits[1:]:
+        if not split:
+            new_string += "\\sqrt"
+            continue
+        if split[0] != "{":
+            a = split[0]
+            new_substr = "\\sqrt{" + a + "}" + split[1:]
+        else:
+            new_substr = "\\sqrt" + split
+        new_string += new_substr
+    return new_string
+
+
 def _strip_string(string: str) -> str:
     s = string.replace("\n", "")
     s = s.replace("\\!", "")
@@ -95,12 +168,10 @@ def _strip_string(string: str) -> str:
     s = s.replace("\\left", "").replace("\\right", "")
     s = s.replace("^{\\circ}", "").replace("^\\circ", "")
     s = s.replace("\\$", "")
-    # Remove units: split at "\\text{ " and keep left part if present
-    if "\\text{ " in s:
-        parts = s.split("\\text{ ")
-        if len(parts) == 2:
-            s = parts[0]
-    s = s.replace("\\%", "").replace("\%", "")
+    # Remove units consistently
+    s = _remove_right_units(s)
+    # Normalize percent signs
+    s = s.replace("\\%", "").replace("%", "")
     s = s.replace(" .", " 0.").replace("{.", "{0.")
     if s and s[0] == ".":
         s = "0" + s
@@ -108,15 +179,12 @@ def _strip_string(string: str) -> str:
         s = s.split("=")[1]
     # remove spaces
     s = s.replace(" ", "")
-    # normalize simple a/b forms that are pure integers
-    if s.count("/") == 1:
-        a, b = s.split("/")
-        try:
-            ai, bi = int(a), int(b)
-            if s == f"{ai}/{bi}":
-                s = f"\\frac{{{ai}}}{{{bi}}}"
-        except Exception:
-            pass
+    # fix sqrt3 -> sqrt{3}
+    s = _fix_sqrt(s)
+    # fix \frac1b and similar
+    s = _fix_fracs(s)
+    # normalize simple a/b integer forms
+    s = _fix_a_slash_b(s)
     if s == "0.5":
         s = "\\frac{1}{2}"
     return s
