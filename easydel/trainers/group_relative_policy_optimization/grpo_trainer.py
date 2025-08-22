@@ -470,17 +470,19 @@ class GRPOTrainer(Trainer):
             derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
             self.arguments.rollouts_per_step = int(derived_rps)
             try:
-            if jax.process_index() == 0:
-                per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
-                # Use effective dp for expected global actually running this process configuration
-                global_total = int(effective_dp) * per_process
-                    print(f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}")
-                logger.info(
-                    f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                    f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
-                    f"per_process_rollouts={per_process}, "
-                    f"batch_size={self.arguments.total_batch_size}"
-                )
+                if jax.process_index() == 0:
+                    per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+                    # Use effective dp for expected global actually running this process configuration
+                    global_total = int(effective_dp) * per_process
+                    print(
+                        f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}"
+                    )
+                    logger.info(
+                        f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
+                        f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
+                        f"per_process_rollouts={per_process}, "
+                        f"batch_size={self.arguments.total_batch_size}"
+                    )
             except Exception as e:
                 print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")

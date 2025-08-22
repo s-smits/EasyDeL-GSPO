@@ -120,7 +120,7 @@ def main():
     )
 
     SYSTEM_PROMPT_MATH = (
-        "You are a competitive math solver. Solve the problem step by step and output the final answer within \\boxed{}."
+        "You are a math expert. You are given a question and you need to solve it step by step and output the final answer within \\boxed{}."
     )
 
     # Dataset builders
