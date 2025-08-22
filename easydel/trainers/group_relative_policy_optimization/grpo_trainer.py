@@ -1068,8 +1068,8 @@ class GRPOTrainer(Trainer):
                 except Exception as _e:
                     try:
                         logger.debug(f"example/local logging failed: {_e}")
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
             if is_conversational:
@@ -1246,16 +1246,16 @@ class GRPOTrainer(Trainer):
             lengths_local_mean = jnp.array(0.0)
         
         # Global length aggregation removed; rely on local stats only
-            try:
-                mesh_shape = getattr(self.model.mesh, "shape", {})
-                mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
-                tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
-            except Exception:
+        try:
+            mesh_shape = getattr(self.model.mesh, "shape", {})
+            mesh_dp = mesh_shape.get("dp", 1) if hasattr(mesh_shape, "get") else 1
+            tp_size = mesh_shape.get("tp", 1) if hasattr(mesh_shape, "get") else 1
+        except Exception:
             mesh_dp = 1
-                tp_size = 1
-            try:
+            tp_size = 1
+        try:
             proc_count = jax.process_count()
-            except Exception:
+        except Exception:
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         # Robust termination ratios: detect EOS presence directly in completions.
