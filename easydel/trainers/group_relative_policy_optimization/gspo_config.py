@@ -48,18 +48,24 @@ class GSPOConfig(GRPOConfig):
 
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
-        super().__post_init__()
-        
-        # Validate GSPO-specific parameters
-        if self.importance_sampling_level not in ["token", "sequence"]:
-            raise ValueError(
-                f"importance_sampling_level must be 'token' or 'sequence', got {self.importance_sampling_level}"
-            )
-        
-        if self.epsilon <= 0:
-            raise ValueError(f"epsilon must be positive, got {self.epsilon}")
-        
-        # Note: advantage_epsilon is inherited from GRPOConfig and is critical for GSPO
-        # as sequence-level rewards often have low variance within groups
+        try:
+            print(f"DEBUG: GSPOConfig post_init - importance_sampling_level={self.importance_sampling_level}, epsilon={self.epsilon}")
+            super().__post_init__()
+            
+            # Validate GSPO-specific parameters
+            if self.importance_sampling_level not in ["token", "sequence"]:
+                raise ValueError(
+                    f"importance_sampling_level must be 'token' or 'sequence', got {self.importance_sampling_level}"
+                )
+            
+            if self.epsilon <= 0:
+                raise ValueError(f"epsilon must be positive, got {self.epsilon}")
+            
+            # Note: advantage_epsilon is inherited from GRPOConfig and is critical for GSPO
+            # as sequence-level rewards often have low variance within groups
+            print("DEBUG: GSPOConfig post_init completed successfully")
+        except Exception as e:
+            print(f"DEBUG: GSPOConfig post_init failed: {e}")
+            raise
 
     __hash__ = hash_fn 

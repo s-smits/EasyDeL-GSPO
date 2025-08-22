@@ -341,11 +341,16 @@ class GRPOTrainer(Trainer):
                     shard_index = max(0, int(_jax.process_index()))
                 # Only shard when more than one process
                 if int(shard_count) > 1:
-                    dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
-                    if _jax.process_index() == 0:
-                        logger.info(
-                            f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
-                        )
+                    try:
+                        dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
+                        if _jax.process_index() == 0:
+                            print(f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}")
+                            logger.info(
+                                f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
+                            )
+                    except Exception as e:
+                        print(f"DEBUG: Dataset sharding failed for {dataset_name}: {e}")
+                        logger.warning(f"Dataset sharding failed for {dataset_name}: {e}")
         except Exception as _e:
             # Best-effort: continue without sharding if anything goes wrong
             if jax.process_index() == 0:
@@ -464,16 +469,21 @@ class GRPOTrainer(Trainer):
         if getattr(self.arguments, 'rollouts_per_step', None) is None:
             derived_rps = int(total_dp) * int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
             self.arguments.rollouts_per_step = int(derived_rps)
-            if jax.process_index() == 0:
-                per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
-                # Use effective dp for expected global actually running this process configuration
-                global_total = int(effective_dp) * per_process
-                logger.info(
-                    f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                    f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
-                    f"per_process_rollouts={per_process}, "
-                    f"batch_size={self.arguments.total_batch_size}"
-                )
+            try:
+                if jax.process_index() == 0:
+                    per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
+                    # Use effective dp for expected global actually running this process configuration
+                    global_total = int(effective_dp) * per_process
+                    print(f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}")
+                    logger.info(
+                        f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
+                        f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
+                        f"per_process_rollouts={per_process}, "
+                        f"batch_size={self.arguments.total_batch_size}"
+                    )
+            except Exception as e:
+                print(f"DEBUG: Failed to log rollout configuration: {e}")
+                logger.warning(f"Failed to log rollout configuration: {e}")
 
         # Use adaptive sharding based on batch size and tensor parallelism
         from .adaptive_mesh import get_adaptive_sharding_spec
@@ -1003,28 +1013,38 @@ class GRPOTrainer(Trainer):
                         # Detect dataset type based on configured reward functions
                         rf_names = [getattr(rf, "__name__", "") for rf in self.reward_funcs]
                         rf_mods = [getattr(rf, "__module__", "") for rf in self.reward_funcs]
+                        print(f"DEBUG: Reward function names: {rf_names}")
+                        print(f"DEBUG: Reward function modules: {rf_mods}")
                         is_math = any((name.startswith("math/") or mod.endswith("math_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
                         is_gsm8k = any((name.startswith("gsm8k/") or mod.endswith("gsm8k_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
+                        print(f"DEBUG: Detected dataset type - is_math={is_math}, is_gsm8k={is_gsm8k}")
 
                         if is_math:
                             try:
+                                print("DEBUG: Using math reward extraction")
                                 from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
                                 _b = _mv_last_boxed(example_pred_text)
                                 example_pred_value = _mv_remove_boxed(_b) if _b else example_pred_text
-                            except Exception:
+                                print(f"DEBUG: Math extraction result: '{example_pred_value}'")
+                            except Exception as e:
+                                print(f"DEBUG: Math extraction failed: {e}")
                                 pass
                         elif is_gsm8k:
                             try:
+                                print("DEBUG: Using GSM8K reward extraction")
                                 import re as _re
                                 from easydel.verification.gsm8k_reward import _extract_answer_from_xml as _gx_extract_xml, _normalize_number_text as _gx_norm  # type: ignore
                                 _ans = _gx_extract_xml(example_pred_text) or example_pred_text
                                 _norm = _gx_norm(_ans)
                                 _nums = _re.findall(r"-?\d+\.?\d*", _norm)
                                 example_pred_value = _nums[-1] if _nums else _ans
-                            except Exception:
+                                print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
+                            except Exception as e:
+                                print(f"DEBUG: GSM8K extraction failed: {e}")
                                 pass
                         # else: keep example_pred_value as raw text
-                    except Exception:
+                    except Exception as e:
+                        print(f"DEBUG: Exception in reward-specific extraction: {e}")
                         pass
 
                     # Clip long prompt/output for readability
@@ -1035,9 +1055,13 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             return str(s)
 
-                    logger.info(
-                        f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
-                    )
+                    try:
+                        print(f"DEBUG: About to log example - prompt_len={len(str(example_prompt))}, gt='{example_gt}', pred_len={len(str(example_pred_value))}")
+                        logger.info(
+                            f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
+                        )
+                    except Exception as e:
+                        print(f"DEBUG: Failed to log example: {e}")
                 except Exception as _e:
                     try:
                         logger.debug(f"example/local logging failed: {_e}")
@@ -1164,7 +1188,9 @@ class GRPOTrainer(Trainer):
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
                 try:
+                    print(f"DEBUG: Starting global aggregation - process_count={jax.process_count()}")
                     if jax.process_count() > 1:
+                        print("DEBUG: Multi-process global aggregation")
                         _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
                         _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
                         _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
@@ -1173,7 +1199,9 @@ class GRPOTrainer(Trainer):
                         total_comp_global = jnp.sum(_tc)
                         pass_prompt_count_global = jnp.sum(_pp)
                         num_prompts_global = jnp.sum(_np)
+                        print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
                     else:
+                        print("DEBUG: Single-process fallback for global metrics")
                         success_count_comp_global = success_count_comp_local
                         total_comp_global = total_comp_local
                         pass_prompt_count_global = pass_prompt_count_local
@@ -1181,6 +1209,7 @@ class GRPOTrainer(Trainer):
                     success_rate_comp_global = success_count_comp_global / jnp.maximum(1, total_comp_global)
                     pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
                 except Exception as e:
+                    print(f"DEBUG: Global aggregation failed: {e}")
                     if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                         logger.debug(f"global aggregation: failed {e}")
                     success_count_comp_global = success_count_comp_local

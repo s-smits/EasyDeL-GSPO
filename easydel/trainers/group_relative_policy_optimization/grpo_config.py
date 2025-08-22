@@ -164,26 +164,35 @@ class GRPOConfig(TrainingArguments):
 
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
-        self.max_sequence_length = self.max_prompt_length + self.max_completion_length
-        
-        # Validate tensor parallelism configuration
-        if self.force_tensor_parallel is not None:
-            if self.force_tensor_parallel < 1:
-                raise ValueError("force_tensor_parallel must be >= 1")
+        try:
+            print(f"DEBUG: GRPOConfig post_init - max_prompt_length={self.max_prompt_length}, max_completion_length={self.max_completion_length}")
+            self.max_sequence_length = self.max_prompt_length + self.max_completion_length
             
-            if self.mini_batch_size is not None and self.mini_batch_size < 1:
-                raise ValueError("mini_batch_size must be >= 1 when specified")
-            
-            # Default mini_batch_size to 1 if not specified with TP
-            if self.mini_batch_size is None:
-                self.mini_batch_size = 1
+            # Validate tensor parallelism configuration
+            if self.force_tensor_parallel is not None:
+                print(f"DEBUG: Validating force_tensor_parallel={self.force_tensor_parallel}")
+                if self.force_tensor_parallel < 1:
+                    raise ValueError("force_tensor_parallel must be >= 1")
+                
+                if self.mini_batch_size is not None and self.mini_batch_size < 1:
+                    raise ValueError("mini_batch_size must be >= 1 when specified")
+                
+                # Default mini_batch_size to 1 if not specified with TP
+                if self.mini_batch_size is None:
+                    self.mini_batch_size = 1
+                    print(f"DEBUG: Set default mini_batch_size=1 for TP")
 
-        # Validate data parallelism configuration
-        if self.force_data_parallel is not None:
-            if self.force_data_parallel < 1:
-                raise ValueError("force_data_parallel must be >= 1")
+            # Validate data parallelism configuration
+            if self.force_data_parallel is not None:
+                print(f"DEBUG: Validating force_data_parallel={self.force_data_parallel}")
+                if self.force_data_parallel < 1:
+                    raise ValueError("force_data_parallel must be >= 1")
 
-        if hasattr(super(), "__post_init__"):
-            super().__post_init__()
+            if hasattr(super(), "__post_init__"):
+                super().__post_init__()
+            print("DEBUG: GRPOConfig post_init completed successfully")
+        except Exception as e:
+            print(f"DEBUG: GRPOConfig post_init failed: {e}")
+            raise
 
     __hash__ = hash_fn
