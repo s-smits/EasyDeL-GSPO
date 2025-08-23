@@ -76,24 +76,7 @@ class GRPOTrainer(Trainer):
         assert isinstance(arguments, GRPOConfig), f"arguments type must be `GRPOConfig` but got {type(arguments)}"
         assert processing_class is not None, "processing_class must be specified to tokenize a DPO dataset."
 
-        # Configure adaptive mesh if parallelism is forced
-        from .adaptive_mesh import configure_adaptive_mesh_inplace
-        self._mesh_plan = configure_adaptive_mesh_inplace(arguments) if (
-            arguments.force_tensor_parallel or arguments.force_data_parallel
-        ) else None
-
-        if self._mesh_plan:
-            try:
-                if jax.process_index() == 0:
-                    print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
-                logger.info(
-                    f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
-                    f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
-                )
-            except Exception as e:
-                print(f"DEBUG: Failed to log mesh configuration: {e}")
-                logger.warning(f"Failed to log mesh configuration: {e}")
-        
+        # Reverted: avoid configuring adaptive mesh before model.to_state() to prevent TPU device mismatch
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
         self.processing_class = processing_class
@@ -200,7 +183,7 @@ class GRPOTrainer(Trainer):
             and wandb is not None
         ):
             try:
-                log_table = wandb.Table(columns=["generations", "took", "length", "step"])
+                log_table = wandb.Table(columns=["generations", "took", "length", "reward", "step"])
             except Exception:
                 log_table = None
         else:
@@ -1448,6 +1431,7 @@ class GRPOTrainer(Trainer):
             # Extract with fallbacks
             local_completion_ids = _to_local_host(completion_ids, "completion_ids")
             local_comp_lens = _to_local_host(completion_lengths_per_seq, "lengths")
+            local_rewards = _to_local_host(rewards, "rewards")
 
             # Decode with error handling
             try:
@@ -1468,15 +1452,20 @@ class GRPOTrainer(Trainer):
                 individual_lengths = []
 
             try:
-                n_items = min(len(decoded_text), len(individual_lengths))
+                n_items = min(
+                    len(decoded_text),
+                    len(individual_lengths) if hasattr(individual_lengths, "__len__") else 0,
+                    len(local_rewards) if hasattr(local_rewards, "__len__") else 0,
+                )
                 for i in range(n_items):
                     try:
                         length_val = float(individual_lengths[i]) if i < len(individual_lengths) else 0.0
-                        self.log_table.add_data(decoded_text[i], generation_time, length_val, cur_step)
+                        reward_val = float(local_rewards[i]) if i < len(local_rewards) else 0.0
+                        self.log_table.add_data(decoded_text[i], generation_time, length_val, reward_val, cur_step)
                     except Exception:
                         # Add placeholder
                         try:
-                            self.log_table.add_data("[decode failed]", generation_time, 0.0, cur_step)
+                            self.log_table.add_data("[decode failed]", generation_time, 0.0, 0.0, cur_step)
                         except Exception:
                             pass
             except Exception:

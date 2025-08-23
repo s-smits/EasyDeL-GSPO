@@ -204,7 +204,7 @@ Loading Custom Models
         config_kwargs=EasyDeLBaseConfigDict(
             freq_max_position_embeddings=16384,
             mask_max_position_embeddings=16384,
-            attn_mechanism=AttentionMechanisms.PAGED_ATTENTION,
+            attn_mechanism=AttentionMechanisms.RAGGED_PAGE_ATTENTION,
             attn_dtype=jnp.bfloat16,
         ),
     )
@@ -220,8 +220,6 @@ Loading Custom Models
         max_num_seqs=64,
         hbm_utilization=0.9,
         page_size=128,
-        use_combined_forward=False,
-        use_aot_forward=True,
         esurge_name="custom-model",
     )
 
