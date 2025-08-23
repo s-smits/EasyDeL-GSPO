@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Preprocess the MATH-lighteval dataset to parquet format
+Preprocess the MATH-lighteval dataset to parquet format (default subset, train split only)
 """
 
 import argparse
@@ -70,50 +70,35 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # 'lighteval/MATH' is no longer available on huggingface.
-    # Use mirror repo: DigitalLearningGmbH/MATH-lighteval
+    # Use only the 'default' subset and 'train' split
     data_source = "DigitalLearningGmbH/MATH-lighteval"
-    print(f"Loading the {data_source} dataset from huggingface...", flush=True)
-    dataset = datasets.load_dataset(data_source, trust_remote_code=True)
-
-    train_dataset = dataset["train"]
-    test_dataset = dataset["test"]
+    print(f"Loading the {data_source} dataset (default subset, train split) from huggingface...", flush=True)
+    dataset = datasets.load_dataset(data_source, "default", split="train", trust_remote_code=True)
 
     instruction_following = "Let's think step by step and output the final answer within \\boxed{}."
 
-    # add a row to each data item that represents a unique id
-    def make_map_fn(split):
-        def process_fn(example, idx):
-            question = example.pop("problem")
+    def process_fn(example, idx):
+        question = example.pop("problem")
+        question = question + " " + instruction_following
+        answer = example.pop("solution")
+        solution = extract_solution(answer)
+        data = {
+            "data_source": data_source,
+            "prompt": [{"role": "user", "content": question}],
+            "ability": "math",
+            "reward_model": {"style": "rule", "ground_truth": solution},
+            "extra_info": {"split": "train", "index": idx},
+        }
+        return data
 
-            question = question + " " + instruction_following
-
-            answer = example.pop("solution")
-            solution = extract_solution(answer)
-            data = {
-                "data_source": data_source,
-                "prompt": [{"role": "user", "content": question}],
-                "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": solution},
-                "extra_info": {"split": split, "index": idx},
-            }
-            return data
-
-        return process_fn
-
-    train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
-    test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
+    dataset = dataset.map(function=process_fn, with_indices=True)
 
     local_dir = os.path.expanduser(args.local_dir)
     os.makedirs(local_dir, exist_ok=True)
-    train_dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
-    test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
+    dataset.to_parquet(os.path.join(local_dir, "train.parquet"))
     # Save one example as JSON for reference
-    example = train_dataset[0]
+    example = dataset[0]
     with open(os.path.join(local_dir, "train_example.json"), "w") as f:
-        json.dump(example, f, indent=2)
-    example = test_dataset[0]
-    with open(os.path.join(local_dir, "test_example.json"), "w") as f:
         json.dump(example, f, indent=2)
     if args.hdfs_dir is not None:
         os.makedirs(args.hdfs_dir, exist_ok=True)
