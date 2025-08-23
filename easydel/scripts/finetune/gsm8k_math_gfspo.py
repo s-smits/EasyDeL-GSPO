@@ -81,13 +81,20 @@ def main():
         print("Training Arguments\n----------------------")
         print(gfspo_config)
         print("----------------------")
-        safe_call(
-            "print runtime + env dataset",
-            lambda: (
-                print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}"),
+        # Extra debugging for dataset selection/rates
+        def _dbg_print():
+            try:
+                print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}")
+                print(f"DEBUG: runtime.dataset_use_rate (raw)={runtime.dataset_use_rate}")
+                try:
+                    pct = int(float(runtime.dataset_use_rate) * 100)
+                except Exception:
+                    pct = None
+                print(f"DEBUG: computed dataset percentage={pct}%")
                 print(f"DEBUG: ENV DATASET={os.environ.get('DATASET')}")
-            ),
-        )
+            except Exception as _:
+                ...
+        safe_call("print runtime + env dataset", _dbg_print)
 
     tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
     tokenizer.padding_side = "left"
@@ -168,8 +175,14 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
-        ds_test = load_dataset("openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+        rate = float(runtime.dataset_use_rate)
+        pct = int(rate * 100)
+        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
+        test_split = "test" if pct >= 100 else f"test[:{pct}%]"
+        if jax.process_index() == 0:
+            print(f"DEBUG: GSM8K split strings -> train='{train_split}', test='{test_split}'")
+        ds_train = load_dataset("openai/gsm8k", "main", split=train_split)
+        ds_test = load_dataset("openai/gsm8k", "main", split=test_split)
 
         def map_ex(x):
             return {
@@ -184,9 +197,17 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        rate = float(runtime.dataset_use_rate)
+        pct = int(rate * 100)
+        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
+        if jax.process_index() == 0:
+            print(f"DEBUG: MATH split string -> train='{train_split}' (rate={rate}, pct={pct}%)")
+        ds_train = load_dataset("qwedsacf/competition_math", split=train_split)
         try:
-            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+            test_split = "test" if pct >= 100 else f"test[:{pct}%]"
+            if jax.process_index() == 0:
+                print(f"DEBUG: MATH split string -> test='{test_split}'")
+            ds_test = load_dataset("qwedsacf/competition_math", split=test_split)
         except ValueError as e:
             # Fallback for datasets that only provide a 'train' split
             if "Unknown split" in str(e) or "test" in str(e):
@@ -213,6 +234,12 @@ def main():
                 "type": x.get("type", ""),
             }
 
+        # Log resulting lengths for verification
+        if jax.process_index() == 0:
+            try:
+                print(f"DEBUG: Loaded competition_math sizes -> train={len(ds_train)}, test={len(ds_test) if ds_test else 'N/A'}")
+            except Exception:
+                ...
         return ds_train.map(map_ex), ds_test.map(map_ex)
 
     # Normalize dataset names to support *-ds suffix
