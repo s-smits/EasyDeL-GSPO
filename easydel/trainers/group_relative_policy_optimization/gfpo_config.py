@@ -32,10 +32,10 @@ def enforce_gfpo_constraints(cfg: "GFPOConfig") -> None:
                 f"gfpo_retain_count must be >= 2 (k=1 makes standardized advantages undefined), got {cfg.gfpo_retain_count}"
             )
 
-        # Relationship constraints
-        if int(cfg.gfpo_group_size) < int(cfg.gfpo_retain_count):
+        # Relationship constraints (enforce strict filtering: k < G)
+        if int(cfg.gfpo_group_size) <= int(cfg.gfpo_retain_count):
             raise ValueError(
-                f"gfpo_group_size ({cfg.gfpo_group_size}) must be >= gfpo_retain_count ({cfg.gfpo_retain_count})"
+                f"gfpo_group_size ({cfg.gfpo_group_size}) must be > gfpo_retain_count ({cfg.gfpo_retain_count}) to avoid trivial full retention"
             )
 
         # Supported metrics
@@ -96,10 +96,26 @@ class GFPOConfig(GRPOConfig):
         },
     )
 
+    # Token-efficiency stability
+    gfpo_efficiency_epsilon: float = field(
+        default=1e-8,
+        metadata={
+            "help": "Small epsilon for token efficiency division to avoid divide-by-zero.",
+        },
+    )
+
     gfpo_adaptive: bool = field(
         default=True,
         metadata={
             "help": "Enable adaptive k based on per-prompt difficulty (average reward).",
+        },
+    )
+
+    # Adaptive strategy selection
+    gfpo_adaptive_method: str = field(
+        default="rolling",
+        metadata={
+            "help": "Adaptive difficulty method: 'rolling' (history percentiles) or 'ema' (running percentiles).",
         },
     )
 
@@ -125,6 +141,14 @@ class GFPOConfig(GRPOConfig):
         },
     )
 
+    # EMA config (used when gfpo_adaptive_method == 'ema')
+    gfpo_adaptive_ema_alpha: float = field(
+        default=0.1,
+        metadata={
+            "help": "Smoothing factor for EMA of running percentiles (0 < alpha <= 1).",
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to validate GFPO config and set generation count."""
         try:
@@ -134,6 +158,10 @@ class GFPOConfig(GRPOConfig):
             # Validate adaptive fields
             if not isinstance(self.gfpo_adaptive_warmup_steps, int) or self.gfpo_adaptive_warmup_steps < 0:
                 raise ValueError("gfpo_adaptive_warmup_steps must be a non-negative integer")
+            if self.gfpo_adaptive_method not in ["rolling", "ema"]:
+                raise ValueError(
+                    f"gfpo_adaptive_method must be 'rolling' or 'ema', got {self.gfpo_adaptive_method}"
+                )
             if not isinstance(self.gfpo_adaptive_k_map, dict):
                 raise ValueError("gfpo_adaptive_k_map must be a dict")
             for _k in ["very_hard", "hard", "medium", "easy"]:
@@ -143,6 +171,8 @@ class GFPOConfig(GRPOConfig):
                     raise ValueError(f"gfpo_adaptive_k_map[{_k}] must be >= 1")
             if int(self.gfpo_adaptive_history_max) < 100:
                 raise ValueError("gfpo_adaptive_history_max must be >= 100")
+            if not (0 < float(self.gfpo_adaptive_ema_alpha) <= 1.0):
+                raise ValueError("gfpo_adaptive_ema_alpha must be in (0, 1]")
             print("DEBUG: GFPOConfig post_init completed successfully")
         except Exception as e:
             print(f"DEBUG: GFPOConfig post_init failed: {e}")

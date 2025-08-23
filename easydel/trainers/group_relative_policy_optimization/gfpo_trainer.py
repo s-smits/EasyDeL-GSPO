@@ -100,7 +100,9 @@ class GFPOTrainer(GRPOTrainer):
             ascending = True
         else:
             # token_efficiency = reward / length; Higher is better
-            scores = rewards_grouped / jnp.maximum(lengths_grouped, 1e-8)
+            scores = rewards_grouped / jnp.maximum(
+                lengths_grouped, jnp.float32(getattr(self.arguments, "gfpo_efficiency_epsilon", 1e-8))
+            )
             ascending = False
 
         # Determine k per prompt (fixed or adaptive per Algorithm 2)
@@ -125,24 +127,18 @@ class GFPOTrainer(GRPOTrainer):
                     # Warmup: retain k=8 for all prompts (very_hard bucket)
                     k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)))
                 else:
-                    # Initialize CPU-side rolling buffer
-                    if not hasattr(self, '_difficulty_buffer'):
-                        self._difficulty_buffer = []  # python list on CPU
-                    # Append current batch avg rewards to buffer (CPU)
-                    self._difficulty_buffer.extend([float(x) for x in jax.device_get(avg_rewards)])
-                    # Trim to max history
-                    max_hist = int(getattr(self.arguments, 'gfpo_adaptive_history_max', 20000))
-                    if len(self._difficulty_buffer) > max_hist:
-                        self._difficulty_buffer = self._difficulty_buffer[-max_hist:]
-
-                    # Require minimal history to compute stable percentiles
-                    if len(self._difficulty_buffer) < 40:
-                        k_per_prompt = jnp.full(
-                            (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8))
+                    method = getattr(self.arguments, 'gfpo_adaptive_method', 'rolling')
+                    if method == 'ema':
+                        # EMA running percentiles based on current batch
+                        current_percentiles = jnp.percentile(
+                            avg_rewards, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32)
                         )
-                    else:
-                        hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
-                        q25, q50, q75 = jnp.percentile(hist, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32))
+                        alpha = jnp.float32(getattr(self.arguments, 'gfpo_adaptive_ema_alpha', 0.1))
+                        if not hasattr(self, '_running_percentiles'):
+                            self._running_percentiles = current_percentiles
+                        else:
+                            self._running_percentiles = (1.0 - alpha) * self._running_percentiles + alpha * current_percentiles
+                        q25, q50, q75 = self._running_percentiles
                         km = self.arguments.gfpo_adaptive_k_map
                         k_vh = int(km.get('very_hard', 8))
                         k_h = int(km.get('hard', 8))
@@ -155,6 +151,37 @@ class GFPOTrainer(GRPOTrainer):
                                 jnp.where(avg_rewards < q75, k_m, k_e),
                             ),
                         )
+                    else:
+                        # Initialize CPU-side rolling buffer
+                        if not hasattr(self, '_difficulty_buffer'):
+                            self._difficulty_buffer = []  # python list on CPU
+                        # Append current batch avg rewards to buffer (CPU)
+                        self._difficulty_buffer.extend([float(x) for x in jax.device_get(avg_rewards)])
+                        # Trim to max history
+                        max_hist = int(getattr(self.arguments, 'gfpo_adaptive_history_max', 20000))
+                        if len(self._difficulty_buffer) > max_hist:
+                            self._difficulty_buffer = self._difficulty_buffer[-max_hist:]
+
+                        # Require minimal history to compute stable percentiles
+                        if len(self._difficulty_buffer) < 40:
+                            k_per_prompt = jnp.full(
+                                (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8))
+                            )
+                        else:
+                            hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
+                            q25, q50, q75 = jnp.percentile(hist, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32))
+                            km = self.arguments.gfpo_adaptive_k_map
+                            k_vh = int(km.get('very_hard', 8))
+                            k_h = int(km.get('hard', 8))
+                            k_m = int(km.get('medium', 6))
+                            k_e = int(km.get('easy', 4))
+                            k_per_prompt = jnp.where(
+                                avg_rewards < q25, k_vh,
+                                jnp.where(
+                                    avg_rewards < q50, k_h,
+                                    jnp.where(avg_rewards < q75, k_m, k_e),
+                                ),
+                            )
             except Exception:
                 # Safe fallback: fixed k
                 k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count))
