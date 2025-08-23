@@ -83,6 +83,16 @@ class GFPOTrainer(GRPOTrainer):
         configured metric. Returns mask with shape (B, G) of floats in {0.0, 1.0}.
         """
         bsz, gsize = rewards_grouped.shape
+        # Debug and sanity checks for configuration propagation
+        try:
+            configured_G = int(getattr(self.arguments, "gfpo_group_size", gsize))
+            if configured_G != gsize and jax.process_index() == 0:
+                print(
+                    f"DEBUG: GFPO group size mismatch: configured_G={configured_G} but grouped G={gsize}; "
+                    f"will use grouped size for masking."
+                )
+        except Exception:
+            ...
         # Compute scores per configured metric
         if self.arguments.gfpo_metric == "length":
             # Lower is better
@@ -127,7 +137,9 @@ class GFPOTrainer(GRPOTrainer):
 
                     # Require minimal history to compute stable percentiles
                     if len(self._difficulty_buffer) < 40:
-                        k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)))
+                        k_per_prompt = jnp.full(
+                            (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8))
+                        )
                     else:
                         hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
                         q25, q50, q75 = jnp.percentile(hist, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32))
@@ -147,15 +159,58 @@ class GFPOTrainer(GRPOTrainer):
                 # Safe fallback: fixed k
                 k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count))
 
+        # Clamp k to valid range [1, G] and warn if clamped to G (which would yield retention 1.0)
+        try:
+            k_per_prompt = jnp.clip(k_per_prompt, 1, int(gsize))
+            if jax.process_index() == 0:
+                # If any k equals G, log a hint
+                try:
+                    num_full = int(jnp.sum(k_per_prompt == int(gsize)))
+                except Exception:
+                    num_full = -1
+                if num_full and num_full > 0:
+                    print(
+                        f"DEBUG: GFPO k clipped to G for {num_full}/{int(bsz)} prompts (G={int(gsize)}). "
+                        "Consider lowering gfpo_retain_count or adjusting adaptive k-map."
+                    )
+        except Exception:
+            ...
+
         # Build mask per prompt by argsort
         mask = jnp.zeros((bsz, gsize), dtype=jnp.float32)
         for i in range(bsz):
-            k_i = int(k_per_prompt[i])
+            # Guard against pathological k values
+            try:
+                k_i = int(k_per_prompt[i])
+            except Exception:
+                k_i = int(self.arguments.gfpo_retain_count)
+            k_i = max(1, min(int(gsize), k_i))
             if ascending:
                 chosen = jnp.argsort(scores[i])[:k_i]
             else:
                 chosen = jnp.argsort(-scores[i])[:k_i]
             mask = mask.at[i, chosen].set(1.0)
+
+        # Debug: show mask sum versus expected retained count
+        try:
+            if jax.process_index() == 0:
+                try:
+                    expected_sum = float(jnp.sum(k_per_prompt))
+                except Exception:
+                    expected_sum = -1.0
+                try:
+                    mask_sum = float(jnp.sum(mask))
+                except Exception:
+                    mask_sum = -1.0
+                print(
+                    f"DEBUG: GFPO filter params: G={int(gsize)}, k_fixed={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
+                    f"adaptive={bool(getattr(self.arguments,'gfpo_adaptive', False))}"
+                )
+                print(
+                    f"DEBUG: GFPO mask sum={mask_sum}, expected_sum≈{expected_sum} (bsz={int(bsz)})"
+                )
+        except Exception:
+            ...
         return mask
 
     def _preprocess_batch_input(

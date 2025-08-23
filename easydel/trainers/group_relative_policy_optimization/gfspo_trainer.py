@@ -108,6 +108,21 @@ class GFSPOTrainer(GSPOTrainer):
 
         # Reuse GFPO filter helper directly
         mask = GFPOTrainer._filter_mask_per_prompt(self, rewards_grouped, lengths_grouped)
+        # Extra debug guardrails to ensure filtering is effective
+        try:
+            if jax.process_index() == 0:
+                try:
+                    mask_sum = float(jnp.sum(mask))
+                    expected_min = float(num_prompts * min(int(self.arguments.gfpo_retain_count), G))
+                    expected_max = float(num_prompts * G)
+                except Exception:
+                    mask_sum, expected_min, expected_max = -1.0, -1.0, -1.0
+                print(
+                    f"DEBUG: GFSPO grouping check: B={num_prompts}, G={G}, k={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
+                    f"mask_sum={mask_sum}, expected_min≈{expected_min}, expected_max={expected_max}"
+                )
+        except Exception:
+            ...
 
         selected_count = jnp.maximum(jnp.sum(mask, axis=1, keepdims=True), 1.0)
         selected_sum = jnp.sum(rewards_grouped * mask, axis=1, keepdims=True)
