@@ -46,7 +46,10 @@ class RunTimeConfig:
         default="math-ds",
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
-    dataset_use_rate: int = field(default=100)
+    dataset_use_rate: float = field(
+        default=1.0,
+        metadata={"help": "Fraction of dataset to use (1.0 = 100%, 0.1 = 10%)"}
+    )
     curriculum_math: bool = field(
         default=False,
         metadata={"help": "Enable curriculum learning for math datasets, progressing from Level 1 to Level 5"},
@@ -165,8 +168,8 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{runtime.dataset_use_rate}%]")
-        ds_test = load_dataset("openai/gsm8k", "main", split=f"test[:{runtime.dataset_use_rate}%]")
+        ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_test = load_dataset("openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
 
         def map_ex(x):
             return {
@@ -181,9 +184,9 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{runtime.dataset_use_rate}%]")
+        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
         try:
-            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{runtime.dataset_use_rate}%]")
+            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
         except ValueError as e:
             # Fallback for datasets that only provide a 'train' split
             if "Unknown split" in str(e) or "test" in str(e):
