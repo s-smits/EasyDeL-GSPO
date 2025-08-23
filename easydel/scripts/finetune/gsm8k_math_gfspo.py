@@ -164,7 +164,20 @@ def main():
         "You are a math expert. You are given a question and you need to solve it step by step and output the final answer within \\boxed{}."
     )
 
-    # Dataset builders
+    # Helpers and Dataset builders
+    def _normalize_pct(rate_value) -> int:
+        """Normalize dataset_use_rate to an integer percent in [1, 100].
+        Accepts either fraction (<=1.0) or percent (>1.0)."""
+        try:
+            r = float(rate_value)
+        except Exception:
+            r = 1.0
+        pct = int(round(r * 100)) if r <= 1.0 else int(round(r))
+        if pct < 1:
+            pct = 1
+        if pct > 100:
+            pct = 100
+        return pct
     def build_gsm8k():
         def extract_hash_answer(text: str):
             if not isinstance(text, str):
@@ -176,7 +189,7 @@ def main():
             return text.split("####")[-1].strip()
 
         rate = float(runtime.dataset_use_rate)
-        pct = int(rate * 100)
+        pct = _normalize_pct(rate)
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
         test_split = "test" if pct >= 100 else f"test[:{pct}%]"
         if jax.process_index() == 0:
@@ -198,7 +211,7 @@ def main():
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
         rate = float(runtime.dataset_use_rate)
-        pct = int(rate * 100)
+        pct = _normalize_pct(rate)
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
         if jax.process_index() == 0:
             print(f"DEBUG: MATH split string -> train='{train_split}' (rate={rate}, pct={pct}%)")
