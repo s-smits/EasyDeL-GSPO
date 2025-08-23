@@ -232,6 +232,11 @@ class Trainer(BaseTrainer):
             run_exception = None
             with self.mesh:
                 for epoch in range(self.arguments.num_train_epochs):
+                    try:
+                        if jax.process_index() == 0:
+                            logger.info(f"DEBUG: Starting epoch {epoch+1}/{self.arguments.num_train_epochs}")
+                    except Exception:
+                        ...
                     state, run_exception, train_iter = self._train_epoch(
                         state=state,
                         train_dataset=self.dataloader_train,
@@ -291,6 +296,11 @@ class Trainer(BaseTrainer):
                     step_metrics=step_metrics,
                     pbar=pbar,
                 )
+        except Exception as ex:
+            try:
+                logger.error(f"DEBUG: Unexpected exception in evaluation loop: {type(ex).__name__}: {ex}")
+            except Exception:
+                ...
         finally:
             pbar.close()
 
@@ -344,6 +354,15 @@ class Trainer(BaseTrainer):
                 state = self.on_step_start(state=state, step=current_step)
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, StopIteration) as exect:
                 run_exception = exect
+                return state, run_exception, train_iter
+            except Exception as ex:
+                try:
+                    logger.error(
+                        f"DEBUG: Unexpected exception before training step at step={current_step}: {type(ex).__name__}: {ex}"
+                    )
+                except Exception:
+                    ...
+                run_exception = ex
                 return state, run_exception, train_iter
 
             # Execute training step
@@ -399,6 +418,15 @@ class Trainer(BaseTrainer):
                         ...
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError) as exect:
                 run_exception = exect if run_exception is None else run_exception
+                return state, run_exception, train_iter
+            except Exception as ex:
+                try:
+                    logger.error(
+                        f"DEBUG: Unexpected exception after training step at step={current_step}: {type(ex).__name__}: {ex}"
+                    )
+                except Exception:
+                    ...
+                run_exception = ex if run_exception is None else run_exception
                 return state, run_exception, train_iter
             if run_exception is not None:
                 break
@@ -470,6 +498,14 @@ class Trainer(BaseTrainer):
                 )
                 yield eval_metrics
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError):
+                break
+            except Exception as ex:
+                try:
+                    logger.error(
+                        f"DEBUG: Unexpected exception during evaluation at step={current_step}: {type(ex).__name__}: {ex}"
+                    )
+                except Exception:
+                    ...
                 break
 
     def _execute_eval_step(self, state, batch) -> LossMetrics:
@@ -566,6 +602,16 @@ class Trainer(BaseTrainer):
             EasyDeLBreakRequest,
             TypeError,
         ) as run_exception:
+            return state, metrics, run_exception
+        except Exception as run_exception:
+            # Catch-all to avoid unhandled exceptions killing TPU workers
+            try:
+                logger.error(
+                    f"DEBUG: Unhandled exception in _execute_train_step at step={int(jax.device_get(state.step))}: "
+                    f"{type(run_exception).__name__}: {run_exception}"
+                )
+            except Exception:
+                ...
             return state, metrics, run_exception
 
     def _finalize_training(self, output, run_exception):

@@ -422,6 +422,36 @@ def main():
         # Accumulate all levels progressively
         accumulated_train_ds = None
         current_state = trainer.model_state
+
+        # Minimize memory held across levels: copy only essentials from the incoming trainer,
+        # then drop the original trainer to free compiled functions and buffers.
+        try:
+            proto_arguments = trainer.arguments
+            proto_processing_class = trainer.processing_class
+            proto_data_tokenize_fn = trainer.data_tokenize_fn
+            proto_reward_funcs = trainer.reward_funcs
+        except Exception as e:
+            if jax.process_index() == 0:
+                print(f"DEBUG: Failed to snapshot proto fields from incoming trainer: {e}")
+            proto_arguments = getattr(trainer, 'arguments', None)
+            proto_processing_class = getattr(trainer, 'processing_class', None)
+            proto_data_tokenize_fn = getattr(trainer, 'data_tokenize_fn', None)
+            proto_reward_funcs = getattr(trainer, 'reward_funcs', None)
+
+        # Aggressively free original trainer to avoid TPU OOMs when reinitializing per level
+        try:
+            import gc as _gc
+            del trainer
+            _gc.collect()
+            try:
+                import jax as _jax
+                _jax.clear_caches()
+            except Exception:
+                ...
+            if jax.process_index() == 0:
+                print("DEBUG: Released original trainer and cleared JAX caches before curriculum loop")
+        except Exception as _:
+            ...
         
         for idx, level in enumerate(available_levels):
             if jax.process_index() == 0:
@@ -501,12 +531,12 @@ def main():
                 
                 new_trainer = ed.GFSPOTrainer(
                     model=current_state,  # Use current state, not initial
-                    reward_funcs=trainer.reward_funcs,
-                    processing_class=trainer.processing_class,
+                    reward_funcs=proto_reward_funcs,
+                    processing_class=proto_processing_class,
                     eval_dataset=level_test_ds,
                     train_dataset=accumulated_train_ds,
-                    arguments=trainer.arguments,
-                    data_tokenize_fn=trainer.data_tokenize_fn,
+                    arguments=proto_arguments,
+                    data_tokenize_fn=proto_data_tokenize_fn,
                 )
                 
                 # Train and capture the output
@@ -530,15 +560,26 @@ def main():
                 ed.GFSPOTrainer.finish = original_finish
                 
                 # Restore original settings
-                trainer.arguments.total_batch_size = original_batch_size
-                trainer.arguments.gradient_accumulation_steps = original_grad_accum
-                trainer.arguments.mini_batch_size = original_mini_batch
+                try:
+                    proto_arguments.total_batch_size = original_batch_size
+                    proto_arguments.gradient_accumulation_steps = original_grad_accum
+                    proto_arguments.mini_batch_size = original_mini_batch
+                except Exception as e:
+                    if jax.process_index() == 0:
+                        print(f"DEBUG: Failed to restore proto argument knobs: {e}")
                 
                 # Clean up trainer resources but preserve state
-                if new_trainer:
-                    del new_trainer
-                import gc
-                gc.collect()
+                try:
+                    if new_trainer:
+                        del new_trainer
+                    import gc
+                    gc.collect()
+                    try:
+                        jax.clear_caches()
+                    except Exception:
+                        ...
+                except Exception as _:
+                    ...
         
         if jax.process_index() == 0:
             print(f"\n{'='*60}")
@@ -546,7 +587,8 @@ def main():
             print(f"{'='*60}")
         
         # Now it's safe to call finish() to clean up wandb and other resources
-        safe_call("finalize finish()", lambda: original_finish(None))
+        # Call as a zero-arg function; the original was a staticmethod
+        safe_call("finalize finish()", original_finish)
         
         # Return final trained state
         return current_state
