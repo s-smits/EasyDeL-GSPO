@@ -960,8 +960,8 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     pass
 
-            # Print one local example per process each step: prompt, ground truth, extracted prediction
-            if getattr(self.arguments, "verbose", True):
+            # Print one local example from process 0 each step: prompt, ground truth, extracted prediction
+            if getattr(self.arguments, "verbose", True) and jax.process_index() == 0:
                 try:
                     example_idx = 0
                     # Extract prompt string
@@ -1028,20 +1028,11 @@ class GRPOTrainer(Trainer):
                         if is_math:
                             try:
                                 print("DEBUG: Using math reward extraction")
-                                # Preview: last 20 tokens if tokenizer exists, else last 200 chars
-                                preview = example_pred_text[-200:]
-                                tok = self.processing_class.tokenizer if hasattr(self.processing_class, "tokenizer") else self.processing_class
-                                if hasattr(tok, "encode") and hasattr(tok, "decode"):
-                                    try:
-                                        tokens = tok.encode(example_pred_text, add_special_tokens=False)
-                                        if tokens:
-                                            preview = tok.decode(tokens[-20:], skip_special_tokens=True)
-                                    except Exception:
-                                        preview = example_pred_text[-200:]
-
+                                # Preview: last 200 characters (avoid full tokenization overhead)
+                                preview = example_pred_text[-200:] if len(example_pred_text) > 200 else example_pred_text
                                 if len(preview) > 200:
                                     preview = "..." + preview[-200:]
-                                print(f"DEBUG: Math preview (last 20 tokens): '{preview}'")
+                                print(f"DEBUG: Math preview (chars tail): '{preview}'")
 
                                 # Extract: prefer last boxed; else last number; fallback to preview
                                 example_pred_value = preview
