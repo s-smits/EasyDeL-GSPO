@@ -186,18 +186,19 @@ class GFPOTrainer(GRPOTrainer):
                 # Safe fallback: fixed k
                 k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count))
 
-        # Clamp k to valid range [1, G] and warn if clamped to G (which would yield retention 1.0)
+        # Clamp k to valid range [1, G-1] to avoid degenerate retention==1.0 when possible
         try:
-            k_per_prompt = jnp.clip(k_per_prompt, 1, int(gsize))
+            upper = max(1, int(gsize) - 1)
+            k_per_prompt = jnp.clip(k_per_prompt, 1, upper)
             if jax.process_index() == 0:
                 # If any k equals G, log a hint
                 try:
-                    num_full = int(jnp.sum(k_per_prompt == int(gsize)))
+                    num_full = int(jnp.sum(k_per_prompt >= upper))
                 except Exception:
                     num_full = -1
                 if num_full and num_full > 0:
                     print(
-                        f"DEBUG: GFPO k clipped to G for {num_full}/{int(bsz)} prompts (G={int(gsize)}). "
+                        f"DEBUG: GFPO k reached upper bound for {num_full}/{int(bsz)} prompts (G={int(gsize)}, upper={upper}). "
                         "Consider lowering gfpo_retain_count or adjusting adaptive k-map."
                     )
         except Exception:

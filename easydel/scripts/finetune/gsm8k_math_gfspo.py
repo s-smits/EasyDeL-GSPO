@@ -466,6 +466,13 @@ def main():
         except Exception as _:
             ...
         
+        # Ensure all processes are synchronized before starting curriculum
+        try:
+            from jax.experimental import multihost_utils as _mh
+            _mh.sync_global_devices("curriculum_start")
+        except Exception:
+            ...
+
         for idx, level in enumerate(available_levels):
             if jax.process_index() == 0:
                 print(f"\n{'='*60}")
@@ -552,6 +559,13 @@ def main():
                     data_tokenize_fn=proto_data_tokenize_fn,
                 )
                 
+                # Synchronize before training to ensure consistent launch IDs across hosts
+                try:
+                    from jax.experimental import multihost_utils as _mh
+                    _mh.sync_global_devices(f"before_train_level_{idx}")
+                except Exception:
+                    ...
+
                 # Train and capture the output
                 output = new_trainer.train()
                 current_state = output.state  # Extract trained state for next level
@@ -569,6 +583,12 @@ def main():
                 if new_trainer and hasattr(new_trainer, 'model_state'):
                     current_state = new_trainer.model_state
             finally:
+                # Post-level barrier to keep hosts in lockstep
+                try:
+                    from jax.experimental import multihost_utils as _mh
+                    _mh.sync_global_devices(f"after_train_level_{idx}")
+                except Exception:
+                    ...
                 # Restore original finish method
                 ed.GFSPOTrainer.finish = original_finish
                 
