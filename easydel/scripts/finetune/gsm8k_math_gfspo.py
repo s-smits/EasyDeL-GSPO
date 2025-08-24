@@ -498,9 +498,9 @@ def main():
                     print(f"Evaluating on {level}: {len(level_test_ds)} test examples")
             
             # Adjust batch size for small datasets
-            original_batch_size = trainer.arguments.total_batch_size
-            original_grad_accum = trainer.arguments.gradient_accumulation_steps
-            original_mini_batch = trainer.arguments.mini_batch_size
+            original_batch_size = proto_arguments.total_batch_size
+            original_grad_accum = proto_arguments.gradient_accumulation_steps
+            original_mini_batch = proto_arguments.mini_batch_size
             
             # Calculate effective samples per shard
             num_prompts = len(accumulated_train_ds)
@@ -511,25 +511,25 @@ def main():
             
             if mini_batch_size_override:
                 # Use explicit override if provided
-                trainer.arguments.mini_batch_size = mini_batch_size_override
-                trainer.arguments.total_batch_size = mini_batch_size_override
+                proto_arguments.mini_batch_size = mini_batch_size_override
+                proto_arguments.total_batch_size = mini_batch_size_override
                 if jax.process_index() == 0:
                     print(f"Using mini_batch_size override: {mini_batch_size_override}")
             elif num_prompts < 500:  # Small dataset heuristic
                 # For very small datasets, use batch size of 4-8
                 new_batch_size = min(8, max(4, num_prompts // 16))
-                trainer.arguments.total_batch_size = new_batch_size
-                trainer.arguments.mini_batch_size = min(new_batch_size, 1)  # TP-friendly
-                trainer.arguments.gradient_accumulation_steps = max(1, original_batch_size // new_batch_size)
+                proto_arguments.total_batch_size = new_batch_size
+                proto_arguments.mini_batch_size = min(new_batch_size, 1)  # TP-friendly
+                proto_arguments.gradient_accumulation_steps = max(1, original_batch_size // new_batch_size)
                 
                 if jax.process_index() == 0:
                     print(f"Small dataset detected ({num_prompts} examples)")
                     print(f"Adjusted batch size: {original_batch_size} -> {new_batch_size}")
-                    print(f"Adjusted mini_batch_size: {original_mini_batch} -> {trainer.arguments.mini_batch_size}")
-                    print(f"Gradient accumulation: {original_grad_accum} -> {trainer.arguments.gradient_accumulation_steps}")
+                    print(f"Adjusted mini_batch_size: {original_mini_batch} -> {proto_arguments.mini_batch_size}")
+                    print(f"Gradient accumulation: {original_grad_accum} -> {proto_arguments.gradient_accumulation_steps}")
             
             # Create a new trainer with accumulated dataset and current state
-            trainer.arguments.num_train_epochs = epochs_per_level
+            proto_arguments.num_train_epochs = epochs_per_level
             
             # Patch finish() to prevent wandb closure between levels
             def no_op_finish(self):
