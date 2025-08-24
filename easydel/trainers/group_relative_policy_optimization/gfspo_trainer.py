@@ -41,7 +41,9 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         reward_processing_classes: ProcessingClassType = None,
         data_tokenize_fn: tp.Callable | None = None,
     ):
-        assert isinstance(arguments, GFSPOConfig), f"arguments type must be `GFSPOConfig` but got {type(arguments)}"
+        assert isinstance(
+            arguments, GFSPOConfig
+        ), f"arguments type must be `GFSPOConfig` but got {type(arguments)}"
 
         super().__init__(
             arguments=arguments,
@@ -58,7 +60,12 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         self.arguments = arguments
 
         try:
-            print(f"DEBUG: Initializing GFSPO trainer - G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, importance_sampling={arguments.importance_sampling_level}")
+            print(
+                "DEBUG: Initializing GFSPO trainer - "
+                f"G={arguments.gfpo_group_size}, "
+                f"k={arguments.gfpo_retain_count}, "
+                f"importance_sampling={arguments.importance_sampling_level}"
+            )
             logger.info(
                 f"Initialized GFSPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, "
                 f"adaptive={arguments.gfpo_adaptive}, importance_sampling_level={arguments.importance_sampling_level}, "
@@ -87,35 +94,47 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         G = int(self.arguments.gfpo_group_size)
 
         eps = jnp.float32(self.arguments.advantage_epsilon)
+
+        # Compute rewards_grouped with robust fallbacks
         try:
             if "rewards" in grpo_batch:
                 rewards_arr = grpo_batch["rewards"]
-                try:
-                    rewards_grouped = rewards_arr.reshape(num_prompts, G)
-                except Exception:
-                    # Fallback: reconstruct from advantages
-                    advantages = grpo_batch["advantages"].reshape(num_prompts, G)
-                    mean_per_prompt = jnp.mean(advantages, axis=1, keepdims=True)
-                    std_per_prompt = jnp.std(advantages, axis=1, keepdims=True)
-                    std_per_prompt = jnp.maximum(std_per_prompt, eps)
-                    rewards_grouped = advantages * std_per_prompt + mean_per_prompt
+                rewards_grouped = rewards_arr.reshape(num_prompts, G)
             else:
                 advantages = grpo_batch["advantages"].reshape(num_prompts, G)
                 mean_per_prompt = jnp.mean(advantages, axis=1, keepdims=True)
                 std_per_prompt = jnp.std(advantages, axis=1, keepdims=True)
                 std_per_prompt = jnp.maximum(std_per_prompt, eps)
                 rewards_grouped = advantages * std_per_prompt + mean_per_prompt
+        except Exception:
+            # Last-resort fallback: reconstruct from advantages or use zeros
+            try:
+                advantages = grpo_batch["advantages"].reshape(num_prompts, G)
+                mean_per_prompt = jnp.mean(advantages, axis=1, keepdims=True)
+                std_per_prompt = jnp.std(advantages, axis=1, keepdims=True)
+                std_per_prompt = jnp.maximum(std_per_prompt, eps)
+                rewards_grouped = advantages * std_per_prompt + mean_per_prompt
+            except Exception:
+                rewards_grouped = jnp.zeros((num_prompts, G), dtype=jnp.float32)
 
+        # Compute lengths_grouped with fallback
+        try:
             lengths = jnp.sum(grpo_batch["completion_mask"], axis=-1)
             lengths_grouped = lengths.reshape(num_prompts, G)
+        except Exception:
+            lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
 
-            # Use shared host-only GFPO filter
+        # Use shared host-only GFPO filter
+        try:
             mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)
         except Exception as _e:
             # Fallback to GRPO advantages unchanged if GFPO filter fails
             if jax.process_index() == 0:
                 try:
-                    print(f"DEBUG: GFSPO preprocessing error; using GRPO advantages unchanged: {_e}")
+                    print(
+                        "DEBUG: GFSPO preprocessing error; "
+                        f"using GRPO advantages unchanged: {_e}"
+                    )
                 except Exception:
                     pass
             mask = jnp.ones((num_prompts, G), dtype=jnp.float32)
@@ -128,10 +147,14 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
                     mask_sum = float(_np.sum(mh))
                 except Exception:
                     mask_sum = -1.0
-                expected_min = float(num_prompts * min(int(getattr(self.arguments, 'gfpo_retain_count', G)), G))
+                expected_min = float(
+                    num_prompts
+                    * min(int(getattr(self.arguments, "gfpo_retain_count", G)), G)
+                )
                 expected_max = float(num_prompts * G)
                 print(
-                    f"DEBUG: GFSPO grouping check: B={num_prompts}, G={G}, k={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
+                    f"DEBUG: GFSPO grouping check: B={num_prompts}, G={G}, "
+                    f"k={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
                     f"mask_sum={mask_sum}, expected_min≈{expected_min}, expected_max={expected_max}"
                 )
         except Exception:
