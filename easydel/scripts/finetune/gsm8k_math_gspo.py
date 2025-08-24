@@ -1,5 +1,6 @@
 import re
 from dataclasses import field
+import os
 
 import jax
 from datasets import load_dataset, Dataset
@@ -62,7 +63,26 @@ def main():
         except Exception:
             pass
 
-    tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
+    def safe_call(desc, fn, *args, default=None, swallow=True, **kwargs):
+        try:
+            out = fn(*args, **kwargs)
+            return default if out is None else out
+        except Exception as e:
+            try:
+                if jax.process_index() == 0:
+                    print(f"SAFE_CALL_FAIL: {desc}: {e}")
+            except Exception:
+                ...
+            if not swallow:
+                raise
+            return default
+
+    tokenizer = safe_call(
+        "load tokenizer",
+        AutoTokenizer.from_pretrained,
+        runtime.processor_repo_id,
+        default=AutoTokenizer.from_pretrained(runtime.repo_id),
+    )
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -71,7 +91,7 @@ def main():
     max_completion_len = gspo_config.max_completion_length
     max_seq_len = max_prompt_len + max_completion_len
 
-    hf_config = AutoConfig.from_pretrained(runtime.repo_id)
+    hf_config = safe_call("load auto config", AutoConfig.from_pretrained, runtime.repo_id, default=AutoConfig.from_pretrained(runtime.repo_id))
     avails = [v.module.__name__ for v in registry.task_registry[ed.TaskType.IMAGE_TEXT_TO_TEXT].values()]
     if hf_config.architectures and any(arch in avails for arch in hf_config.architectures):
         load_module = ed.AutoEasyDeLModelForImageTextToText
@@ -94,7 +114,9 @@ def main():
     else:
         sharding_axis_dims = runtime.sharding_axis
 
-    model = load_module.from_pretrained(
+    model = safe_call(
+        "load module",
+        load_module.from_pretrained,
         runtime.repo_id,
         auto_shard_model=True,
         sharding_axis_dims=sharding_axis_dims,
@@ -141,8 +163,8 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
-        ds_test = load_dataset("openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
 
         def map_ex(x):
             return {
@@ -157,9 +179,9 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
         try:
-            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+            ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
         except ValueError as e:
             # Fallback for datasets that only provide a 'train' split
             if "Unknown split" in str(e) or "test" in str(e):

@@ -96,7 +96,12 @@ def main():
                 ...
         safe_call("print runtime + env dataset", _dbg_print)
 
-    tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
+    tokenizer = safe_call(
+        "load tokenizer",
+        AutoTokenizer.from_pretrained,
+        runtime.processor_repo_id,
+        default=AutoTokenizer.from_pretrained(runtime.repo_id),
+    )
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -105,7 +110,7 @@ def main():
     max_completion_len = gfspo_config.max_completion_length
     max_seq_len = max_prompt_len + max_completion_len
 
-    hf_config = AutoConfig.from_pretrained(runtime.repo_id)
+    hf_config = safe_call("load auto config", AutoConfig.from_pretrained, runtime.repo_id, default=AutoConfig.from_pretrained(runtime.repo_id))
     avails = [v.module.__name__ for v in registry.task_registry[ed.TaskType.IMAGE_TEXT_TO_TEXT].values()]
     if hf_config.architectures and any(arch in avails for arch in hf_config.architectures):
         load_module = ed.AutoEasyDeLModelForImageTextToText
@@ -128,7 +133,9 @@ def main():
     else:
         sharding_axis_dims = runtime.sharding_axis
 
-    model = load_module.from_pretrained(
+    model = safe_call(
+        "load module",
+        load_module.from_pretrained,
         runtime.repo_id,
         auto_shard_model=True,
         sharding_axis_dims=sharding_axis_dims,
@@ -194,8 +201,8 @@ def main():
         test_split = "test" if pct >= 100 else f"test[:{pct}%]"
         if jax.process_index() == 0:
             print(f"DEBUG: GSM8K split strings -> train='{train_split}', test='{test_split}'")
-        ds_train = load_dataset("openai/gsm8k", "main", split=train_split)
-        ds_test = load_dataset("openai/gsm8k", "main", split=test_split)
+        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=train_split)
+        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=test_split, default=None)
 
         def map_ex(x):
             return {
@@ -215,12 +222,12 @@ def main():
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
         if jax.process_index() == 0:
             print(f"DEBUG: MATH split string -> train='{train_split}' (rate={rate}, pct={pct}%)")
-        ds_train = load_dataset("qwedsacf/competition_math", split=train_split)
+        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=train_split)
         try:
             test_split = "test" if pct >= 100 else f"test[:{pct}%]"
             if jax.process_index() == 0:
                 print(f"DEBUG: MATH split string -> test='{test_split}'")
-            ds_test = load_dataset("qwedsacf/competition_math", split=test_split)
+            ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
         except ValueError as e:
             # Fallback for datasets that only provide a 'train' split
             if "Unknown split" in str(e) or "test" in str(e):

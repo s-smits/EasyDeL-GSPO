@@ -860,7 +860,16 @@ class TrainingArguments:
         if self.weight_distribution_log_steps > 0 and ((step % self.weight_distribution_log_steps) == 0):
             stats = compute_weight_stats(state.graphstate, self.weight_distribution_pattern)
 
-            stats = jax.experimental.multihost_utils.process_allgather(stats)
+            # Best-effort global aggregation; guard behind log_global and swallow issues to avoid TPU divergence
+            if getattr(self, "log_global", False):
+                try:
+                    stats = jax.experimental.multihost_utils.process_allgather(stats)
+                except Exception:
+                    try:
+                        if _safe_process_index() == 0:
+                            print("WARN: process_allgather failed for weight stats; continuing with local stats")
+                    except Exception:
+                        ...
 
             metrics = {}
             for key, histogram in stats.items():

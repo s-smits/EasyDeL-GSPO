@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import typing as tp
 
 from easydel.utils import EasyPath, EasyPathLike
@@ -57,43 +58,69 @@ def upload_checkpoint_folder(
 ) -> None:
     """Upload a local checkpoint directory to HF Hub under the given prefix.
 
-    Best-effort: swallow errors to avoid disrupting training loops.
+    Best-effort and non-blocking by default:
+    - Set EASYDEL_HF_SYNC=1 to force synchronous upload
+    - Set EASYDEL_HF_TIMEOUT=<sec> to bound initial join wait (default 2s)
+    - Set EASYDEL_DISABLE_HF_UPLOADS=1 to skip entirely
     """
-    try:
-        from huggingface_hub import HfApi
-    except Exception:
+
+    if os.getenv("EASYDEL_DISABLE_HF_UPLOADS") in {"1", "true", "True"}:
         return
 
-    api = HfApi()
-    try:
-        api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True, token=token)
-    except Exception:
-        ...
-
-    ckpt_name = EasyPath(local_ckpt_dir).name
-    path_in_repo = f"{path_in_repo_prefix}/{ckpt_name}"
-    try:
-        api.upload_folder(
-            folder_path=str(local_ckpt_dir),
-            repo_id=repo_id,
-            repo_type="model",
-            token=token,
-            path_in_repo=path_in_repo,
-        )
-        # Update marker file with the latest checkpoint name
+    def _worker():
         try:
-            from io import BytesIO
+            from huggingface_hub import HfApi
+        except Exception:
+            return
 
-            latest_payload = BytesIO(str(ckpt_name).encode("utf-8"))
-            api.upload_file(
-                path_or_fileobj=latest_payload,
-                path_in_repo=f"{path_in_repo_prefix}/latest.txt",
+        api = HfApi()
+        try:
+            api.create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True, token=token)
+        except Exception:
+            ...
+
+        ckpt_name = EasyPath(local_ckpt_dir).name
+        path_in_repo = f"{path_in_repo_prefix}/{ckpt_name}"
+        try:
+            api.upload_folder(
+                folder_path=str(local_ckpt_dir),
                 repo_id=repo_id,
                 repo_type="model",
                 token=token,
+                path_in_repo=path_in_repo,
             )
+            # Update marker file with the latest checkpoint name
+            try:
+                from io import BytesIO
+
+                latest_payload = BytesIO(str(ckpt_name).encode("utf-8"))
+                api.upload_file(
+                    path_or_fileobj=latest_payload,
+                    path_in_repo=f"{path_in_repo_prefix}/latest.txt",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=token,
+                )
+            except Exception:
+                ...
         except Exception:
             ...
+
+    # Run upload in background to avoid blocking TPU hosts
+    sync = os.getenv("EASYDEL_HF_SYNC") in {"1", "true", "True"}
+    if sync:
+        _worker()
+        return
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    try:
+        timeout = float(os.getenv("EASYDEL_HF_TIMEOUT", "2"))
+    except Exception:
+        timeout = 2.0
+    # Briefly wait so small uploads finish, then continue training regardless
+    try:
+        t.join(timeout=timeout)
     except Exception:
         ...
 

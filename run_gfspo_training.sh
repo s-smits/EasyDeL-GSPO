@@ -42,6 +42,10 @@ fi
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
+# Allow overriding log_global from environment (default: true for TPU stability logs off elsewhere)
+LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
+echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
+
 # Note: dataset_use_rate now uses fractions (1.0 = 100%, 0.1 = 10%)
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
@@ -59,9 +63,9 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --force_tensor_parallel 4 \
   --force_data_parallel 2 \
   --log_logprobs_metrics false \
-  --log_global true \
+  --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
-  --save_steps 50 \
+  --save_steps 2 \
   --do_eval false \
   --weight_decay 0.01 \
   --gradient_accumulation_steps 16 \

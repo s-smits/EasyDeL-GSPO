@@ -113,8 +113,11 @@ class GFPOTrainer(GFPOFilterMixin, GRPOTrainer):
             try:
                 scores_h = rg / _np.maximum(lg, eps_eff)  # type: ignore
             except Exception:
-                # Very defensive fallback
-                scores_h = rg / (lg + eps_eff)
+                try:
+                    scores_h = rg / (lg + eps_eff)
+                except Exception:
+                    # last resort: use rewards directly
+                    scores_h = rg
             ascending = False
 
         # Determine k per prompt (fixed or adaptive) on host
@@ -203,9 +206,14 @@ class GFPOTrainer(GFPOFilterMixin, GRPOTrainer):
         mask_h = _np.zeros((bsz, gsize), dtype=_np.float32)
         arange_g = _np.arange(gsize)
         for i in range(bsz):
-            k_i = int(k_per[i])
-            chosen = idx_sorted[i, :k_i]
-            mask_h[i, chosen] = 1.0
+            try:
+                k_i = int(k_per[i])
+                chosen = idx_sorted[i, :k_i]
+                mask_h[i, chosen] = 1.0
+            except Exception:
+                # fallback: select first k_i entries
+                k_i = max(1, int(k_per[i]))
+                mask_h[i, :k_i] = 1.0
 
         # Proc0-only debug, host-only math
         try:

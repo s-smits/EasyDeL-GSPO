@@ -178,12 +178,18 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
             sel = float(m.get("gfpo/retention_rate", 0.0))
             avg_len = float(m.get("gfpo/avg_retained_length", 0.0))
             if jax.process_index() == 0:
-                print(f"DEBUG: GFSPO metrics - retention_rate={sel:.3f}, avg_retained_length={avg_len:.1f}")
+                try:
+                    print(f"DEBUG: GFSPO metrics - retention_rate={sel:.3f}, avg_retained_length={avg_len:.1f}")
+                except Exception:
+                    ...
             metrics_dict["gfpo/retention_rate"] = sel
             metrics_dict["gfpo/avg_retained_length"] = avg_len
         except Exception as e:
-            print(f"DEBUG: Failed to compute GFSPO metrics: {e}")
-            pass
+            try:
+                if jax.process_index() == 0:
+                    print(f"DEBUG: Failed to compute GFSPO metrics: {e}")
+            except Exception:
+                ...
 
         return grpo_batch, metrics_dict
 
