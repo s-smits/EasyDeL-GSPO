@@ -990,7 +990,7 @@ class BaseTrainer(BaseTrainerProtocol):
                 repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
                 upload_checkpoint_folder(
                     local_ckpt_dir=directory_name,
-                    repo_id=tp.cast(str, token),
+                    repo_id=repo,
                     token=tp.cast(str, token),
                     private=self.arguments.hub_private,
                     path_in_repo_prefix=self.arguments.hub_path_in_repo_prefix,

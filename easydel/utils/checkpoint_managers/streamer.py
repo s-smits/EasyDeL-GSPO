@@ -519,10 +519,9 @@ class CheckpointManager:
         """
         if enable is None:
             enable = jax.process_index() == 0
+        # If not enabled, skip any filesystem writes entirely
         if not enable:
-            path = "/dev/null"
-        if str(path).startswith("/dev/null"):
-            path = "/dev/null"
+            return "/dev/null"
 
         if float_dtype is None:
             float_dtype = jnp.bfloat16
