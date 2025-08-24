@@ -55,6 +55,7 @@ def upload_checkpoint_folder(
     token: str,
     private: bool = True,
     path_in_repo_prefix: str = "checkpoints",
+    keep_n: int | None = None,
 ) -> None:
     """Upload a local checkpoint directory to HF Hub under the given prefix.
 
@@ -64,7 +65,7 @@ def upload_checkpoint_folder(
     - Set EASYDEL_DISABLE_HF_UPLOADS=1 to skip entirely
     """
 
-    # Single consolidated gate to disable all uploads quickly
+    # Single consolid   ted gate to disable all uploads quickly
     if os.getenv("EASYDEL_DISABLE_HF_UPLOADS") in {"1", "true", "True"}:
         return
 
@@ -108,13 +109,15 @@ def upload_checkpoint_folder(
             ...
 
         # Optional remote pruning: keep recent N checkpoints in the remote repo
-        try:
-            keep_n = int(os.getenv("EASYDEL_HF_KEEP_N", "0"))
-        except Exception:
-            keep_n = 0
-        if keep_n and keep_n > 0:
+        keep = keep_n
+        if keep is None:
             try:
-                _prune_remote_old_checkpoints(repo_id=repo_id, token=token, prefix=path_in_repo_prefix, keep_n=keep_n)
+                keep = int(os.getenv("EASYDEL_HF_KEEP_N", "0"))
+            except Exception:
+                keep = 0
+        if keep and keep > 0:
+            try:
+                _prune_remote_old_checkpoints(repo_id=repo_id, token=token, prefix=path_in_repo_prefix, keep_n=int(keep))
             except Exception:
                 ...
 
