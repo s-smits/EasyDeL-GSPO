@@ -15,6 +15,7 @@ from easydel.utils.helpers import get_logger
 from ..trainer_protocol import TrainerConfigureFunctionOutput
 from ._gfpo_fn import gfpo_step
 from .gfpo_config import GFPOConfig
+from .gfpo_utils import GFPOFilterMixin
 from .grpo_trainer import GRPOTrainer, RewardFunc
 
 if tp.TYPE_CHECKING:
@@ -23,7 +24,7 @@ if tp.TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class GFPOTrainer(GRPOTrainer):
+class GFPOTrainer(GFPOFilterMixin, GRPOTrainer):
     """
     GFPO (Group Filtered Policy Optimization) Trainer.
 

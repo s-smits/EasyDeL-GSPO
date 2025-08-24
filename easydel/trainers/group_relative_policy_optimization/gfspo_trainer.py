@@ -13,11 +13,12 @@ from easydel.infra.utils import ProcessingClassType
 from easydel.utils.helpers import get_logger
 from .gspo_trainer import GSPOTrainer
 from .gfspo_config import GFSPOConfig
+from .gfpo_utils import GFPOFilterMixin
 
 logger = get_logger(__name__)
 
 
-class GFSPOTrainer(GSPOTrainer):
+class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
     """
     Combined trainer: applies GFPO filtering and per-subset advantage standardization
     within the GRPO preprocessing pipeline, then uses GSPO's sequence-level importance
@@ -67,125 +68,7 @@ class GFSPOTrainer(GSPOTrainer):
             print(f"DEBUG: Failed to log GFSPO trainer initialization: {e}")
             logger.warning(f"Failed to log GFSPO trainer initialization: {e}")
 
-    def _filter_mask_per_prompt(
-        self,
-        rewards_grouped: jnp.ndarray,  # (B, G)
-        lengths_grouped: jnp.ndarray,  # (B, G)
-    ) -> jnp.ndarray:
-        """
-        TPU-stable top‑k mask: compute entirely on host (NumPy) and return as jnp.
-        """
-        try:
-            import numpy as _np
-        except Exception:  # pragma: no cover
-            _np = None  # type: ignore
-
-        try:
-            rg = jax.device_get(rewards_grouped)
-            lg = jax.device_get(lengths_grouped)
-        except Exception:
-            rg, lg = rewards_grouped, lengths_grouped  # type: ignore
-
-        try:
-            bsz, gsize = int(rg.shape[0]), int(rg.shape[1])
-        except Exception:
-            bsz, gsize = int(rewards_grouped.shape[0]), int(rewards_grouped.shape[1])
-
-        # Scores
-        ascending = True
-        if getattr(self.arguments, "gfpo_metric", "length") == "length":
-            scores_h = lg
-            ascending = True
-        else:
-            eps_eff = float(getattr(self.arguments, "gfpo_efficiency_epsilon", 1e-8))
-            try:
-                scores_h = rg / _np.maximum(lg, eps_eff)  # type: ignore
-            except Exception:
-                scores_h = rg / (lg + eps_eff)
-            ascending = False
-
-        # k-per-prompt
-        if not getattr(self.arguments, "gfpo_adaptive", False):
-            k_per = [int(self.arguments.gfpo_retain_count)] * bsz
-        else:
-            try:
-                model_state = getattr(self, "model_state", None)
-                if model_state is not None and hasattr(model_state, "step"):
-                    state_step = int(jax.device_get(model_state.step))
-                else:
-                    state_step = 0
-            except Exception:
-                state_step = 0
-            warmup = int(getattr(self.arguments, "gfpo_adaptive_warmup_steps", 10))
-            if state_step < warmup:
-                k0 = int(self.arguments.gfpo_adaptive_k_map.get("very_hard", 8))
-                k_per = [k0] * bsz
-            else:
-                km = self.arguments.gfpo_adaptive_k_map
-                k_vh = int(km.get("very_hard", 8))
-                k_h = int(km.get("hard", 8))
-                k_m = int(km.get("medium", 6))
-                k_e = int(km.get("easy", 4))
-                try:
-                    avg_rewards = _np.mean(rg, axis=1) if _np is not None else rg.mean(axis=1)
-                except Exception:
-                    avg_rewards = jax.device_get(jnp.mean(rewards_grouped, axis=1))
-                method = getattr(self.arguments, "gfpo_adaptive_method", "rolling")
-                if method == "ema":
-                    try:
-                        cur = _np.percentile(avg_rewards, [25.0, 50.0, 75.0])
-                    except Exception:
-                        cur = jax.device_get(jnp.percentile(jnp.asarray(avg_rewards), jnp.array([25.0, 50.0, 75.0])))
-                    alpha = float(getattr(self.arguments, "gfpo_adaptive_ema_alpha", 0.1))
-                    if not hasattr(self, "_running_percentiles"):
-                        self._running_percentiles = cur
-                    else:
-                        self._running_percentiles = (1.0 - alpha) * self._running_percentiles + alpha * cur
-                    q25, q50, q75 = [float(x) for x in self._running_percentiles]
-                else:
-                    if not hasattr(self, "_difficulty_buffer"):
-                        self._difficulty_buffer = []
-                    try:
-                        self._difficulty_buffer.extend([float(x) for x in list(avg_rewards)])
-                    except Exception:
-                        pass
-                    max_hist = int(getattr(self.arguments, "gfpo_adaptive_history_max", 20000))
-                    if len(self._difficulty_buffer) > max_hist:
-                        self._difficulty_buffer = self._difficulty_buffer[-max_hist:]
-                    if len(self._difficulty_buffer) < 40:
-                        q25 = q50 = q75 = None
-                    else:
-                        try:
-                            q25, q50, q75 = _np.percentile(_np.asarray(self._difficulty_buffer, dtype=_np.float32), [25.0, 50.0, 75.0])
-                        except Exception:
-                            arr = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
-                            q25, q50, q75 = [float(x) for x in jax.device_get(jnp.percentile(arr, jnp.array([25.0, 50.0, 75.0])))]
-                k_per = []
-                for r in (avg_rewards.tolist() if hasattr(avg_rewards, "tolist") else list(avg_rewards)):
-                    if q25 is None:
-                        k_per.append(k_vh)
-                    elif r < q25:
-                        k_per.append(k_vh)
-                    elif r < q50:
-                        k_per.append(k_h)
-                    elif r < q75:
-                        k_per.append(k_m)
-                    else:
-                        k_per.append(k_e)
-
-        upper = max(1, int(gsize) - 1)
-        k_per = [int(max(1, min(upper, int(x)))) for x in k_per]
-
-        try:
-            idx_sorted = _np.argsort(scores_h, axis=1) if ascending else _np.argsort(-scores_h, axis=1)
-        except Exception:
-            idx_sorted = jax.device_get(jnp.argsort(jnp.asarray(scores_h), axis=1) if ascending else jnp.argsort(-jnp.asarray(scores_h), axis=1))
-        mask_h = _np.zeros((bsz, gsize), dtype=_np.float32)
-        for i in range(bsz):
-            ki = int(k_per[i])
-            mask_h[i, idx_sorted[i, :ki]] = 1.0
-
-        return jnp.asarray(mask_h, dtype=jnp.float32)
+    # Remove local copy; rely on GFPOFilterMixin via _gfpo_build_mask_host
 
     def _preprocess_batch_input(
         self,
@@ -226,8 +109,8 @@ class GFSPOTrainer(GSPOTrainer):
             lengths = jnp.sum(grpo_batch["completion_mask"], axis=-1)
             lengths_grouped = lengths.reshape(num_prompts, G)
 
-            # Call our own filter method (host-stable)
-            mask = self._filter_mask_per_prompt(rewards_grouped, lengths_grouped)
+            # Use shared host-only GFPO filter
+            mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)
         except Exception as _e:
             # Fallback to GRPO advantages unchanged if GFPO filter fails
             if jax.process_index() == 0:
@@ -268,12 +151,9 @@ class GFSPOTrainer(GSPOTrainer):
 
         try:
             # Host-only metric compute for stability
-            mh = jax.device_get(mask)
-            lg_h = jax.device_get(lengths_grouped)
-            import numpy as _np
-            sel = float(_np.mean(mh))
-            tot = float(max(1.0, float(_np.sum(mh))))
-            avg_len = float((_np.sum(lg_h * mh)) / tot)
+            m = self._gfpo_compute_metrics_host(mask, lengths_grouped)
+            sel = float(m.get("gfpo/retention_rate", 0.0))
+            avg_len = float(m.get("gfpo/avg_retained_length", 0.0))
             if jax.process_index() == 0:
                 print(f"DEBUG: GFSPO metrics - retention_rate={sel:.3f}, avg_retained_length={avg_len:.1f}")
             metrics_dict["gfpo/retention_rate"] = sel
