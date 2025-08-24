@@ -64,6 +64,7 @@ def upload_checkpoint_folder(
     - Set EASYDEL_DISABLE_HF_UPLOADS=1 to skip entirely
     """
 
+    # Single consolidated gate to disable all uploads quickly
     if os.getenv("EASYDEL_DISABLE_HF_UPLOADS") in {"1", "true", "True"}:
         return
 
@@ -105,6 +106,17 @@ def upload_checkpoint_folder(
                 ...
         except Exception:
             ...
+
+        # Optional remote pruning: keep recent N checkpoints in the remote repo
+        try:
+            keep_n = int(os.getenv("EASYDEL_HF_KEEP_N", "0"))
+        except Exception:
+            keep_n = 0
+        if keep_n and keep_n > 0:
+            try:
+                _prune_remote_old_checkpoints(repo_id=repo_id, token=token, prefix=path_in_repo_prefix, keep_n=keep_n)
+            except Exception:
+                ...
 
     # Run upload in background to avoid blocking TPU hosts
     sync = os.getenv("EASYDEL_HF_SYNC") in {"1", "true", "True"}
@@ -185,7 +197,11 @@ def download_latest_checkpoint(
     local_root: str | os.PathLike | None = None,
 ) -> EasyPathLike | None:
     """Download the latest checkpoint folder from HF Hub into local_root/run-*/ and return its path."""
-    latest_dirname = get_latest_checkpoint_dirname(repo_id=repo_id, token=token, path_in_repo_prefix=path_in_repo_prefix)
+    latest_dirname = get_latest_checkpoint_dirname(
+        repo_id=repo_id,
+        token=token,
+        path_in_repo_prefix=path_in_repo_prefix,
+    )
     if latest_dirname is None:
         return None
     try:
@@ -207,5 +223,51 @@ def download_latest_checkpoint(
         return tp.cast(EasyPathLike, target)
     except Exception:
         return None
+
+
+def _prune_remote_old_checkpoints(*, repo_id: str, token: str, prefix: str, keep_n: int) -> None:
+    """Delete remote checkpoints beyond the most recent `keep_n`.
+
+    Operates best-effort; ignores errors.
+    """
+    try:
+        from huggingface_hub import HfApi
+    except Exception:
+        return
+
+    api = HfApi()
+    try:
+        tree = api.list_repo_tree(repo_id=repo_id, repo_type="model", token=token, path=prefix, recursive=False)
+        run_names: list[str] = []
+        for item in tree or []:
+            try:
+                rel = item.path.split("/")[-1]
+                if rel.startswith("run-"):
+                    run_names.append(rel)
+            except Exception:
+                ...
+        if len(run_names) <= keep_n:
+            return
+
+        def _extract_step(name: str) -> int:
+            try:
+                return int(re.sub(r"^run-", "", name))
+            except Exception:
+                return -1
+
+        run_names.sort(key=_extract_step)
+        to_delete = run_names[:-keep_n]
+        for name in to_delete:
+            try:
+                api.delete_file(
+                    repo_id=repo_id,
+                    repo_type="model",
+                    path=f"{prefix}/{name}",
+                    token=token,
+                )
+            except Exception:
+                ...
+    except Exception:
+        return
 
 

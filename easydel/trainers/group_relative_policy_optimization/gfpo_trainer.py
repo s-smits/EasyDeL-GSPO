@@ -103,21 +103,17 @@ class GFPOTrainer(GFPOFilterMixin, GRPOTrainer):
         except Exception:
             bsz, gsize = int(rewards_grouped.shape[0]), int(rewards_grouped.shape[1])
 
-        # Compute scores per configured metric on host
+        # Compute scores per configured metric on host (simplified logic)
         ascending = True
         if getattr(self.arguments, "gfpo_metric", "length") == "length":
             scores_h = lg
             ascending = True
         else:
             eps_eff = float(getattr(self.arguments, "gfpo_efficiency_epsilon", 1e-8))
-            try:
+            if _np is not None:
                 scores_h = rg / _np.maximum(lg, eps_eff)  # type: ignore
-            except Exception:
-                try:
-                    scores_h = rg / (lg + eps_eff)
-                except Exception:
-                    # last resort: use rewards directly
-                    scores_h = rg
+            else:
+                scores_h = rg / (lg + eps_eff)
             ascending = False
 
         # Determine k per prompt (fixed or adaptive) on host

@@ -7,35 +7,14 @@ from datasets import load_dataset, Dataset, concatenate_datasets
 from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from transformers import AutoConfig, AutoTokenizer
+from easydel.utils.safe_ops import safe_call
 
 import easydel as ed
 from easydel.infra.factory import registry
 from easydel.modules import *  # noqa: F401,F403 — ensure kernels are registered
 
 
-def safe_call(desc, fn, *args, default=None, swallow=True, **kwargs):
-    """Run fn safely.
-
-    - On success: prints a cleanup hint so we know this wrapper can be removed later.
-    - On failure: prints a concise failure note; returns default (or re-raises if swallow=False).
-    """
-    try:
-        result = fn(*args, **kwargs)
-        try:
-            if jax.process_index() == 0:
-                print(f"CLEANUP_HINT: '{desc}' succeeded — consider removing safe_call wrapper.")
-        except Exception:
-            ...
-        return default if result is None else result
-    except Exception as e:
-        try:
-            if jax.process_index() == 0:
-                print(f"SAFE_CALL_FAIL: '{desc}' failed with: {e}")
-        except Exception:
-            ...
-        if not swallow:
-            raise
-        return default
+# use shared safe_call
 
 
 @auto_pytree

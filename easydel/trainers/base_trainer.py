@@ -988,6 +988,10 @@ class BaseTrainer(BaseTrainerProtocol):
             token = get_hf_token(self.arguments.hub_token_env)
             if should_push_to_hub(self.arguments.push_checkpoints_to_hub, token):
                 repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
+                # Respect pruning knob via environment to avoid plumbing through signatures
+                if getattr(self.arguments, "hub_keep_n_checkpoints", None) is not None:
+                    os.environ["EASYDEL_HF_KEEP_N"] = str(int(self.arguments.hub_keep_n_checkpoints))
+
                 upload_checkpoint_folder(
                     local_ckpt_dir=directory_name,
                     repo_id=repo,

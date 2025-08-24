@@ -124,19 +124,15 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         except Exception:
             lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
 
-        # Use shared host-only GFPO filter
+        # Use shared host-only GFPO filter (simplified: fewer nested fallbacks)
         try:
             mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)
         except Exception as _e:
-            # Fallback to GRPO advantages unchanged if GFPO filter fails
             if jax.process_index() == 0:
                 try:
-                    print(
-                        "DEBUG: GFSPO preprocessing error; "
-                        f"using GRPO advantages unchanged: {_e}"
-                    )
+                    print("DEBUG: GFSPO preprocessing error; using GRPO advantages unchanged:", _e)
                 except Exception:
-                    pass
+                    ...
             mask = jnp.ones((num_prompts, G), dtype=jnp.float32)
         # Extra debug guardrails (proc0-only, host-only math)
         try:

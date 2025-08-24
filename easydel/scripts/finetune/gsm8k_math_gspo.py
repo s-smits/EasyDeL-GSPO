@@ -7,6 +7,7 @@ from datasets import load_dataset, Dataset
 from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from transformers import AutoConfig, AutoTokenizer
+from easydel.utils.safe_ops import safe_call
 
 import easydel as ed
 from easydel.infra.factory import registry
@@ -63,19 +64,7 @@ def main():
         except Exception:
             pass
 
-    def safe_call(desc, fn, *args, default=None, swallow=True, **kwargs):
-        try:
-            out = fn(*args, **kwargs)
-            return default if out is None else out
-        except Exception as e:
-            try:
-                if jax.process_index() == 0:
-                    print(f"SAFE_CALL_FAIL: {desc}: {e}")
-            except Exception:
-                ...
-            if not swallow:
-                raise
-            return default
+    # use shared safe_call
 
     tokenizer = safe_call(
         "load tokenizer",

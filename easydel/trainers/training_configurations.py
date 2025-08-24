@@ -478,6 +478,10 @@ class TrainingArguments:
         default="checkpoints",
         metadata={"help": "Path prefix inside the HF repo where checkpoints are uploaded."},
     )
+    hub_keep_n_checkpoints: int | None = field(
+        default=None,
+        metadata={"help": "If set, keep only the most recent N checkpoints in the remote HF repo (best-effort)."},
+    )
     continue_from_hf: bool = field(
         default=False,
         metadata={"help": "If True, resume training from the latest checkpoint found on Hugging Face Hub for hub_repo_id."},
