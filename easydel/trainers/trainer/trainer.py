@@ -298,7 +298,7 @@ class Trainer(BaseTrainer):
                 )
         except Exception as ex:
             try:
-                logger.error(f"DEBUG: Unexpected exception in evaluation loop: {type(ex).__name__}: {ex}")
+                print("DEBUG: Unexpected exception in evaluation loop: {type(ex).__name__}: {ex}")
             except Exception:
                 ...
         finally:
@@ -357,7 +357,7 @@ class Trainer(BaseTrainer):
                 return state, run_exception, train_iter
             except Exception as ex:
                 try:
-                    logger.error(
+                    print(
                         f"DEBUG: Unexpected exception before training step at step={current_step}: {type(ex).__name__}: {ex}"
                     )
                 except Exception:
@@ -421,7 +421,7 @@ class Trainer(BaseTrainer):
                 return state, run_exception, train_iter
             except Exception as ex:
                 try:
-                    logger.error(
+                    print(
                         f"DEBUG: Unexpected exception after training step at step={current_step}: {type(ex).__name__}: {ex}"
                     )
                 except Exception:
@@ -501,7 +501,7 @@ class Trainer(BaseTrainer):
                 break
             except Exception as ex:
                 try:
-                    logger.error(
+                    print(
                         f"DEBUG: Unexpected exception during evaluation at step={current_step}: {type(ex).__name__}: {ex}"
                     )
                 except Exception:
@@ -606,7 +606,7 @@ class Trainer(BaseTrainer):
         except Exception as run_exception:
             # Catch-all to avoid unhandled exceptions killing TPU workers
             try:
-                logger.error(
+                print(
                     f"DEBUG: Unhandled exception in _execute_train_step at step={int(jax.device_get(state.step))}: "
                     f"{type(run_exception).__name__}: {run_exception}"
                 )

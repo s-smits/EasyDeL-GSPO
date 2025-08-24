@@ -51,11 +51,11 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --gfpo_group_size 4 \
   --gfpo_retain_count 2 \
   --rollout_chunk_size 1 \
-  --num_train_epochs 4 \
+  --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
   --learning_rate 2e-6 \
-  --dataset_use_rate 100 \
+  --dataset_use_rate 2 \
   --force_tensor_parallel 4 \
   --force_data_parallel 2 \
   --log_logprobs_metrics false \
