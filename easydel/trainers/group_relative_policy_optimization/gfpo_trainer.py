@@ -114,96 +114,135 @@ class GFPOTrainer(GRPOTrainer):
         rewards_grouped: jnp.ndarray,  # (B, G)
         lengths_grouped: jnp.ndarray,  # (B, G)
     ) -> jnp.ndarray:
-        self._dbg(f"GFPOTrainer._filter_mask_per_prompt called")
-        self._dbg_shape("rewards_grouped", rewards_grouped)
-        self._dbg_shape("lengths_grouped", lengths_grouped)
+        # Local debug helpers to work even when called from GFSPOTrainer
+        try:
+            _proc0 = jax.process_index() == 0
+        except Exception:
+            _proc0 = True
+        try:
+            _verbose = getattr(self.arguments, "verbose", True)
+        except Exception:
+            _verbose = True
+
+        def _dbg(msg: str) -> None:
+            try:
+                if _proc0 and _verbose:
+                    print(msg)
+            except Exception:
+                ...
+
+        def _dbg_shape(name: str, arr) -> None:
+            try:
+                _dbg(f"{name}.shape={getattr(arr, 'shape', None)} dtype={getattr(arr, 'dtype', None)}")
+            except Exception:
+                ...
+
+        def _dbg_head(name: str, arr, n: int = 5) -> None:
+            try:
+                if not (_proc0 and _verbose):
+                    return
+                head = None
+                try:
+                    head = jax.device_get(arr)[:n]
+                except Exception:
+                    try:
+                        head = arr[:n]
+                    except Exception:
+                        head = None
+                _dbg(f"{name}: head={getattr(head, 'tolist', lambda: head)()} shape={getattr(arr, 'shape', None)}")
+            except Exception:
+                ...
+
+        _dbg(f"GFPOTrainer._filter_mask_per_prompt called")
+        _dbg_shape("rewards_grouped", rewards_grouped)
+        _dbg_shape("lengths_grouped", lengths_grouped)
         bsz, gsize = rewards_grouped.shape
-        self._dbg(f"bsz: {bsz}, gsize: {gsize}")
+        _dbg(f"bsz: {bsz}, gsize: {gsize}")
         # Debug and sanity checks for configuration propagation
         try:
             configured_G = int(getattr(self.arguments, "gfpo_group_size", gsize))
-            self._dbg(f"configured_G: {configured_G}")
+            _dbg(f"configured_G: {configured_G}")
             if configured_G != gsize and jax.process_index() == 0:
                 print(
                     f"DEBUG: GFPO group size mismatch: configured_G={configured_G} but grouped G={gsize}; "
                     f"will use grouped size for masking."
                 )
         except Exception as e:
-            self._dbg(f"Exception in group size check: {e}")
+            _dbg(f"Exception in group size check: {e}")
         # Compute scores per configured metric
-        self._dbg(f"gfpo_metric: {getattr(self.arguments, 'gfpo_metric', None)}")
+        _dbg(f"gfpo_metric: {getattr(self.arguments, 'gfpo_metric', None)}")
         if self.arguments.gfpo_metric == "length":
             # Lower is better
-            self._dbg("Metric is length, lower is better")
+            _dbg("Metric is length, lower is better")
             scores = lengths_grouped
             ascending = True
         else:
             # token_efficiency = reward / length; Higher is better
-            self._dbg("Metric is not length, using reward/length (token_efficiency)")
+            _dbg("Metric is not length, using reward/length (token_efficiency)")
             scores = rewards_grouped / jnp.maximum(
                 lengths_grouped, jnp.float32(getattr(self.arguments, "gfpo_efficiency_epsilon", 1e-8))
             )
             ascending = False
 
         # Determine k per prompt (fixed or adaptive per Algorithm 2)
-        self._dbg(f"gfpo_adaptive: {getattr(self.arguments, 'gfpo_adaptive', None)}")
+        _dbg(f"gfpo_adaptive: {getattr(self.arguments, 'gfpo_adaptive', None)}")
         if not self.arguments.gfpo_adaptive:
-            self._dbg("gfpo_adaptive is False, using fixed k_per_prompt")
+            _dbg("gfpo_adaptive is False, using fixed k_per_prompt")
             # TPU-safe: enforce int32 dtype for k array
             k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count), dtype=jnp.int32)
-            self._dbg_head("k_per_prompt(fixed)", k_per_prompt)
+            _dbg_head("k_per_prompt(fixed)", k_per_prompt)
         else:
-            self._dbg("gfpo_adaptive is True, using adaptive k_per_prompt")
+            _dbg("gfpo_adaptive is True, using adaptive k_per_prompt")
             # Method 1 (rolling history on CPU) per Algorithm 2
             avg_rewards = jnp.mean(rewards_grouped, axis=1)
-            self._dbg_shape("avg_rewards", avg_rewards)
+            _dbg_shape("avg_rewards", avg_rewards)
             try:
                 # Host step value for warmup logic
                 try:
                     # Try to get step from model_state if available, otherwise use 0
                     model_state = getattr(self, 'model_state', None)
-                    self._dbg(f"model_state available: {model_state is not None}")
+                    _dbg(f"model_state available: {model_state is not None}")
                     if model_state is not None and hasattr(model_state, 'step'):
                         state_step = int(jax.device_get(model_state.step))
-                        self._dbg(f"state_step from model_state: {state_step}")
+                        _dbg(f"state_step from model_state: {state_step}")
                     else:
                         state_step = 0
-                        self._dbg("model_state missing or no step; using step=0")
+                        _dbg("model_state missing or no step; using step=0")
                 except Exception as e:
-                    self._dbg(f"Exception in getting state_step: {e}")
+                    _dbg(f"Exception in getting state_step: {e}")
                     state_step = 0
                 warmup_steps = int(getattr(self.arguments, 'gfpo_adaptive_warmup_steps', 10))
-                self._dbg(f"warmup_steps: {warmup_steps}")
+                _dbg(f"warmup_steps: {warmup_steps}")
                 if state_step < warmup_steps:
-                    self._dbg("Warmup phase: using very_hard bucket for k_per_prompt")
+                    _dbg("Warmup phase: using very_hard bucket for k_per_prompt")
                     k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)), dtype=jnp.int32)
-                    self._dbg_head("k_per_prompt(warmup)", k_per_prompt)
+                    _dbg_head("k_per_prompt(warmup)", k_per_prompt)
                 else:
                     method = getattr(self.arguments, 'gfpo_adaptive_method', 'rolling')
-                    self._dbg(f"gfpo_adaptive_method: {method}")
+                    _dbg(f"gfpo_adaptive_method: {method}")
                     if method == 'ema':
-                        self._dbg("Using EMA for adaptive k_per_prompt")
+                        _dbg("Using EMA for adaptive k_per_prompt")
                         current_percentiles = jnp.percentile(
                             avg_rewards, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32)
                         )
-                        self._dbg(f"current_percentiles: {jax.device_get(current_percentiles).tolist()}")
+                        _dbg(f"current_percentiles: {jax.device_get(current_percentiles).tolist()}")
                         alpha = jnp.float32(getattr(self.arguments, 'gfpo_adaptive_ema_alpha', 0.1))
-                        self._dbg(f"EMA alpha: {alpha}")
+                        _dbg(f"EMA alpha: {alpha}")
                         if not hasattr(self, '_running_percentiles'):
-                            self._dbg("Initializing _running_percentiles")
+                            _dbg("Initializing _running_percentiles")
                             self._running_percentiles = current_percentiles
                         else:
-                            self._dbg("Updating _running_percentiles")
+                            _dbg("Updating _running_percentiles")
                             self._running_percentiles = (1.0 - alpha) * self._running_percentiles + alpha * current_percentiles
                         q25, q50, q75 = self._running_percentiles
-                        self._dbg(f"Running percentiles: {jax.device_get(jnp.array([q25, q50, q75])).tolist()}")
+                        _dbg(f"Running percentiles: {jax.device_get(jnp.array([q25, q50, q75])).tolist()}")
                         km = self.arguments.gfpo_adaptive_k_map
-                        self._dbg(f"k_map: {km}")
+                        _dbg(f"k_map: {km}")
                         k_vh = int(km.get('very_hard', 8))
                         k_h = int(km.get('hard', 8))
                         k_m = int(km.get('medium', 6))
                         k_e = int(km.get('easy', 4))
-                        self._dbg(f"k_vh={k_vh}, k_h={k_h}, k_m={k_m}, k_e={k_e}")
+                        _dbg(f"k_vh={k_vh}, k_h={k_h}, k_m={k_m}, k_e={k_e}")
                         k_per_prompt = jnp.where(
                             avg_rewards < q25, k_vh,
                             jnp.where(
@@ -211,47 +250,47 @@ class GFPOTrainer(GRPOTrainer):
                                 jnp.where(avg_rewards < q75, k_m, k_e),
                             ),
                         )
-                        self._dbg_head("k_per_prompt(ema)", k_per_prompt)
+                        _dbg_head("k_per_prompt(ema)", k_per_prompt)
                         k_per_prompt = k_per_prompt.astype(jnp.int32)
                     else:
-                        self._dbg("Using rolling buffer for adaptive k_per_prompt")
+                        _dbg("Using rolling buffer for adaptive k_per_prompt")
                         # Initialize CPU-side rolling buffer
                         if not hasattr(self, '_difficulty_buffer'):
-                            self._dbg("Initializing _difficulty_buffer")
+                            _dbg("Initializing _difficulty_buffer")
                             self._difficulty_buffer = []  # python list on CPU
                         # Append current batch avg rewards to buffer (CPU)
                         try:
                             avg_rewards_cpu = [float(x) for x in jax.device_get(avg_rewards[:8])]
                         except Exception:
                             avg_rewards_cpu = []
-                        self._dbg(f"Appending avg_rewards head to _difficulty_buffer: {avg_rewards_cpu} (total so far={len(self._difficulty_buffer)})")
+                        _dbg(f"Appending avg_rewards head to _difficulty_buffer: {avg_rewards_cpu} (total so far={len(self._difficulty_buffer)})")
                         self._difficulty_buffer.extend(avg_rewards_cpu)
                         # Trim to max history
                         max_hist = int(getattr(self.arguments, 'gfpo_adaptive_history_max', 20000))
-                        self._dbg(f"max_hist: {max_hist}, current buffer length: {len(self._difficulty_buffer)}")
+                        _dbg(f"max_hist: {max_hist}, current buffer length: {len(self._difficulty_buffer)}")
                         if len(self._difficulty_buffer) > max_hist:
-                            self._dbg("Trimming _difficulty_buffer to max_hist")
+                            _dbg("Trimming _difficulty_buffer to max_hist")
                             self._difficulty_buffer = self._difficulty_buffer[-max_hist:]
 
                         # Require minimal history to compute stable percentiles
                         if len(self._difficulty_buffer) < 40:
-                            self._dbg("Not enough history, using very_hard bucket for k_per_prompt")
+                            _dbg("Not enough history, using very_hard bucket for k_per_prompt")
                             k_per_prompt = jnp.full(
                                 (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)), dtype=jnp.int32
                             )
-                            self._dbg_head("k_per_prompt(history)" , k_per_prompt)
+                            _dbg_head("k_per_prompt(history)" , k_per_prompt)
                         else:
-                            self._dbg("Enough history, computing percentiles for k_per_prompt")
+                            _dbg("Enough history, computing percentiles for k_per_prompt")
                             hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
                             q25, q50, q75 = jnp.percentile(hist, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32))
-                            self._dbg(f"History percentiles: {jax.device_get(jnp.array([q25, q50, q75])).tolist()}")
+                            _dbg(f"History percentiles: {jax.device_get(jnp.array([q25, q50, q75])).tolist()}")
                             km = self.arguments.gfpo_adaptive_k_map
-                            self._dbg(f"k_map: {km}")
+                            _dbg(f"k_map: {km}")
                             k_vh = int(km.get('very_hard', 8))
                             k_h = int(km.get('hard', 8))
                             k_m = int(km.get('medium', 6))
                             k_e = int(km.get('easy', 4))
-                            self._dbg(f"k_vh={k_vh}, k_h={k_h}, k_m={k_m}, k_e={k_e}")
+                            _dbg(f"k_vh={k_vh}, k_h={k_h}, k_m={k_m}, k_e={k_e}")
                             k_per_prompt = jnp.where(
                                 avg_rewards < q25, k_vh,
                                 jnp.where(
@@ -259,27 +298,27 @@ class GFPOTrainer(GRPOTrainer):
                                     jnp.where(avg_rewards < q75, k_m, k_e),
                                 ),
                             )
-                            self._dbg_head("k_per_prompt(rolling)", k_per_prompt)
+                            _dbg_head("k_per_prompt(rolling)", k_per_prompt)
                             k_per_prompt = k_per_prompt.astype(jnp.int32)
             except Exception as e:
-                self._dbg(f"Exception in adaptive k_per_prompt: {e}")
+                _dbg(f"Exception in adaptive k_per_prompt: {e}")
                 # Safe fallback: fixed k
                 k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count), dtype=jnp.int32)
-                self._dbg_head("k_per_prompt(fallback)", k_per_prompt)
+                _dbg_head("k_per_prompt(fallback)", k_per_prompt)
 
         # Clamp k to valid range [1, G-1] to avoid degenerate retention==1.0 when possible
         try:
             upper = max(1, int(gsize) - 1)
-            self._dbg(f"Clamping k_per_prompt to [1, {upper}]")
+            _dbg(f"Clamping k_per_prompt to [1, {upper}]")
             k_per_prompt = jnp.clip(k_per_prompt, 1, upper).astype(jnp.int32)
-            self._dbg_head("k_per_prompt(clamped)", k_per_prompt)
+            _dbg_head("k_per_prompt(clamped)", k_per_prompt)
             if jax.process_index() == 0:
                 # If any k equals G, log a hint
                 try:
                     num_full = int(jnp.sum(k_per_prompt >= upper))
-                    self._dbg(f"num_full (k_per_prompt >= upper): {num_full}")
+                    _dbg(f"num_full (k_per_prompt >= upper): {num_full}")
                 except Exception as e:
-                    self._dbg(f"Exception in counting num_full: {e}")
+                    _dbg(f"Exception in counting num_full: {e}")
                     num_full = -1
                 if num_full and num_full > 0:
                     print(
@@ -287,36 +326,36 @@ class GFPOTrainer(GRPOTrainer):
                         "Consider lowering gfpo_retain_count or adjusting adaptive k-map."
                     )
         except Exception as e:
-            self._dbg(f"Exception in clamping k_per_prompt: {e}")
+            _dbg(f"Exception in clamping k_per_prompt: {e}")
 
         # Build mask per prompt by argsort
-        self._dbg("Building mask per prompt by argsort (showing first 2 prompts only)")
+        _dbg("Building mask per prompt by argsort (showing first 2 prompts only)")
         mask = jnp.zeros((bsz, gsize), dtype=jnp.float32)
         for i in range(bsz):
             # Guard against pathological k values
             try:
                 k_i = int(k_per_prompt[i])
                 if i < 2:
-                    self._dbg(f"Prompt {i}: k_i={k_i}")
+                    _dbg(f"Prompt {i}: k_i={k_i}")
             except Exception as e:
                 if i < 2:
-                    self._dbg(f"Exception in getting k_i for prompt {i}: {e}")
+                    _dbg(f"Exception in getting k_i for prompt {i}: {e}")
                 k_i = int(self.arguments.gfpo_retain_count)
             k_i = max(1, min(int(gsize), k_i))
             if i < 2:
-                self._dbg(f"Prompt {i}: final k_i: {k_i}")
+                _dbg(f"Prompt {i}: final k_i: {k_i}")
             if ascending:
                 chosen = jnp.argsort(scores[i])[:k_i]
                 if i < 2:
                     try:
-                        self._dbg(f"Prompt {i}: ascending, chosen head={jax.device_get(chosen)[:8].tolist()}")
+                        _dbg(f"Prompt {i}: ascending, chosen head={jax.device_get(chosen)[:8].tolist()}")
                     except Exception:
                         ...
             else:
                 chosen = jnp.argsort(-scores[i])[:k_i]
                 if i < 2:
                     try:
-                        self._dbg(f"Prompt {i}: descending, chosen head={jax.device_get(chosen)[:8].tolist()}")
+                        _dbg(f"Prompt {i}: descending, chosen head={jax.device_get(chosen)[:8].tolist()}")
                     except Exception:
                         ...
             mask = mask.at[i, chosen].set(1.0)
@@ -327,15 +366,15 @@ class GFPOTrainer(GRPOTrainer):
             if jax.process_index() == 0:
                 try:
                     expected_sum = float(jnp.sum(k_per_prompt))
-                    self._dbg(f"expected_sum: {expected_sum}")
+                    _dbg(f"expected_sum: {expected_sum}")
                 except Exception as e:
-                    self._dbg(f"Exception in computing expected_sum: {e}")
+                    _dbg(f"Exception in computing expected_sum: {e}")
                     expected_sum = -1.0
                 try:
                     mask_sum = float(jnp.sum(mask))
-                    self._dbg(f"mask_sum: {mask_sum}")
+                    _dbg(f"mask_sum: {mask_sum}")
                 except Exception as e:
-                    self._dbg(f"Exception in computing mask_sum: {e}")
+                    _dbg(f"Exception in computing mask_sum: {e}")
                     mask_sum = -1.0
                 print(
                     f"DEBUG: GFPO filter params: G={int(gsize)}, k_fixed={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
@@ -345,8 +384,8 @@ class GFPOTrainer(GRPOTrainer):
                     f"DEBUG: GFPO mask sum={mask_sum}, expected_sum≈{expected_sum} (bsz={int(bsz)})"
                 )
         except Exception as e:
-            self._dbg(f"Exception in mask sum debug: {e}")
-        self._dbg("Returning mask from _filter_mask_per_prompt")
+            _dbg(f"Exception in mask sum debug: {e}")
+        _dbg("Returning mask from _filter_mask_per_prompt")
         return mask
 
     def _preprocess_batch_input(

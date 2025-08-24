@@ -69,6 +69,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --advantage_epsilon 1e-6
+  --advantage_epsilon 1e-6 \
+  --verbose true
 
 echo "Training completed!"
