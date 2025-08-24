@@ -68,6 +68,129 @@ class GFSPOTrainer(GSPOTrainer):
             print(f"DEBUG: Failed to log GFSPO trainer initialization: {e}")
             logger.warning(f"Failed to log GFSPO trainer initialization: {e}")
 
+    def _filter_mask_per_prompt(
+        self,
+        rewards_grouped: jnp.ndarray,  # (B, G)
+        lengths_grouped: jnp.ndarray,  # (B, G)
+    ) -> jnp.ndarray:
+        """
+        Create a binary mask selecting the top-k responses per prompt according to the
+        configured metric. Returns mask with shape (B, G) of floats in {0.0, 1.0}.
+        Copied from GFPOTrainer to avoid cross-class method calls.
+        """
+        bsz, gsize = rewards_grouped.shape
+
+        # Compute scores per configured metric
+        if self.arguments.gfpo_metric == "length":
+            # Lower is better
+            scores = lengths_grouped
+            ascending = True
+        else:
+            # token_efficiency = reward / length; Higher is better
+            eps_eff = jnp.float32(getattr(self.arguments, "gfpo_efficiency_epsilon", 1e-8))
+            scores = rewards_grouped / jnp.maximum(lengths_grouped, eps_eff)
+            ascending = False
+
+        # Determine k per prompt (fixed or adaptive per Algorithm 2)
+        if not self.arguments.gfpo_adaptive:
+            k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count), dtype=jnp.int32)
+        else:
+            # Method: warmup then either rolling history or EMA percentiles
+            avg_rewards = jnp.mean(rewards_grouped, axis=1)
+            try:
+                model_state = getattr(self, "model_state", None)
+                if model_state is not None and hasattr(model_state, "step"):
+                    state_step = int(jax.device_get(model_state.step))
+                else:
+                    state_step = 0
+            except Exception:
+                state_step = 0
+
+            warmup_steps = int(getattr(self.arguments, "gfpo_adaptive_warmup_steps", 10))
+            if state_step < warmup_steps:
+                k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get("very_hard", 8)), dtype=jnp.int32)
+            else:
+                method = getattr(self.arguments, "gfpo_adaptive_method", "rolling")
+                if method == "ema":
+                    current_percentiles = jnp.percentile(
+                        avg_rewards, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32)
+                    )
+                    alpha = jnp.float32(getattr(self.arguments, "gfpo_adaptive_ema_alpha", 0.1))
+                    if not hasattr(self, "_running_percentiles"):
+                        self._running_percentiles = current_percentiles
+                    else:
+                        self._running_percentiles = (1.0 - alpha) * self._running_percentiles + alpha * current_percentiles
+                    q25, q50, q75 = self._running_percentiles
+
+                    km = self.arguments.gfpo_adaptive_k_map
+                    k_vh = int(km.get("very_hard", 8))
+                    k_h = int(km.get("hard", 8))
+                    k_m = int(km.get("medium", 6))
+                    k_e = int(km.get("easy", 4))
+                    k_per_prompt = jnp.where(
+                        avg_rewards < q25,
+                        k_vh,
+                        jnp.where(
+                            avg_rewards < q50,
+                            k_h,
+                            jnp.where(avg_rewards < q75, k_m, k_e),
+                        ),
+                    )
+                    k_per_prompt = k_per_prompt.astype(jnp.int32)
+                else:
+                    # rolling history on CPU
+                    if not hasattr(self, "_difficulty_buffer"):
+                        self._difficulty_buffer = []  # python list on CPU
+                    try:
+                        self._difficulty_buffer.extend([float(x) for x in jax.device_get(avg_rewards)])
+                    except Exception:
+                        pass
+                    max_hist = int(getattr(self.arguments, "gfpo_adaptive_history_max", 20000))
+                    if len(self._difficulty_buffer) > max_hist:
+                        self._difficulty_buffer = self._difficulty_buffer[-max_hist:]
+
+                    if len(self._difficulty_buffer) < 40:
+                        k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get("very_hard", 8)), dtype=jnp.int32)
+                    else:
+                        hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
+                        q25, q50, q75 = jnp.percentile(
+                            hist, jnp.array([25.0, 50.0, 75.0], dtype=jnp.float32)
+                        )
+                        km = self.arguments.gfpo_adaptive_k_map
+                        k_vh = int(km.get("very_hard", 8))
+                        k_h = int(km.get("hard", 8))
+                        k_m = int(km.get("medium", 6))
+                        k_e = int(km.get("easy", 4))
+                        k_per_prompt = jnp.where(
+                            avg_rewards < q25,
+                            k_vh,
+                            jnp.where(
+                                avg_rewards < q50,
+                                k_h,
+                                jnp.where(avg_rewards < q75, k_m, k_e),
+                            ),
+                        )
+                        k_per_prompt = k_per_prompt.astype(jnp.int32)
+
+        # Clamp k to valid range [1, G-1] to avoid degenerate full retention
+        upper = max(1, int(gsize) - 1)
+        k_per_prompt = jnp.clip(k_per_prompt, 1, upper).astype(jnp.int32)
+
+        # Build mask per prompt by argsort
+        mask = jnp.zeros((bsz, gsize), dtype=jnp.float32)
+        for i in range(bsz):
+            try:
+                k_i = int(k_per_prompt[i])
+            except Exception:
+                k_i = int(self.arguments.gfpo_retain_count)
+            k_i = max(1, min(int(gsize), k_i))
+            if ascending:
+                chosen = jnp.argsort(scores[i])[:k_i]
+            else:
+                chosen = jnp.argsort(-scores[i])[:k_i]
+            mask = mask.at[i, chosen].set(1.0)
+        return mask
+
     def _preprocess_batch_input(
         self,
         state: EasyDeLState,
@@ -106,8 +229,8 @@ class GFSPOTrainer(GSPOTrainer):
         lengths = jnp.sum(grpo_batch["completion_mask"], axis=-1)
         lengths_grouped = lengths.reshape(num_prompts, G)
 
-        # Reuse GFPO filter helper directly
-        mask = GFPOTrainer._filter_mask_per_prompt(self, rewards_grouped, lengths_grouped)
+        # Call our own filter method (inherited from GFPOTrainer)
+        mask = self._filter_mask_per_prompt(rewards_grouped, lengths_grouped)
         # Extra debug guardrails to ensure filtering is effective
         try:
             if jax.process_index() == 0:
@@ -138,9 +261,8 @@ class GFSPOTrainer(GSPOTrainer):
 
         try:
             retention_rate = float(jnp.mean(mask))
-            avg_retained_length = float(
-                jnp.sum(lengths * mask.reshape(-1)) / float(jnp.maximum(jnp.sum(mask), 1.0))
-            )
+            total_selected = jnp.maximum(jnp.sum(mask), 1.0)
+            avg_retained_length = float(jnp.sum(lengths_grouped * mask) / total_selected)
             print(f"DEBUG: GFSPO metrics - retention_rate={retention_rate:.3f}, avg_retained_length={avg_retained_length:.1f}")
             metrics_dict["gfpo/retention_rate"] = retention_rate
             metrics_dict["gfpo/avg_retained_length"] = avg_retained_length
