@@ -213,7 +213,9 @@ def main():
                 "answer": extract_hash_answer(x["answer"]),
             }
 
-        return ds_train.map(map_ex), ds_test.map(map_ex)
+        ds_train_m = ds_train.map(map_ex)
+        ds_test_m = ds_test.map(map_ex) if ds_test is not None else None
+        return ds_train_m, ds_test_m
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
@@ -228,9 +230,8 @@ def main():
             if jax.process_index() == 0:
                 print(f"DEBUG: MATH split string -> test='{test_split}'")
             ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
-        except ValueError as e:
-            # Fallback for datasets that only provide a 'train' split
-            if "Unknown split" in str(e) or "test" in str(e):
+            if ds_test is None:
+                # Fallback for datasets that only provide a 'train' split
                 if jax.process_index() == 0:
                     print(
                         "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
@@ -238,8 +239,10 @@ def main():
                     )
                 split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
                 ds_train, ds_test = split_ds["train"], split_ds["test"]
-            else:
-                raise
+        except ValueError:
+            # Extremely defensive fallback
+            split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+            ds_train, ds_test = split_ds["train"], split_ds["test"]
 
         def map_ex(x):
             return {
@@ -260,7 +263,9 @@ def main():
                 print(f"DEBUG: Loaded competition_math sizes -> train={len(ds_train)}, test={len(ds_test) if ds_test else 'N/A'}")
             except Exception:
                 ...
-        return ds_train.map(map_ex), ds_test.map(map_ex)
+        ds_train_m = ds_train.map(map_ex)
+        ds_test_m = ds_test.map(map_ex) if ds_test is not None else None
+        return ds_train_m, ds_test_m
 
     # Normalize dataset names to support *-ds suffix
     _raw_ds = (runtime.dataset or "").strip().lower()

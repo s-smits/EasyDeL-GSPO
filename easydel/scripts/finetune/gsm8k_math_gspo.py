@@ -175,25 +175,23 @@ def main():
                 "answer": extract_hash_answer(x["answer"]),
             }
 
-        return ds_train.map(map_ex), ds_test.map(map_ex)
+        ds_train_m = ds_train.map(map_ex)
+        ds_test_m = ds_test.map(map_ex) if ds_test is not None else None
+        return ds_train_m, ds_test_m
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
         ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
-        try:
-            ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
-        except ValueError as e:
-            # Fallback for datasets that only provide a 'train' split
-            if "Unknown split" in str(e) or "test" in str(e):
-                if jax.process_index() == 0:
-                    print(
-                        "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
-                        "Using 10% of 'train' as validation (deterministic split, seed=17)."
-                    )
-                split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
-                ds_train, ds_test = split_ds["train"], split_ds["test"]
-            else:
-                raise
+        # Attempt test split; if missing, create split from train deterministically
+        ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
+        if ds_test is None:
+            if jax.process_index() == 0:
+                print(
+                    "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
+                    "Using 10% of 'train' as validation (deterministic split, seed=17)."
+                )
+            split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+            ds_train, ds_test = split_ds["train"], split_ds["test"]
 
         def map_ex(x):
             return {
@@ -208,7 +206,9 @@ def main():
                 "type": x.get("type", ""),
             }
 
-        return ds_train.map(map_ex), ds_test.map(map_ex)
+        ds_train_m = ds_train.map(map_ex)
+        ds_test_m = ds_test.map(map_ex) if ds_test is not None else None
+        return ds_train_m, ds_test_m
 
     # Normalize dataset names to support *-ds suffix
     _raw_ds = (runtime.dataset or "").strip().lower()
