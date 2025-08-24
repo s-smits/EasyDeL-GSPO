@@ -26,9 +26,8 @@ from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
 
 from ..base_trainer import BaseTrainer, TrainerConfigureFunctionOutput
-from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics
+from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics, TrainerOutput
 from ._fn import evaluation_step, training_step
-from .modeling_output import TrainerOutput
 
 logger = get_logger(__name__)
 
@@ -296,11 +295,6 @@ class Trainer(BaseTrainer):
                     step_metrics=step_metrics,
                     pbar=pbar,
                 )
-        except Exception as ex:
-            try:
-                print("DEBUG: Unexpected exception in evaluation loop: {type(ex).__name__}: {ex}")
-            except Exception:
-                ...
         finally:
             pbar.close()
 
@@ -354,15 +348,6 @@ class Trainer(BaseTrainer):
                 state = self.on_step_start(state=state, step=current_step)
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, StopIteration) as exect:
                 run_exception = exect
-                return state, run_exception, train_iter
-            except Exception as ex:
-                try:
-                    print(
-                        f"DEBUG: Unexpected exception before training step at step={current_step}: {type(ex).__name__}: {ex}"
-                    )
-                except Exception:
-                    ...
-                run_exception = ex
                 return state, run_exception, train_iter
 
             # Execute training step
@@ -418,15 +403,6 @@ class Trainer(BaseTrainer):
                         ...
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError) as exect:
                 run_exception = exect if run_exception is None else run_exception
-                return state, run_exception, train_iter
-            except Exception as ex:
-                try:
-                    print(
-                        f"DEBUG: Unexpected exception after training step at step={current_step}: {type(ex).__name__}: {ex}"
-                    )
-                except Exception:
-                    ...
-                run_exception = ex if run_exception is None else run_exception
                 return state, run_exception, train_iter
             if run_exception is not None:
                 break
@@ -540,7 +516,7 @@ class Trainer(BaseTrainer):
         self,
         state,
         batch,
-    ) -> tuple[EasyDeLState, LossMetrics, Exception]:
+    ) -> tuple[EasyDeLState, LossMetrics, BaseException | None]:
         """
         Executes a single training step.
 
@@ -603,16 +579,7 @@ class Trainer(BaseTrainer):
             TypeError,
         ) as run_exception:
             return state, metrics, run_exception
-        except Exception as run_exception:
-            # Catch-all to avoid unhandled exceptions killing TPU workers
-            try:
-                print(
-                    f"DEBUG: Unhandled exception in _execute_train_step at step={int(jax.device_get(state.step))}: "
-                    f"{type(run_exception).__name__}: {run_exception}"
-                )
-            except Exception:
-                ...
-            return state, metrics, run_exception
+        
 
     def _finalize_training(self, output, run_exception):
         """
