@@ -107,7 +107,8 @@ class GFPOTrainer(GRPOTrainer):
 
         # Determine k per prompt (fixed or adaptive per Algorithm 2)
         if not self.arguments.gfpo_adaptive:
-            k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count))
+            # TPU-safe: enforce int32 dtype for k array
+            k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count), dtype=jnp.int32)
         else:
             # Method 1 (rolling history on CPU) per Algorithm 2
             avg_rewards = jnp.mean(rewards_grouped, axis=1)
@@ -125,7 +126,7 @@ class GFPOTrainer(GRPOTrainer):
                 warmup_steps = int(getattr(self.arguments, 'gfpo_adaptive_warmup_steps', 10))
                 if state_step < warmup_steps:
                     # Warmup: retain k=8 for all prompts (very_hard bucket)
-                    k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)))
+                    k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)), dtype=jnp.int32)
                 else:
                     method = getattr(self.arguments, 'gfpo_adaptive_method', 'rolling')
                     if method == 'ema':
@@ -151,6 +152,7 @@ class GFPOTrainer(GRPOTrainer):
                                 jnp.where(avg_rewards < q75, k_m, k_e),
                             ),
                         )
+                        k_per_prompt = k_per_prompt.astype(jnp.int32)
                     else:
                         # Initialize CPU-side rolling buffer
                         if not hasattr(self, '_difficulty_buffer'):
@@ -165,7 +167,7 @@ class GFPOTrainer(GRPOTrainer):
                         # Require minimal history to compute stable percentiles
                         if len(self._difficulty_buffer) < 40:
                             k_per_prompt = jnp.full(
-                                (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8))
+                                (bsz,), int(self.arguments.gfpo_adaptive_k_map.get('very_hard', 8)), dtype=jnp.int32
                             )
                         else:
                             hist = jnp.asarray(self._difficulty_buffer, dtype=jnp.float32)
@@ -182,14 +184,15 @@ class GFPOTrainer(GRPOTrainer):
                                     jnp.where(avg_rewards < q75, k_m, k_e),
                                 ),
                             )
+                            k_per_prompt = k_per_prompt.astype(jnp.int32)
             except Exception:
                 # Safe fallback: fixed k
-                k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count))
+                k_per_prompt = jnp.full((bsz,), int(self.arguments.gfpo_retain_count), dtype=jnp.int32)
 
         # Clamp k to valid range [1, G-1] to avoid degenerate retention==1.0 when possible
         try:
             upper = max(1, int(gsize) - 1)
-            k_per_prompt = jnp.clip(k_per_prompt, 1, upper)
+            k_per_prompt = jnp.clip(k_per_prompt, 1, upper).astype(jnp.int32)
             if jax.process_index() == 0:
                 # If any k equals G, log a hint
                 try:
