@@ -26,8 +26,9 @@ from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
 
 from ..base_trainer import BaseTrainer, TrainerConfigureFunctionOutput
-from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics, TrainerOutput
+from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics
 from ._fn import evaluation_step, training_step
+from .modeling_output import TrainerOutput
 
 logger = get_logger(__name__)
 
@@ -231,11 +232,6 @@ class Trainer(BaseTrainer):
             run_exception = None
             with self.mesh:
                 for epoch in range(self.arguments.num_train_epochs):
-                    try:
-                        if jax.process_index() == 0:
-                            logger.info(f"DEBUG: Starting epoch {epoch+1}/{self.arguments.num_train_epochs}")
-                    except Exception:
-                        ...
                     state, run_exception, train_iter = self._train_epoch(
                         state=state,
                         train_dataset=self.dataloader_train,
@@ -475,14 +471,6 @@ class Trainer(BaseTrainer):
                 yield eval_metrics
             except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, TypeError):
                 break
-            except Exception as ex:
-                try:
-                    print(
-                        f"DEBUG: Unexpected exception during evaluation at step={current_step}: {type(ex).__name__}: {ex}"
-                    )
-                except Exception:
-                    ...
-                break
 
     def _execute_eval_step(self, state, batch) -> LossMetrics:
         """
@@ -516,7 +504,7 @@ class Trainer(BaseTrainer):
         self,
         state,
         batch,
-    ) -> tuple[EasyDeLState, LossMetrics, BaseException | None]:
+    ) -> tuple[EasyDeLState, LossMetrics, Exception]:
         """
         Executes a single training step.
 
@@ -579,7 +567,6 @@ class Trainer(BaseTrainer):
             TypeError,
         ) as run_exception:
             return state, metrics, run_exception
-        
 
     def _finalize_training(self, output, run_exception):
         """
