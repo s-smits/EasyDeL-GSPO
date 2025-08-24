@@ -1028,43 +1028,43 @@ class GRPOTrainer(Trainer):
                         if is_math:
                             try:
                                 print("DEBUG: Using math reward extraction")
-                                # Preview for logs - show last ~50 tokens to see where answer should be
-                                try:
-                                    # Try to get a token-aware preview
-                                    # Get tokenizer from processing_class (could be tokenizer or processor)
-                                    if hasattr(self.processing_class, 'tokenizer'):
-                                        tok = self.processing_class.tokenizer
-                                    else:
-                                        tok = self.processing_class
-                                    
-                                    tokens = tok.encode(example_pred_text, add_special_tokens=False)
-                                    if len(tokens) > 50:
-                                        preview_tokens = tokens[-50:]
-                                        preview = tok.decode(preview_tokens, skip_special_tokens=True)
-                                    else:
-                                        preview = example_pred_text
-                                except Exception:
-                                    # Fallback to character-based if tokenizer fails
-                                    preview = example_pred_text[-300:] if len(example_pred_text) > 300 else example_pred_text
-                                
-                                # Truncate for display if still too long
+                                # Preview: last 20 tokens if tokenizer exists, else last 200 chars
+                                preview = example_pred_text[-200:]
+                                tok = self.processing_class.tokenizer if hasattr(self.processing_class, "tokenizer") else self.processing_class
+                                if hasattr(tok, "encode") and hasattr(tok, "decode"):
+                                    try:
+                                        tokens = tok.encode(example_pred_text, add_special_tokens=False)
+                                        if tokens:
+                                            preview = tok.decode(tokens[-20:], skip_special_tokens=True)
+                                    except Exception:
+                                        preview = example_pred_text[-200:]
+
                                 if len(preview) > 200:
                                     preview = "..." + preview[-200:]
-                                print(f"DEBUG: Math extraction preview (last ~50 tokens): '{preview}'")
-                                # Extract last boxed or fallback to last number
+                                print(f"DEBUG: Math preview (last 20 tokens): '{preview}'")
+
+                                # Extract: prefer last boxed; else last number; fallback to preview
+                                example_pred_value = preview
                                 try:
-                                    from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
+                                    from easydel.verification.math_reward import (
+                                        _last_boxed_only_string as _mv_last_boxed,
+                                        _remove_boxed as _mv_remove_boxed,
+                                    )  # type: ignore
+
                                     _boxed = _mv_last_boxed(example_pred_text)
-                                    if _boxed is not None:
+                                    if _boxed:
                                         example_pred_value = _mv_remove_boxed(_boxed)
                                     else:
                                         import re as _re
                                         _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
-                                        example_pred_value = _nums[-1] if _nums else preview
+                                        if _nums:
+                                            example_pred_value = _nums[-1]
                                 except Exception:
                                     import re as _re
                                     _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
-                                    example_pred_value = _nums[-1] if _nums else preview
+                                    if _nums:
+                                        example_pred_value = _nums[-1]
+
                                 print(f"DEBUG: Math extraction result: '{example_pred_value}'")
                             except Exception as e:
                                 print(f"DEBUG: Math extraction failed: {e}")
