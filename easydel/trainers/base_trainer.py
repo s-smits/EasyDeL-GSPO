@@ -64,6 +64,13 @@ from .trainer_protocol import (
 )
 from .training_configurations import MetricsType, TrainingArguments
 from .utils import CollateMapTransform, HFDataSource, ToNumpy
+from easydel.utils.hf_hub_utils import (
+    download_latest_checkpoint,
+    get_hf_token,
+    resolve_repo_id,
+    should_push_to_hub,
+    upload_checkpoint_folder,
+)
 
 try:
     import wandb  # type:ignore
@@ -109,14 +116,23 @@ class BaseTrainer(BaseTrainerProtocol):
         # If requested, resume from the latest HF checkpoint
         try:
             if getattr(self.arguments, "continue_from_hf", False):
-                local_ckpt_dir = self.arguments.download_latest_hf_checkpoint_to(local_root=self.arguments._get_save_directory(create=True))
-                if local_ckpt_dir is not None:
-                    logger.info(f"Resuming from HF checkpoint at {local_ckpt_dir}")
-                    # Load full state (model + optimizer + step) from the downloaded checkpoint
-                    self.model_state = EasyDeLState.load_state(load_directory=str(local_ckpt_dir))
-                    self._model = flax.nnx.eval_shape(lambda: self.model_state.model)
+                token = get_hf_token(self.arguments.hub_token_env)
+                if token is not None:
+                    repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
+                    local_ckpt_dir = download_latest_checkpoint(
+                        repo_id=repo,
+                        token=token,
+                        path_in_repo_prefix=self.arguments.hub_path_in_repo_prefix,
+                        local_root=str(self.arguments._get_save_directory(create=True)),
+                    )
+                    if local_ckpt_dir is not None:
+                        logger.info(f"Resuming from HF checkpoint at {local_ckpt_dir}")
+                        self.model_state = EasyDeLState.load_state(load_directory=str(local_ckpt_dir))
+                        self._model = flax.nnx.eval_shape(lambda: self.model_state.model)
+                    else:
+                        logger.info("continue_from_hf requested but no remote checkpoint found; starting fresh.")
                 else:
-                    logger.info("continue_from_hf requested but no remote checkpoint found; starting fresh.")
+                    logger.info("continue_from_hf requested but no HF token available; starting fresh.")
         except Exception as e:
             logger.warning(f"Failed to resume from HF Hub: {e!s}. Proceeding without remote resume.")
         self._initialize_attributes()
@@ -966,10 +982,19 @@ class BaseTrainer(BaseTrainerProtocol):
             save_optimizer=self.arguments.save_optimizer_state,
             enable=self.is_enable,
         )
+
         # Optionally upload to Hugging Face Hub
         try:
-            if self.arguments.should_push_to_hub():
-                self.arguments.upload_checkpoint_to_hub(local_ckpt_dir=directory_name, step=step)
+            token = get_hf_token(self.arguments.hub_token_env)
+            if should_push_to_hub(self.arguments.push_checkpoints_to_hub, token):
+                repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
+                upload_checkpoint_folder(
+                    local_ckpt_dir=directory_name,
+                    repo_id=tp.cast(str, token),
+                    token=tp.cast(str, token),
+                    private=self.arguments.hub_private,
+                    path_in_repo_prefix=self.arguments.hub_path_in_repo_prefix,
+                )
         except Exception as e:
             logger.warning(f"HF upload failed (ignored): {e!s}")
 
