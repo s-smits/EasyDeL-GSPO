@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import datetime
 import functools
+import io
 import json
 import os
 import re
+import tempfile
 import traceback
 import typing as tp
 import warnings
@@ -455,6 +457,31 @@ class TrainingArguments:
         default=None,
         metadata={"help": "The Weights & Biases run name."},
     )
+    # --- Hugging Face Hub integration ---
+    hub_repo_id: str | None = field(
+        default=None,
+        metadata={"help": "Hugging Face Hub repository id to upload checkpoints to. If None, uses model_name."},
+    )
+    hub_private: bool = field(
+        default=True,
+        metadata={"help": "Create/upload to a private repository on Hugging Face Hub."},
+    )
+    push_checkpoints_to_hub: bool | None = field(
+        default=None,
+        metadata={"help": "If True, upload every checkpoint to Hugging Face Hub. If None, auto-enable when HUGGINGFACE_API_KEY is set."},
+    )
+    hub_token_env: str = field(
+        default="HUGGINGFACE_API_KEY",
+        metadata={"help": "Environment variable name to read the Hugging Face Hub token from."},
+    )
+    hub_path_in_repo_prefix: str = field(
+        default="checkpoints",
+        metadata={"help": "Path prefix inside the HF repo where checkpoints are uploaded."},
+    )
+    continue_from_hf: bool = field(
+        default=False,
+        metadata={"help": "If True, resume training from the latest checkpoint found on Hugging Face Hub for hub_repo_id."},
+    )
     warmup_steps: int = field(
         default=0,
         metadata={"help": "The number of warmup steps for the learning rate scheduler."},
@@ -616,6 +643,157 @@ class TrainingArguments:
             self.loss_config = LossConfig()
         if isinstance(self.loss_config, dict):
             self.loss_config = LossConfig(**self.loss_config)
+
+    # ---------------------------
+    # Hugging Face Hub utilities
+    # ---------------------------
+
+    def _hf_token(self) -> str | None:
+        """Fetch the Hugging Face token from the configured environment variable."""
+        tok = os.getenv(self.hub_token_env)
+        if tok is None:
+            # fallbacks commonly used by users; do not advertise, but be resilient
+            tok = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_TOKEN_FOR_EASYDEL")
+        return tok
+
+    def should_push_to_hub(self) -> bool:
+        """Return True if we should push checkpoints to hub for this process."""
+        if self.push_checkpoints_to_hub is not None:
+            return bool(self.push_checkpoints_to_hub) and (self._hf_token() is not None)
+        # Auto-enable when token exists
+        return self._hf_token() is not None
+
+    def resolve_hf_repo_id(self) -> str:
+        """Derive a default repo id when not explicitly provided."""
+        base = self.hub_repo_id or (self.model_name or "easydel-model")
+        return str(base)
+
+    def upload_checkpoint_to_hub(self, local_ckpt_dir: EasyPathLike, step: int) -> None:
+        """Upload a local checkpoint directory to HF Hub under checkpoints/run-<step>.
+
+        Best-effort: errors are logged upstream; this should not raise for common failures.
+        """
+        token = self._hf_token()
+        if token is None:
+            return
+        try:
+            from huggingface_hub import HfApi
+        except Exception:
+            # huggingface_hub is optional; skip silently if missing
+            return
+
+        repo_id = self.resolve_hf_repo_id()
+        api = HfApi()
+        try:
+            api.create_repo(repo_id=repo_id, repo_type="model", private=self.hub_private, exist_ok=True, token=token)
+        except Exception:
+            # Repo may already exist or token lacks permission; continue to try upload
+            ...
+
+        # Upload the entire folder under a namespaced path to keep multiple checkpoints
+        ckpt_name = EasyPath(local_ckpt_dir).name
+        path_in_repo = f"{self.hub_path_in_repo_prefix}/{ckpt_name}"
+        try:
+            api.upload_folder(
+                folder_path=str(local_ckpt_dir),
+                repo_id=repo_id,
+                repo_type="model",
+                token=token,
+                path_in_repo=path_in_repo,
+                allow_patterns=None,
+            )
+            # Update a small marker with the latest checkpoint
+            latest_payload = io.BytesIO(str(ckpt_name).encode("utf-8"))
+            api.upload_file(
+                path_or_fileobj=latest_payload,
+                path_in_repo=f"{self.hub_path_in_repo_prefix}/latest.txt",
+                repo_id=repo_id,
+                repo_type="model",
+                token=token,
+            )
+        except Exception:
+            # Do not crash training on upload errors
+            ...
+
+    def get_latest_hf_checkpoint_dirname(self) -> str | None:
+        """Return the latest checkpoint directory name (e.g., run-1234) on HF Hub or None."""
+        token = self._hf_token()
+        if token is None:
+            return None
+        try:
+            from huggingface_hub import HfApi
+        except Exception:
+            return None
+        repo_id = self.resolve_hf_repo_id()
+        api = HfApi()
+        try:
+            # Prefer using the marker file if present
+            files = api.list_repo_files(repo_id=repo_id, repo_type="model", token=token)
+            marker = f"{self.hub_path_in_repo_prefix}/latest.txt"
+            if marker in files:
+                try:
+                    # Read marker via raw URL fetch
+                    from huggingface_hub import hf_hub_download
+                    p = hf_hub_download(repo_id=repo_id, filename=marker, repo_type="model", token=token)
+                    latest_name = EasyPath(p).read_text().strip()
+                    if latest_name:
+                        return latest_name
+                except Exception:
+                    ...
+            # Fallback to listing the checkpoint folder tree
+            tree = api.list_repo_tree(repo_id=repo_id, repo_type="model", token=token, path=self.hub_path_in_repo_prefix, recursive=False)
+            run_names: list[str] = []
+            for item in tree or []:
+                # items have .path, .type ("file"/"directory")
+                try:
+                    rel = item.path.split("/")[-1]
+                    if rel.startswith("run-"):
+                        run_names.append(rel)
+                except Exception:
+                    ...
+            def _extract_step(name: str) -> int:
+                try:
+                    return int(re.sub(r"^run-", "", name))
+                except Exception:
+                    return -1
+            if run_names:
+                run_names.sort(key=_extract_step)
+                return run_names[-1]
+        except Exception:
+            return None
+        return None
+
+    def download_latest_hf_checkpoint_to(self, local_root: str | os.PathLike | None = None) -> EasyPathLike | None:
+        """Download the latest checkpoint folder from HF Hub into local_root/run-*/ and return its path.
+
+        If local_root is None, a temporary directory is created. Returns None if nothing is available.
+        """
+        token = self._hf_token()
+        if token is None:
+            return None
+        latest_dirname = self.get_latest_hf_checkpoint_dirname()
+        if latest_dirname is None:
+            return None
+        try:
+            from huggingface_hub import HfApi
+        except Exception:
+            return None
+        api = HfApi()
+        repo_id = self.resolve_hf_repo_id()
+        root = EasyPath(local_root or tempfile.mkdtemp(prefix="easydel-hf-"))
+        target = root / latest_dirname
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            api.download_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                path_in_repo=f"{self.hub_path_in_repo_prefix}/{latest_dirname}",
+                local_dir=str(target),
+                token=token,
+            )
+            return tp.cast(EasyPathLike, target)
+        except Exception:
+            return None
 
     @staticmethod
     def _time_to_seconds(time_str: str) -> int:

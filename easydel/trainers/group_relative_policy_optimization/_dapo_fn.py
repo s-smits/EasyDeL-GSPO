@@ -164,6 +164,21 @@ def dapo_step(
         mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0))
         mean_ratio = jnp.mean(ratio)
         clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
+        
+        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
+        policy_seq_logps = jnp.sum(per_token_logps * completion_mask, axis=1)
+        ref_seq_logps = jnp.sum(ref_per_token_logps * completion_mask, axis=1)
+        
+        dist_stats = {
+            "dist/policy_seq_logps_mean": jnp.mean(policy_seq_logps),
+            "dist/policy_seq_logps_std": jnp.std(policy_seq_logps),
+            "dist/ref_seq_logps_mean": jnp.mean(ref_seq_logps),
+            "dist/ref_seq_logps_std": jnp.std(ref_seq_logps),
+            "dist/logp_diff_mean": jnp.mean(policy_seq_logps - ref_seq_logps),
+            "dist/logp_diff_std": jnp.std(policy_seq_logps - ref_seq_logps),
+            "dist/per_token_logps_mean": jnp.mean(per_token_logps),
+            "dist/per_token_kl_mean": jnp.mean(per_token_kl * completion_mask) / jnp.mean(completion_mask),
+        }
 
         return loss, LossMetrics(
             loss=loss,
@@ -178,6 +193,7 @@ def dapo_step(
                 "advantage_95th_percentile_abs": jnp.percentile(jnp.abs(shaped_advantages), 95),
                 "clip_ratio_low": clip_ratio_low,
                 "clip_ratio_high": clip_ratio_high,
+                **dist_stats,
             },
         )
 

@@ -219,7 +219,19 @@ def grpo_step(
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
         
         # Distributional comparison of policy vs reference (sequence-averaged logprobs)
-        dist_stats = {}
+        policy_seq_logps = jnp.sum(per_token_logps * completion_mask, axis=1)
+        ref_seq_logps = jnp.sum(ref_per_token_logps * completion_mask, axis=1)
+        
+        dist_stats = {
+            "dist/policy_seq_logps_mean": jnp.mean(policy_seq_logps),
+            "dist/policy_seq_logps_std": jnp.std(policy_seq_logps),
+            "dist/ref_seq_logps_mean": jnp.mean(ref_seq_logps),
+            "dist/ref_seq_logps_std": jnp.std(ref_seq_logps),
+            "dist/logp_diff_mean": jnp.mean(policy_seq_logps - ref_seq_logps),
+            "dist/logp_diff_std": jnp.std(policy_seq_logps - ref_seq_logps),
+            "dist/per_token_logps_mean": jnp.mean(per_token_logps),
+            "dist/per_token_kl_mean": jnp.mean(per_token_kl * completion_mask) / jnp.mean(completion_mask),
+        }
 
         # Assemble metrics
         other_items = {
@@ -227,7 +239,6 @@ def grpo_step(
             "advantage_median_abs": advantage_median_abs,
             "advantage_95th_percentile_abs": advantage_95th_percentile_abs,
         }
-        # Skip logprob diagnostics for stability
 
         return loss, LossMetrics(
             loss=loss,

@@ -106,6 +106,19 @@ class BaseTrainer(BaseTrainerProtocol):
         self.dataset_eval = dataset_eval
         self.data_collator = data_collator
         self.finetune = finetune
+        # If requested, resume from the latest HF checkpoint
+        try:
+            if getattr(self.arguments, "continue_from_hf", False):
+                local_ckpt_dir = self.arguments.download_latest_hf_checkpoint_to(local_root=self.arguments._get_save_directory(create=True))
+                if local_ckpt_dir is not None:
+                    logger.info(f"Resuming from HF checkpoint at {local_ckpt_dir}")
+                    # Load full state (model + optimizer + step) from the downloaded checkpoint
+                    self.model_state = EasyDeLState.load_state(load_directory=str(local_ckpt_dir))
+                    self._model = flax.nnx.eval_shape(lambda: self.model_state.model)
+                else:
+                    logger.info("continue_from_hf requested but no remote checkpoint found; starting fresh.")
+        except Exception as e:
+            logger.warning(f"Failed to resume from HF Hub: {e!s}. Proceeding without remote resume.")
         self._initialize_attributes()
         self.initialize_trainer_utils()
 
@@ -953,6 +966,12 @@ class BaseTrainer(BaseTrainerProtocol):
             save_optimizer=self.arguments.save_optimizer_state,
             enable=self.is_enable,
         )
+        # Optionally upload to Hugging Face Hub
+        try:
+            if self.arguments.should_push_to_hub():
+                self.arguments.upload_checkpoint_to_hub(local_ckpt_dir=directory_name, step=step)
+        except Exception as e:
+            logger.warning(f"HF upload failed (ignored): {e!s}")
 
         return str(directory_name)
 
@@ -1488,6 +1507,10 @@ class BaseTrainer(BaseTrainerProtocol):
                         or k.startswith("eval/dist/")
                         or "logprob" in k.lower()
                         or "logp" in k.lower()
+                        or "log_ratio" in k.lower()
+                        or "per_token" in k.lower()
+                        or k.lower().endswith("_logps")
+                        or k.lower().startswith("ref_")
                     )
                 }
                 self.arguments.log_metrics(metrics=filtered, step=step)
