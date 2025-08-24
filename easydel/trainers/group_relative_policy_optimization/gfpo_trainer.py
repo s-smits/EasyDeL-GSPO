@@ -178,19 +178,26 @@ class GFPOTrainer(GRPOTrainer):
         upper = max(1, int(gsize) - 1)
         k_per_prompt = jnp.clip(k_per_prompt, 1, upper).astype(jnp.int32)
 
-        # Build mask per prompt by argsort
-        mask = jnp.zeros((bsz, gsize), dtype=jnp.float32)
-        for i in range(bsz):
-            try:
-                k_i = int(k_per_prompt[i])
-            except Exception:
-                k_i = int(self.arguments.gfpo_retain_count)
-            k_i = max(1, min(int(gsize), k_i))
-            if ascending:
-                chosen = jnp.argsort(scores[i])[:k_i]
-            else:
-                chosen = jnp.argsort(-scores[i])[:k_i]
-            mask = mask.at[i, chosen].set(1.0)
+        # Build mask per prompt by argsort (vectorized, no Python loop)
+        idx_sorted = jnp.argsort(scores, axis=1) if ascending else jnp.argsort(-scores, axis=1)
+        arange_g = jnp.arange(gsize)[None, :]
+        k_col = k_per_prompt.reshape(-1, 1)
+        mask_sorted = (arange_g < k_col).astype(jnp.float32)
+        row_idx = jnp.arange(bsz)[:, None]
+        mask = jnp.zeros((bsz, gsize), dtype=jnp.float32).at[row_idx, idx_sorted].set(mask_sorted)
+
+        # Best-effort diagnostics computed identically on all hosts; only proc0 prints
+        try:
+            exp_sum = float(jax.device_get(k_per_prompt).sum())
+            m_sum = float(jax.device_get(mask).sum())
+            if jax.process_index() == 0:
+                print(
+                    f"DEBUG: GFPO filter params: G={int(gsize)}, k_fixed={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
+                    f"adaptive={bool(getattr(self.arguments,'gfpo_adaptive', False))}"
+                )
+                print(f"DEBUG: GFPO mask sum={m_sum}, expected_sum≈{exp_sum} (bsz={int(bsz)})")
+        except Exception:
+            ...
         return mask
 
     def _preprocess_batch_input(
