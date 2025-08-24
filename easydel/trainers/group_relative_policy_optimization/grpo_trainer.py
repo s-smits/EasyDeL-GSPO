@@ -1028,10 +1028,29 @@ class GRPOTrainer(Trainer):
                         if is_math:
                             try:
                                 print("DEBUG: Using math reward extraction")
-                                # Preview for logs
-                                preview = example_pred_text[-200:] if len(example_pred_text) > 200 else example_pred_text
-                                preview = preview[:180] + "…" if len(preview) > 180 else preview
-                                print(f"DEBUG: Math extraction preview: '{preview}'")
+                                # Preview for logs - show last ~50 tokens to see where answer should be
+                                try:
+                                    # Try to get a token-aware preview
+                                    # Get tokenizer from processing_class (could be tokenizer or processor)
+                                    if hasattr(self.processing_class, 'tokenizer'):
+                                        tok = self.processing_class.tokenizer
+                                    else:
+                                        tok = self.processing_class
+                                    
+                                    tokens = tok.encode(example_pred_text, add_special_tokens=False)
+                                    if len(tokens) > 50:
+                                        preview_tokens = tokens[-50:]
+                                        preview = tok.decode(preview_tokens, skip_special_tokens=True)
+                                    else:
+                                        preview = example_pred_text
+                                except Exception:
+                                    # Fallback to character-based if tokenizer fails
+                                    preview = example_pred_text[-300:] if len(example_pred_text) > 300 else example_pred_text
+                                
+                                # Truncate for display if still too long
+                                if len(preview) > 200:
+                                    preview = "..." + preview[-200:]
+                                print(f"DEBUG: Math extraction preview (last ~50 tokens): '{preview}'")
                                 # Extract last boxed or fallback to last number
                                 try:
                                     from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
