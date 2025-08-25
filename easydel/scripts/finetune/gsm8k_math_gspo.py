@@ -22,7 +22,7 @@ class RunTimeConfig:
         default="math-ds",
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
-    dataset_use_rate: float = field(
+    dataset_use_pct: float = field(
         default=1.0,
         metadata={"help": "Fraction of dataset to use (1.0 = 100%, 0.1 = 10%)"}
     )
@@ -152,8 +152,8 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
-        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
+        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
+        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
 
         def map_ex(x):
             return {
@@ -170,9 +170,9 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
         # Attempt test split; if missing, create split from train deterministically
-        ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]", default=None)
+        ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
         if ds_test is None:
             if jax.process_index() == 0:
                 print(

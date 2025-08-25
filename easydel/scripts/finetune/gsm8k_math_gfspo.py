@@ -25,7 +25,7 @@ class RunTimeConfig:
         default="math-ds",
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
-    dataset_use_rate: float = field(
+    dataset_use_pct: float = field(
         default=1.0,
         metadata={"help": "Fraction of dataset to use (1.0 = 100%, 0.1 = 10%)"}
     )
@@ -64,9 +64,9 @@ def main():
         def _dbg_print():
             try:
                 print(f"DEBUG: runtime.dataset (raw)={runtime.dataset}")
-                print(f"DEBUG: runtime.dataset_use_rate (raw)={runtime.dataset_use_rate}")
+                print(f"DEBUG: runtime.dataset_use_pct (raw)={runtime.dataset_use_pct}")
                 try:
-                    pct = int(float(runtime.dataset_use_rate) * 100)
+                    pct = int(float(runtime.dataset_use_pct) * 100)
                 except Exception:
                     pct = None
                 print(f"DEBUG: computed dataset percentage={pct}%")
@@ -152,7 +152,7 @@ def main():
 
     # Helpers and Dataset builders
     def _normalize_pct(rate_value) -> int:
-        """Normalize dataset_use_rate to an integer percent in [1, 100].
+        """Normalize dataset_use_pct to an integer percent in [1, 100].
         Accepts either fraction (<=1.0) or percent (>1.0)."""
         try:
             r = float(rate_value)
@@ -174,7 +174,7 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        rate = float(runtime.dataset_use_rate)
+        rate = float(runtime.dataset_use_pct)
         pct = _normalize_pct(rate)
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
         test_split = "test" if pct >= 100 else f"test[:{pct}%]"
@@ -198,7 +198,7 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        rate = float(runtime.dataset_use_rate)
+        rate = float(runtime.dataset_use_pct)
         pct = _normalize_pct(rate)
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
         if jax.process_index() == 0:

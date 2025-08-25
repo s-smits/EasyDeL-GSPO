@@ -46,26 +46,26 @@ echo "Curriculum math: ${CURRICULUM_MATH}"
 LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
 echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
 
-# Note: dataset_use_rate now uses fractions (1.0 = 100%, 0.1 = 10%)
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
-  --gfpo_group_size 4 \
+  --gfpo_group_size 8 \
   --gfpo_retain_count 2 \
-  --rollout_chunk_size 1 \
+  --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
   --learning_rate 2e-6 \
-  --dataset_use_rate 100 \
+  --dataset_use_pct 100 \
   --force_tensor_parallel 4 \
   --force_data_parallel 2 \
-  --log_logprobs_metrics false \
+  --log_logprobs_metrics true \
   --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
-  --save_steps 2 \
+  --report_steps 1 \
+  --save_steps 1000 \
   --do_eval false \
   --weight_decay 0.01 \
   --gradient_accumulation_steps 16 \
@@ -74,6 +74,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
+  --gfpo_adaptive false \
   --verbose true
 
 echo "Training completed!"

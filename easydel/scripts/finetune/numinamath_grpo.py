@@ -41,7 +41,7 @@ class RunTimeConfig:
     )
     kv_cache_quantization: ed.EasyDeLQuantizationMethods = field(default=ed.EasyDeLQuantizationMethods.NONE)
 
-    dataset_use_rate: int = field(
+    dataset_use_pct: int = field(
         default=100,
         metadata={"help": "split in train or test dataset"},
     )
@@ -235,8 +235,8 @@ def main():
     train_dataset, test_dataset = load_dataset(
         dataset_id,
         split=[
-            f"train[:{runtime_config.dataset_use_rate}%]",
-            f"test[:{runtime_config.dataset_use_rate}%]",
+            f"train[:{runtime_config.dataset_use_pct}%]",
+            f"test[:{runtime_config.dataset_use_pct}%]",
         ],
     )
 

@@ -393,7 +393,7 @@ class TrainingArguments:
         default=PartitionSpec(("dp", "fsdp"), "sp"),
         metadata={"help": "The partition specification for the training step."},
     )
-    step_start_point: int | None = field(
+    etermine reporting cadence (None or <step_start_point: int | None = field(
         default=None,
         metadata={"help": "The step to start training from (for resuming)."},
     )

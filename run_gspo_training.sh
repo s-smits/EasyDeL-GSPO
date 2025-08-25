@@ -55,7 +55,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --max_prompt_length 512 \
   --max_completion_length 5632 \
   --learning_rate 2e-6 \
-  --dataset_use_rate 10 \
+  --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
   --force_data_parallel 8 \
   --log_logprobs_metrics false \
