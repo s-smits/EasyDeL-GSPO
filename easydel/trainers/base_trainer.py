@@ -372,6 +372,29 @@ class BaseTrainer(BaseTrainerProtocol):
                 wandb.finish()
             except Exception:
                 ...
+        # Best-effort dataloader cleanup to release shared-memory/semaphores
+        try:
+            dl_train = getattr(BaseTrainer, "dataloader_train", None)
+            if dl_train is None:
+                dl_train = getattr(self, "dataloader_train", None)  # type: ignore[name-defined]
+            if hasattr(dl_train, "close") and callable(getattr(dl_train, "close")):
+                try:
+                    dl_train.close()  # type: ignore[attr-defined]
+                except Exception:
+                    ...
+        except Exception:
+            ...
+        try:
+            dl_eval = getattr(BaseTrainer, "dataloader_eval", None)
+            if dl_eval is None:
+                dl_eval = getattr(self, "dataloader_eval", None)  # type: ignore[name-defined]
+            if hasattr(dl_eval, "close") and callable(getattr(dl_eval, "close")):
+                try:
+                    dl_eval.close()  # type: ignore[attr-defined]
+                except Exception:
+                    ...
+        except Exception:
+            ...
 
     def on_step_start(
         self,
@@ -698,9 +721,12 @@ class BaseTrainer(BaseTrainerProtocol):
                     CollateMapTransform(collate_fn=collate_fn),
                     grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
                 ],
-                worker_count=1,
-                worker_buffer_size=1,
-                read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=128),
+                worker_count=int(self.arguments.grain_worker_count),
+                worker_buffer_size=int(self.arguments.grain_worker_buffer_size),
+                read_options=grain.ReadOptions(
+                    num_threads=int(self.arguments.grain_read_threads),
+                    prefetch_buffer_size=int(self.arguments.grain_prefetch_buffer_size),
+                ),
             )
 
         def calculate_steps(dataset, is_train: bool) -> int:

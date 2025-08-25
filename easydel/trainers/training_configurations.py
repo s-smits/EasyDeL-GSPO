@@ -437,6 +437,31 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to use grain instead of `tensorflow-datasets`."},
     )
+    # Grain fine-tuning knobs to avoid multiprocessing shared-memory issues
+    grain_worker_count: int = field(
+        default=1,
+        metadata={
+            "help": "Grain DataLoader worker processes per host. Set to 1 to avoid shared-memory races on TPU."
+        },
+    )
+    grain_worker_buffer_size: int = field(
+        default=1,
+        metadata={
+            "help": "Per-worker in-flight buffer size. Keep small to reduce SHM footprint."
+        },
+    )
+    grain_prefetch_buffer_size: int = field(
+        default=64,
+        metadata={
+            "help": "Host prefetch buffer size. Lower values reduce shared memory usage."
+        },
+    )
+    grain_read_threads: int = field(
+        default=1,
+        metadata={
+            "help": "Threads used by Grain ReadOptions. Keep 1 to avoid contention."
+        },
+    )
     use_wandb: bool = field(
         default=True,
         metadata={"help": "Whether to use Weights & Biases for logging."},
