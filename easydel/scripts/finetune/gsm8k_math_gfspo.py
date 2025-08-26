@@ -209,7 +209,7 @@ def main():
             if jax.process_index() == 0:
                 print(f"DEBUG: MATH split string -> test='{test_split}'")
             ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
-            if ds_test is None:
+            if ds_test is None and ds_train is not None:
                 # Fallback for datasets that only provide a 'train' split
                 if jax.process_index() == 0:
                     print(
@@ -220,6 +220,11 @@ def main():
                 ds_train, ds_test = split_ds["train"], split_ds["test"]
         except ValueError:
             # Extremely defensive fallback
+            if ds_train is None:
+                raise RuntimeError(
+                    "Failed to load 'qwedsacf/competition_math' and no train split available. "
+                    "Check your internet connection or provide a local dataset."
+                )
             split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
             ds_train, ds_test = split_ds["train"], split_ds["test"]
 

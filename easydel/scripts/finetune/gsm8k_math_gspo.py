@@ -141,6 +141,21 @@ def main():
         "You are a competitive math solver. Solve the problem inside <think>...</think>, then present ONLY the final result inside <answer>...</answer>. "
     )
 
+    # Helpers and Dataset builders
+    def _normalize_pct(rate_value) -> int:
+        """Normalize dataset_use_pct to an integer percent in [1, 100].
+        Accepts either fraction (<=1.0) or percent (>1.0)."""
+        try:
+            r = float(rate_value)
+        except Exception:
+            r = 1.0
+        pct = int(round(r * 100)) if r <= 1.0 else int(round(r))
+        if pct < 1:
+            pct = 1
+        if pct > 100:
+            pct = 100
+        return pct
+
     # Dataset builders
     def build_gsm8k():
         def extract_hash_answer(text: str):
@@ -152,8 +167,14 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
-        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
+        rate = float(runtime.dataset_use_pct)
+        pct = _normalize_pct(rate)
+        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
+        test_split = "test" if pct >= 100 else f"test[:{pct}%]"
+        if jax.process_index() == 0:
+            print(f"DEBUG: GSM8K split strings -> train='{train_split}', test='{test_split}'")
+        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=train_split)
+        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=test_split, default=None)
 
         def map_ex(x):
             return {
@@ -170,14 +191,32 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
+        rate = float(runtime.dataset_use_pct)
+        pct = _normalize_pct(rate)
+        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
+        if jax.process_index() == 0:
+            print(f"DEBUG: MATH split string -> train='{train_split}' (rate={rate}, pct={pct}%)")
+        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=train_split)
         # Attempt test split; if missing, create split from train deterministically
-        ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
-        if ds_test is None:
+        try:
+            test_split = "test" if pct >= 100 else f"test[:{pct}%]"
             if jax.process_index() == 0:
-                print(
-                    "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
-                    "Using 10% of 'train' as validation (deterministic split, seed=17)."
+                print(f"DEBUG: MATH split string -> test='{test_split}'")
+            ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
+            if ds_test is None and ds_train is not None:
+                if jax.process_index() == 0:
+                    print(
+                        "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
+                        "Using 10% of 'train' as validation (deterministic split, seed=17)."
+                    )
+                split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+                ds_train, ds_test = split_ds["train"], split_ds["test"]
+        except ValueError:
+            # Extremely defensive fallback when only train split exists
+            if ds_train is None:
+                raise RuntimeError(
+                    "Failed to load 'qwedsacf/competition_math' and no train split available. "
+                    "Check your internet connection or provide a local dataset."
                 )
             split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
             ds_train, ds_test = split_ds["train"], split_ds["test"]
@@ -440,4 +479,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,5 +1,5 @@
 #!/bin/bash
-# GSPO Training Script with TPU Optimizations
+# GSPO Training Script with TPU Optimizations (8-worker metrics support)
 #
 # Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
 # 
@@ -44,7 +44,15 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-python easydel/scripts/finetune/gsm8k_math_gspo.py \
+# Metrics and logging: ensure correct aggregation for 8 workers
+# Set log_global to true for correct global logging aggregation
+LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
+echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
+
+# Set force_data_parallel to 8 for 8-worker setup
+FORCE_DATA_PARALLEL=8
+
+python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-0.6B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
@@ -53,24 +61,22 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 5632 \
+  --max_completion_length 5120 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
   --force_data_parallel 8 \
   --log_logprobs_metrics false \
-  --log_global true \
+  --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 8 \
   --beta 0.04 \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6
-
-#   --force_data_parallel 1 \
 
 echo "Training completed!"

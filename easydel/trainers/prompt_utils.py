@@ -385,11 +385,33 @@ def maybe_apply_chat_template(
     tools: list[dict | tp.Callable] | None = None,
 ) -> dict[str, str]:
     """
-    If the example is in a conversational format, apply a chat template to it.
+    If the example is conversational, apply tokenizer chat template.
+    Otherwise, if the example contains prompt/completion or chosen/rejected fields,
+    still apply the chat template using the non-conversational branches to ensure
+    chat models (e.g., Qwen) receive proper role markers and can produce EOS tokens.
     """
-    if is_conversational(example):
-        return apply_chat_template(example, tokenizer, tools)
-    else:
+    try:
+        if is_conversational(example):
+            print("[prompt_utils:chat] Applying chat template (conversational example).")
+            return apply_chat_template(example, tokenizer, tools)
+
+        # Non-conversational fallback: apply template for known field patterns
+        example_keys = set(example.keys())
+        known_keys = {"prompt", "completion", "chosen", "rejected", "label"}
+        if example_keys & known_keys:
+            print(f"[prompt_utils:chat] Applying chat template (non-conversational fallback). keys={sorted(example_keys)}")
+            try:
+                return apply_chat_template(example, tokenizer, tools)
+            except Exception as e:
+                print(f"[prompt_utils:chat] Fallback chat templating failed: {e}; returning example unchanged.")
+                return example
+        return example
+    except Exception as _e:
+        # Best effort: never break dataset processing
+        try:
+            print(f"[prompt_utils:chat] maybe_apply_chat_template error: {_e}; returning example unchanged.")
+        except Exception:
+            ...
         return example
 
 
