@@ -1624,6 +1624,21 @@ class GRPOTrainer(Trainer):
                 completion_mask = self._last_logprob_diag.get("completion_mask")
                 ref_logps = self._last_logprob_diag.get("ref_logps")
 
+                # Static type safety: ensure all required arrays are present
+                if (
+                    ids is None
+                    or full_mask is None
+                    or completion_mask is None
+                    or ref_logps is None
+                ):
+                    raise RuntimeError("logprob diagnostics cache incomplete; skipping this step")
+
+                # Narrow types for static analysis
+                ids = tp.cast(jax.Array, ids)
+                full_mask = tp.cast(jax.Array, full_mask)
+                completion_mask = tp.cast(jax.Array, completion_mask)
+                ref_logps = tp.cast(jax.Array, ref_logps)
+
                 # Compute policy per-token log-probs with UPDATED state (post-update)
                 pol_logps = self.compute_policymodel_logps(
                     state.graphstate,
