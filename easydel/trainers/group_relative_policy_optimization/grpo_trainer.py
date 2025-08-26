@@ -255,7 +255,11 @@ class GRPOTrainer(Trainer):
 
     @cached_property
     def eos_token_id(self) -> list[int]:
-        eos_ids = []
+        try:
+            print("[GRPOTrainer:eos_token_id] Starting EOS resolution.")
+        except Exception:
+            ...
+        eos_ids_set: set[int] = set()
         # 1) Start with EOS from the primary processing class/tokenizer
         if isinstance(self.processing_class, ProcessorMixin):
             tokenizer = self.processing_class.tokenizer
@@ -264,15 +268,50 @@ class GRPOTrainer(Trainer):
             tokenizer = self.processing_class
             proc_eos_token_id = getattr(self.processing_class, "eos_token_id", None)
 
-        if isinstance(proc_eos_token_id, int):
-            proc_eos_token_id = [proc_eos_token_id]
-        if isinstance(proc_eos_token_id, (list, tuple)):
-            eos_ids.extend([t for t in proc_eos_token_id if t is not None])
+        try:
+            print(f"[GRPOTrainer:eos_token_id] tokenizer.eos_token_id={proc_eos_token_id}")
+            if isinstance(proc_eos_token_id, int):
+                eos_ids_set.add(int(proc_eos_token_id))
+            elif isinstance(proc_eos_token_id, (list, tuple)):
+                eos_ids_set |= {int(t) for t in proc_eos_token_id if t is not None}
+        except Exception:
+            pass
 
-        # 2) Include common Qwen end tokens if the tokenizer knows them
+        # 2) Include tokenizer-declared EOS-like IDs from special tokens map
+        try:
+            stm = getattr(tokenizer, "special_tokens_map", None)
+            convert_fn2 = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if isinstance(stm, dict) and callable(convert_fn2):
+                # canonical eos token string, if provided
+                eos_tok = stm.get("eos_token")
+                if isinstance(eos_tok, str):
+                    try:
+                        tid = convert_fn2(eos_tok)
+                        print(f"[GRPOTrainer:eos_token_id] special_tokens_map.eos_token='{eos_tok}' -> id={tid}")
+                        if tid is not None:
+                            eos_ids_set.add(int(tid))
+                    except Exception:
+                        ...
+                # scan additional special tokens for likely EOS markers by name
+                addl = stm.get("additional_special_tokens", [])
+                if isinstance(addl, (list, tuple)):
+                    for tok in addl:
+                        try:
+                            if isinstance(tok, str) and any(k in tok.lower() for k in ("eos", "im_end", "endoftext", "eot")):
+                                tid = convert_fn2(tok)
+                                print(f"[GRPOTrainer:eos_token_id] additional_special_token='{tok}' -> id={tid}")
+                                if tid is not None:
+                                    eos_ids_set.add(int(tid))
+                        except Exception:
+                            ...
+        except Exception:
+            ...
+
+        # 3) Try common textual special tokens if tokenizer can convert
         special_tokens = [
             "<|im_end|>",
             "<|endoftext|>",
+            "<|eot_id|>",  # some tokenizers alias end-of-turn/end-of-text
         ]
         convert_fn = getattr(tokenizer, "convert_tokens_to_ids", None)
         unk_id = getattr(tokenizer, "unk_token_id", None)
@@ -282,19 +321,79 @@ class GRPOTrainer(Trainer):
                     tid = convert_fn(tok)
                 except Exception:
                     tid = None
-                if tid is not None and (unk_id is None or tid != unk_id):
-                    eos_ids.append(tid)
+                try:
+                    if tid is not None and (unk_id is None or tid != unk_id):
+                        print(f"[GRPOTrainer:eos_token_id] known_token='{tok}' -> id={tid}")
+                        eos_ids_set.add(int(tid))
+                except Exception:
+                    ...
 
-        # 3) Merge any EOS ids present in model.generation_config (if available)
-        if hasattr(self.model, "generation_config"):
-            conf_eos = self.model.generation_config.eos_token_id
-            if isinstance(conf_eos, int):
-                conf_eos = [conf_eos]
-            if isinstance(conf_eos, (list, tuple)):
-                eos_ids.extend([t for t in conf_eos if t is not None])
+        # 4) Merge any EOS ids present in model.generation_config (if available)
+        try:
+            if hasattr(self.model, "generation_config"):
+                conf_eos = self.model.generation_config.eos_token_id
+                print(f"[GRPOTrainer:eos_token_id] generation_config.eos_token_id={conf_eos}")
+                if isinstance(conf_eos, int):
+                    eos_ids_set.add(int(conf_eos))
+                elif isinstance(conf_eos, (list, tuple)):
+                    eos_ids_set |= {int(t) for t in conf_eos if t is not None}
+        except Exception:
+            ...
 
-        # Return unique list with deterministic ordering
-        return sorted(set(eos_ids))
+        # 5) Hardening: if still empty, try discovering common end markers directly from vocab
+        if not eos_ids_set:
+            try:
+                vocab = None
+                if hasattr(tokenizer, "get_vocab") and callable(tokenizer.get_vocab):
+                    vocab = tokenizer.get_vocab()
+                elif hasattr(tokenizer, "vocab") and isinstance(getattr(tokenizer, "vocab"), dict):
+                    vocab = getattr(tokenizer, "vocab")
+                if isinstance(vocab, dict) and len(vocab) > 0:
+                    # Search for typical end markers used by chat models
+                    for tok, tid in vocab.items():
+                        try:
+                            if not isinstance(tid, int) or tid < 0:
+                                continue
+                            low = tok.lower() if isinstance(tok, str) else str(tok).lower()
+                            if any(k in low for k in ("im_end", "endoftext", "eot", "<eos>", "<|eos|>", "<|end|>")):
+                                eos_ids_set.add(int(tid))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # If still empty, as a last fallback include the pad token id (if set).
+        if not eos_ids_set:
+            try:
+                pad_id = None
+                if isinstance(self.processing_class, ProcessorMixin):
+                    pad_id = getattr(self.processing_class.tokenizer, "pad_token_id", None)
+                else:
+                    pad_id = getattr(self.processing_class, "pad_token_id", None)
+                if isinstance(pad_id, int) and pad_id >= 0:
+                    eos_ids_set.add(int(pad_id))
+                    print(f"[GRPOTrainer:eos_token_id] Fallback: adding pad_token_id={pad_id} as EOS candidate")
+            except Exception:
+                pass
+
+        eos_list = sorted({t for t in eos_ids_set if t is not None and isinstance(t, int) and t >= 0})
+
+        # Best-effort debug on proc0 for visibility
+        try:
+            if jax.process_index() == 0:
+                logger.info(f"Resolved EOS token ids: {eos_list}")
+                print(f"[GRPOTrainer:eos_token_id] Resolved EOS token ids (proc0): {eos_list}")
+        except Exception:
+            pass
+
+        # Final fallback: warn if empty
+        if not eos_list:
+            try:
+                if jax.process_index() == 0:
+                    logger.warning("No EOS token ids resolved from tokenizer/model config; generation may not stop early.")
+            except Exception:
+                ...
+        return eos_list
 
     def _prepare_dataset(
         self,
@@ -547,6 +646,18 @@ class GRPOTrainer(Trainer):
                     do_sample=True,
                     use_cache=False,
                 )
+                # Best-effort visibility into EOS used for termination
+                try:
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        logger.debug(f"Generation EOS ids={generation_config.eos_token_id} pad_id={generation_config.pad_token_id}")
+                        print(
+                            "[GRPOTrainer:generate] GenerationConfig: "
+                            f"eos={generation_config.eos_token_id} pad={generation_config.pad_token_id} "
+                            f"top_p={generation_config.top_p} top_k={generation_config.top_k} temp={generation_config.temperature} "
+                            f"max_new_tokens={generation_config.max_new_tokens} max_length={generation_config.max_length}"
+                        )
+                except Exception:
+                    ...
                 
                 # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
                 def _hash_u32(ids):
@@ -633,6 +744,26 @@ class GRPOTrainer(Trainer):
 
         self.compute_refmodel_logps = ejit(
             partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
+            static_argnames=("graphdef",),
+            in_shardings=(
+                self.model_state.shardings.graphstate,
+                self.model_state.shardings.graphother,
+                None,
+                None,
+            ),
+            out_shardings=empty_sharding,
+        )
+
+        # Compute per-token log-probs for the POLICY model (used by post-update diagnostics)
+        def _compute_policymodel_logps(graphtree, graphother, ids, mask, graphdef):
+            apply = flax.nnx.merge(graphdef, graphtree, graphother)
+            with apply.mesh:
+                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+                return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+
+        self.compute_policymodel_logps = ejit(
+            partial(_compute_policymodel_logps, graphdef=self.model_state.graphdef),
             static_argnames=("graphdef",),
             in_shardings=(
                 self.model_state.shardings.graphstate,
