@@ -67,11 +67,6 @@ class GSPOConfig(GRPOConfig):
         metadata={"help": "Absolute cap for sequence log-ratio before exponentiation when clip_in_log_space=True."},
     )
 
-    # Epsilon coupling strategy (static, JIT-safe): none|k_over_g|ess_over_g
-    epsilon_coupling_mode: str = field(
-        default="k_over_g",
-        metadata={"help": "How to scale PPO epsilon at runtime: 'none'|'k_over_g'|'ess_over_g'."},
-    )
 
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
@@ -92,10 +87,6 @@ class GSPOConfig(GRPOConfig):
             if self.importance_weight_normalization not in ["none", "mean", "ess"]:
                 raise ValueError(
                     "importance_weight_normalization must be one of ['none','mean','ess']"
-                )
-            if self.epsilon_coupling_mode not in ["none", "k_over_g", "ess_over_g"]:
-                raise ValueError(
-                    "epsilon_coupling_mode must be one of ['none','k_over_g','ess_over_g']"
                 )
             if float(self.log_clip_epsilon) <= 0:
                 raise ValueError("log_clip_epsilon must be positive")
