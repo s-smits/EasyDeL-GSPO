@@ -59,6 +59,10 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         # Ensure local alias to config type
         self.arguments = arguments
 
+        # Runtime scalars (avoid recompiles): initialize defaults
+        self._epsilon_scale: float | None = None
+        self._beta_scale: float = 1.0
+
         try:
             print(
                 "DEBUG: Initializing GFSPO trainer - "
@@ -124,88 +128,121 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         except Exception:
             lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
 
-        # Use shared host-only GFPO filter (simplified: fewer nested fallbacks)
+        # Use shared host-only GFPO filter (soft or hard depending on config)
         try:
             mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)
         except Exception as _e:
-            if jax.process_index() == 0:
-                try:
-                    print("DEBUG: GFSPO preprocessing error; using GRPO advantages unchanged:", _e)
-                except Exception:
-                    ...
             mask = jnp.ones((num_prompts, G), dtype=jnp.float32)
-        # Extra debug guardrails (proc0-only, host-only math)
-        try:
-            if jax.process_index() == 0:
-                try:
-                    import numpy as _np
-                    mh = jax.device_get(mask)
-                    mask_sum = float(_np.sum(mh))
-                except Exception:
-                    mask_sum = -1.0
-                expected_min = float(
-                    num_prompts
-                    * min(int(getattr(self.arguments, "gfpo_retain_count", G)), G)
-                )
-                expected_max = float(num_prompts * G)
-                print(
-                    f"DEBUG: GFSPO grouping check: B={num_prompts}, G={G}, "
-                    f"k={int(getattr(self.arguments,'gfpo_retain_count',-1))}, "
-                    f"mask_sum={mask_sum}, expected_min≈{expected_min}, expected_max={expected_max}"
-                )
-        except Exception:
-            ...
 
-        selected_count = jnp.maximum(jnp.sum(mask, axis=1, keepdims=True), 1.0)
-        selected_sum = jnp.sum(rewards_grouped * mask, axis=1, keepdims=True)
-        mu_S = selected_sum / selected_count
+        # Weighted + shrinkage subset stats (stable for small k and soft masks)
+        sum_w = jnp.sum(mask, axis=1, keepdims=True)
+        sum_w2 = jnp.sum(mask * mask, axis=1, keepdims=True)
+        n_eff = (sum_w * sum_w) / jnp.maximum(sum_w2, 1e-6)
 
-        diff_sq = jnp.where(mask > 0.0, (rewards_grouped - mu_S) ** 2, 0.0)
-        denom = jnp.maximum(selected_count - 1.0, 1.0)
-        sigma_S = jnp.sqrt(jnp.sum(diff_sq, axis=1, keepdims=True) / denom)
-        sigma_S = jnp.maximum(sigma_S, eps)
+        mu_S = jnp.sum(rewards_grouped * mask, axis=1, keepdims=True) / jnp.maximum(sum_w, 1e-6)
+        mu_G = jnp.mean(rewards_grouped, axis=1, keepdims=True)
 
-        advantages_gfpo = ((rewards_grouped - mu_S) / sigma_S) * mask
+        var_S_num = jnp.sum(mask * (rewards_grouped - mu_S) ** 2, axis=1, keepdims=True)
+        var_S = var_S_num / jnp.maximum(n_eff - 1.0, 1.0)
+        var_G = jnp.var(rewards_grouped, axis=1, keepdims=True)
+
+        alpha = float(getattr(self.arguments, "gfpo_shrinkage_alpha", 0.5))
+        lam = alpha * (1.0 - (self.arguments.gfpo_retain_count / self.arguments.gfpo_group_size))
+        lam = jnp.clip(lam, 0.0, 1.0)
+
+        c = float(getattr(self.arguments, "gfpo_sigma_floor_c", 0.25))
+        sigma2 = (1.0 - lam) * var_S + lam * var_G + (c * c) / jnp.maximum(n_eff - 1.0, 1.0)
+        sigma = jnp.sqrt(jnp.maximum(sigma2, eps))
+
+        center = (1.0 - lam) * mu_S + lam * mu_G
+        # Unmasked standardized advantages; selection_weights applied inside step
+        advantages_gfpo = (rewards_grouped - center) / sigma
         grpo_batch["advantages"] = advantages_gfpo.reshape(-1)
+        grpo_batch["selection_weights"] = mask.reshape(-1)
+
+        # Provide completion lengths for reuse in step (avoid recompute)
+        try:
+            if "completion_lengths" not in grpo_batch:
+                grpo_batch["completion_lengths"] = jnp.sum(grpo_batch["completion_mask"], axis=-1)
+        except Exception:
+            pass
 
         try:
             # Host-only metric compute for stability
             m = self._gfpo_compute_metrics_host(mask, lengths_grouped)
-            sel = float(m.get("gfpo/retention_rate", 0.0))
-            avg_len = float(m.get("gfpo/avg_retained_length", 0.0))
-            if jax.process_index() == 0:
-                try:
-                    print(f"DEBUG: GFSPO metrics - retention_rate={sel:.3f}, avg_retained_length={avg_len:.1f}")
-                except Exception:
-                    ...
-            metrics_dict["gfpo/retention_rate"] = sel
-            metrics_dict["gfpo/avg_retained_length"] = avg_len
-        except Exception as e:
-            try:
-                if jax.process_index() == 0:
-                    print(f"DEBUG: Failed to compute GFSPO metrics: {e}")
-            except Exception:
-                ...
-
-        # Ensure no scalar leaves sneak into the batch (plays nice with minibatching)
-        try:
-            bs = int(grpo_batch.get("completion_lengths", grpo_batch["advantages"]).shape[0])
-            def _coerce_leaf(x):
-                try:
-                    if isinstance(x, jax.Array):
-                        return jnp.full((bs,), x, dtype=x.dtype) if x.ndim == 0 else x
-                    if isinstance(x, (int, float, bool)):
-                        dt = jnp.float32 if isinstance(x, float) else (jnp.int32 if isinstance(x, int) else jnp.bool_)
-                        return jnp.full((bs,), x, dtype=dt)
-                except Exception:
-                    return x
-                return x
-            for _k in list(grpo_batch.keys()):
-                grpo_batch[_k] = _coerce_leaf(grpo_batch[_k])
+            metrics_dict["gfpo/retention_rate"] = float(m.get("gfpo/retention_rate", 0.0))
+            metrics_dict["gfpo/avg_retained_length"] = float(m.get("gfpo/avg_retained_length", 0.0))
         except Exception:
             pass
 
+        # Runtime knobs to avoid recompiles in step
+        # epsilon_scale: prefer dynamic ESS-based if enabled and available; else fallback to k/G
+        try:
+            if bool(getattr(self.arguments, "use_ess_epsilon", False)) and (self._epsilon_scale is not None):
+                grpo_batch["epsilon_scale"] = jnp.asarray(float(self._epsilon_scale), dtype=jnp.float32)
+            else:
+                k = float(self.arguments.gfpo_retain_count)
+                g = float(self.arguments.gfpo_group_size)
+                grpo_batch["epsilon_scale"] = jnp.asarray(k / max(g, 1.0), dtype=jnp.float32)
+        except Exception:
+            pass
+
+        # beta_scale: multiplicative controller on top of static beta
+        try:
+            grpo_batch["beta_scale"] = jnp.asarray(float(self._beta_scale), dtype=jnp.float32)
+        except Exception:
+            pass
+
+        # Keep batch lean: only pass arrays that are consumed by the step
+
         return grpo_batch, metrics_dict
+
+    def on_step_end(
+        self,
+        state: EasyDeLState,
+        metrics,
+        step: int,
+    ):
+        state, metrics = super().on_step_end(state, metrics, step)
+
+        # Update epsilon_scale using previous-step ESS if enabled
+        try:
+            if bool(getattr(self.arguments, "use_ess_epsilon", False)):
+                ess_mean_norm = metrics.get("ess/mean_norm", None)
+                if ess_mean_norm is not None:
+                    try:
+                        ess_val = float(ess_mean_norm)
+                    except Exception:
+                        import jax
+                        ess_val = float(jax.device_get(ess_mean_norm))
+                    power = float(getattr(self.arguments, "epsilon_ess_power", 0.5))
+                    scale = max(1e-6, ess_val) ** power
+                    smin = float(getattr(self.arguments, "epsilon_min_scale", 0.1))
+                    smax = float(getattr(self.arguments, "epsilon_max_scale", 1.0))
+                    self._epsilon_scale = float(min(max(scale, smin), smax))
+        except Exception:
+            pass
+
+        # Update beta_scale via simple proportional controller to hit KL target
+        try:
+            kl_obs = metrics.get("kl/mean", None)
+            if kl_obs is not None:
+                try:
+                    kl_val = float(kl_obs)
+                except Exception:
+                    import jax
+                    kl_val = float(jax.device_get(kl_obs))
+                kl_target = float(getattr(self.arguments, "kl_target", 0.02))
+                eta = float(getattr(self.arguments, "beta_update_rate", 0.1))
+                # multiplicative update on the scale
+                new_scale = float(self._beta_scale) * float(jnp.exp(jnp.asarray(eta * (kl_val - kl_target))))
+                smin = float(getattr(self.arguments, "beta_min_scale", 0.1))
+                smax = float(getattr(self.arguments, "beta_max_scale", 10.0))
+                self._beta_scale = float(min(max(new_scale, smin), smax))
+        except Exception:
+            pass
+
+        return state, metrics
 
 
 def trainer(**kwargs) -> GFSPOTrainer:

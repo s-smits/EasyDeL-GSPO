@@ -121,9 +121,16 @@ def gspo_step(
         # Determine effective epsilon (can be overridden per-minibatch without recompiles)
         _eps_scale = minibatch.get("epsilon_scale", None)
         if _eps_scale is not None:
-            eps_eff = jnp.asarray(_eps_scale, dtype=jnp.float32)
+            eps_eff = jnp.asarray(epsilon, dtype=jnp.float32) * jnp.asarray(_eps_scale, dtype=jnp.float32)
         else:
             eps_eff = jnp.asarray(epsilon, dtype=jnp.float32)
+
+        # Optional runtime beta scaling (host-updated, avoids recompiles)
+        _beta_scale = minibatch.get("beta_scale", None)
+        if _beta_scale is not None:
+            beta_eff = jnp.asarray(beta, dtype=jnp.float32) * jnp.asarray(_beta_scale, dtype=jnp.float32)
+        else:
+            beta_eff = jnp.asarray(beta, dtype=jnp.float32)
 
         # GSPO: Compute importance sampling weights based on specified level
         if importance_sampling_level == "token":
@@ -183,15 +190,8 @@ def gspo_step(
         else:
             sel_w_bcast = 1.0
 
-        # Differential KL penalty: beta for selected vs off-selected
-        beta_sel_scale = minibatch.get("beta_sel_scale")
-        beta_off_scale = minibatch.get("beta_off_scale")
-        if beta_sel_scale is None:
-            beta_sel_scale = 1.0
-        if beta_off_scale is None:
-            beta_off_scale = 1.0
-        beta_vec = beta * (beta_sel_scale * sel_w_bcast + beta_off_scale * (1.0 - sel_w_bcast))
-        per_token_loss = per_token_loss + beta_vec * per_token_kl
+        # Add KL penalty (selection masking applied via weighted_mask below)
+        per_token_loss = per_token_loss + beta_eff * per_token_kl
 
         # Weighted compute by selection_weights and completion_mask
         weighted_mask = completion_mask * sel_w_bcast
@@ -200,35 +200,26 @@ def gspo_step(
         # Compute loss
         loss = jnp.mean(jnp.sum(per_token_loss * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
 
-        # Compute metrics
-        mean_kl = jnp.mean(jnp.sum(per_token_kl * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
-        
-        # Clipping metrics computation
-        if importance_sampling_level == "sequence":
-            clipped_fraction = clipfrac
-            mean_ratio = jnp.mean(ratio[:, 0])
-        else:
-            clipped_fraction = jnp.mean(((jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask).astype(jnp.float32))
-            mean_ratio = jnp.mean(ratio * completion_mask) / jnp.mean(completion_mask)
-
-        # Distributional comparison of policy vs reference (sequence-averaged logprobs)
-        policy_seq_logps = jnp.sum(per_token_logps * completion_mask, axis=1)
-        ref_seq_logps = jnp.sum(ref_per_token_logps * completion_mask, axis=1)
-        
-        dist_stats = {
-            "dist/policy_seq_logps_mean": jnp.mean(policy_seq_logps),
-            "dist/policy_seq_logps_std": jnp.std(policy_seq_logps),
-            "dist/ref_seq_logps_mean": jnp.mean(ref_seq_logps),
-            "dist/ref_seq_logps_std": jnp.std(ref_seq_logps),
-            "dist/logp_diff_mean": jnp.mean(policy_seq_logps - ref_seq_logps),
-            "dist/logp_diff_std": jnp.std(policy_seq_logps - ref_seq_logps),
-            "dist/per_token_logps_mean": jnp.mean(per_token_logps),
-            "dist/per_token_kl_mean": jnp.mean(per_token_kl * completion_mask) / jnp.mean(completion_mask),
-        }
+        # Compute metrics: ratio clipping fraction only (simpler, comparable across modes)
+        clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
+        mean_ratio = jnp.mean(ratio)
 
         # Compute advantage statistics for progress bar
         advantage_median_abs = jnp.median(jnp.abs(advantages))
         advantage_95th_percentile_abs = jnp.percentile(jnp.abs(advantages), 95)
+
+        # Sequence-level diagnostics: average KL per sequence and ESS (if sequence mode)
+        kl_mean = jnp.array(0.0, dtype=jnp.float32)
+        ess_mean = jnp.array(0.0, dtype=jnp.float32)
+        if importance_sampling_level == "sequence":
+            seq_kl = jnp.sum(per_token_kl * completion_mask, axis=1) / lengths
+            kl_mean = jnp.mean(seq_kl)
+            # Reuse grouped weights w if available, else recompute quickly
+            if 'w' in locals():
+                s1 = jnp.sum(w, axis=1)
+                s2 = jnp.sum(w * w, axis=1)
+                ess = (s1 * s1) / jnp.maximum(s2, 1e-8)
+                ess_mean = jnp.mean(ess / float(G))  # normalize by G for interpretability
 
         return loss, LossMetrics(
             loss=loss,
@@ -236,6 +227,8 @@ def gspo_step(
             other_metrics={
                 "mean_ratio": mean_ratio,
                 "clipped_fraction": clipped_fraction,
+                "kl/mean": kl_mean,
+                "ess/mean_norm": ess_mean,
                 "advantages_mean": jnp.mean(advantages),
                 "advantage_median_abs": advantage_median_abs,
                 "advantage_95th_percentile_abs": advantage_95th_percentile_abs,

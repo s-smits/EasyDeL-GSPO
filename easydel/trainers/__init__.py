@@ -27,6 +27,7 @@ from .group_relative_policy_optimization import (
     GFSPOConfig,
     GFSPOTrainer,
     GFSPOWShrinkTrainer,
+    GFSPOStableTrainer,
 )
 from .odds_ratio_preference_optimization_trainer import ORPOConfig, ORPOTrainer
 from .packer import pack_sequences
@@ -61,6 +62,7 @@ __all__ = (
     "GFSPOConfig",
     "GFSPOTrainer",
     "GFSPOWShrinkTrainer",
+    "GFSPOStableTrainer",
     "JaxDistributedConfig",
     "ORPOConfig",
     "ORPOTrainer",

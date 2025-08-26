@@ -74,7 +74,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --gfpo_adaptive false \ 
+  --gfpo_adaptive false \
   --use_wshrink true \
   --verbose true
 

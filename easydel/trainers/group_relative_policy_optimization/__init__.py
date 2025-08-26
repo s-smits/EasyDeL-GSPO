@@ -21,7 +21,7 @@ from .gspo_config import GSPOConfig
 from .gspo_trainer import GSPOTrainer
 from .gfspo_config import GFSPOConfig
 from .gfspo_trainer import GFSPOTrainer
-from .gfspo_wshrink_trainer import GFSPOWShrinkTrainer
+from .gfspo_wshrink_trainer import GFSPOWShrinkTrainer, GFSPOStableTrainer
 
 __all__ = [
     "GRPOConfig", 
@@ -35,4 +35,5 @@ __all__ = [
     "GFSPOConfig",
     "GFSPOTrainer",
     "GFSPOWShrinkTrainer",
+    "GFSPOStableTrainer",
 ]

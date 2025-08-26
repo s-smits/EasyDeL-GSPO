@@ -19,7 +19,7 @@ from .gfpo_utils import GFPOFilterMixin
 logger = get_logger(__name__)
 
 
-class GFSPOWShrinkTrainer(GFSPOTrainer):
+class GFSPOStableTrainer(GFSPOTrainer):
     """
     GFSPO variant that uses weighted, shrinkage-normalized advantages with
     sample-size-aware variance flooring and passes `selection_weights` for
@@ -60,7 +60,7 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
             log_eps = getattr(arguments, "log_clip_epsilon", arguments.epsilon)
 
             print(
-                "DEBUG: Initializing GFSPO wshrink trainer - "
+                "DEBUG: Initializing GFSPO stable trainer - "
                 f"G={arguments.gfpo_group_size}, "
                 f"k={arguments.gfpo_retain_count}, "
                 f"alpha={alpha}, c={c}, soft_mask={soft}, temp={temp}, "
@@ -68,7 +68,7 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
                 f"epsilon={arguments.epsilon}, beta={arguments.beta}"
             )
             logger.info(
-                "Initialized GFSPO wshrink trainer with "
+                "Initialized GFSPO stable trainer with "
                 f"G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, "
                 f"alpha={alpha}, sigma_floor_c={c}, soft_mask={soft}, temp={temp}, "
                 f"iw_norm={iw_norm}, clip_in_log_space={clip_log}, log_clip_epsilon={log_eps}, "
@@ -77,10 +77,10 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
             )
         except Exception as e:
             try:
-                print(f"DEBUG: Failed to log GFSPO wshrink trainer initialization: {e}")
+                print(f"DEBUG: Failed to log GFSPO stable trainer initialization: {e}")
             except Exception:
                 ...
-            logger.warning(f"Failed to log GFSPO wshrink trainer initialization: {e}")
+            logger.warning(f"Failed to log GFSPO stable trainer initialization: {e}")
 
     def _preprocess_batch_input(
         self,
@@ -154,22 +154,19 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
         grpo_batch["advantages"] = A.reshape(-1)
         grpo_batch["selection_weights"] = mask.reshape(-1)
 
-        # Provide a simple epsilon scaling based on k/G to avoid recompiles
+        # Provide epsilon_scale and beta_scale as runtime scalars (avoid recompiles)
         try:
-            eps0 = float(getattr(self.arguments, "epsilon", 0.2))
-            k = float(self.arguments.gfpo_retain_count)
-            g = float(self.arguments.gfpo_group_size)
-            eps_eff = float(eps0 * (k / max(g, 1.0)))
-            grpo_batch["epsilon_scale"] = jnp.full((num_prompts * G,), eps_eff, dtype=jnp.float32)
+            if bool(getattr(self.arguments, "use_ess_epsilon", False)) and getattr(self, "_epsilon_scale", None) is not None:
+                grpo_batch["epsilon_scale"] = jnp.asarray(float(self._epsilon_scale), dtype=jnp.float32)
+            else:
+                k = float(self.arguments.gfpo_retain_count)
+                g = float(self.arguments.gfpo_group_size)
+                grpo_batch["epsilon_scale"] = jnp.asarray(k / max(g, 1.0), dtype=jnp.float32)
         except Exception:
             pass
 
-        # Optional differential KL scaling via batch (avoids recompiles)
         try:
-            b_sel = float(getattr(self.arguments, "beta_sel_scale", 1.0))
-            b_off = float(getattr(self.arguments, "beta_off_scale", 1.0))
-            grpo_batch["beta_sel_scale"] = jnp.full((num_prompts * G,), b_sel, dtype=jnp.float32)
-            grpo_batch["beta_off_scale"] = jnp.full((num_prompts * G,), b_off, dtype=jnp.float32)
+            grpo_batch["beta_scale"] = jnp.asarray(float(getattr(self, "_beta_scale", 1.0)), dtype=jnp.float32)
         except Exception:
             pass
 
@@ -179,24 +176,7 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
         except Exception:
             pass
 
-        # Ensure all batch leaves are per-sequence arrays (avoid scalar reshape issues)
-        try:
-            bs = int(grpo_batch.get("completion_lengths", grpo_batch["advantages"]).shape[0])
-            def _coerce_leaf(x):
-                try:
-                    if isinstance(x, jax.Array):
-                        return jnp.full((bs,), x, dtype=x.dtype) if x.ndim == 0 else x
-                    # Promote simple Python scalars to per-seq vectors
-                    if isinstance(x, (int, float, bool)):
-                        dt = jnp.float32 if isinstance(x, float) else (jnp.int32 if isinstance(x, int) else jnp.bool_)
-                        return jnp.full((bs,), x, dtype=dt)
-                except Exception:
-                    return x
-                return x
-            for _k in list(grpo_batch.keys()):
-                grpo_batch[_k] = _coerce_leaf(grpo_batch[_k])
-        except Exception:
-            pass
+        # Keep batch lean: only pass arrays used by the step
 
         return grpo_batch, metrics
 
@@ -220,5 +200,8 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
         return state, metrics
 
 
-def trainer(**kwargs) -> GFSPOWShrinkTrainer:
-    return GFSPOWShrinkTrainer(**kwargs)
+def trainer(**kwargs) -> GFSPOStableTrainer:
+    return GFSPOStableTrainer(**kwargs)
+
+# Backward-compat alias
+GFSPOWShrinkTrainer = GFSPOStableTrainer

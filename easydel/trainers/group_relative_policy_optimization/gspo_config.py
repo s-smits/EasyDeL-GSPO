@@ -46,6 +46,33 @@ class GSPOConfig(GRPOConfig):
         metadata={"help": "The epsilon parameter for PPO-style clipping. Same as GRPO default."},
     )
 
+    # IS stabilization/config
+    importance_weight_normalization: str = field(
+        default="none",
+        metadata={
+            "help": "Normalization for sequence-level IS weights: 'none'|'mean'|'ess' (per-prompt).",
+        },
+    )
+
+    clip_in_log_space: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, clip at sequence log-ratio level instead of ratio space. Default False preserves GSPO baseline.",
+        },
+    )
+
+    # Magnitude for log-space clipping (sequence log-ratio)
+    log_clip_epsilon: float = field(
+        default=0.2,
+        metadata={"help": "Absolute cap for sequence log-ratio before exponentiation when clip_in_log_space=True."},
+    )
+
+    # Epsilon coupling strategy (static, JIT-safe): none|k_over_g|ess_over_g
+    epsilon_coupling_mode: str = field(
+        default="k_over_g",
+        metadata={"help": "How to scale PPO epsilon at runtime: 'none'|'k_over_g'|'ess_over_g'."},
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:
@@ -61,6 +88,18 @@ class GSPOConfig(GRPOConfig):
             if self.epsilon <= 0:
                 raise ValueError(f"epsilon must be positive, got {self.epsilon}")
             
+            # Validate new fields
+            if self.importance_weight_normalization not in ["none", "mean", "ess"]:
+                raise ValueError(
+                    "importance_weight_normalization must be one of ['none','mean','ess']"
+                )
+            if self.epsilon_coupling_mode not in ["none", "k_over_g", "ess_over_g"]:
+                raise ValueError(
+                    "epsilon_coupling_mode must be one of ['none','k_over_g','ess_over_g']"
+                )
+            if float(self.log_clip_epsilon) <= 0:
+                raise ValueError("log_clip_epsilon must be positive")
+
             # Note: advantage_epsilon is inherited from GRPOConfig and is critical for GSPO
             # as sequence-level rewards often have low variance within groups
             print("DEBUG: GSPOConfig post_init completed successfully")

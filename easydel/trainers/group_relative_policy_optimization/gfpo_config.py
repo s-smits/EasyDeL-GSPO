@@ -111,6 +111,42 @@ class GFPOConfig(GRPOConfig):
         },
     )
 
+    # Soft masking and shrinkage controls (optional; default preserves legacy behavior)
+    gfpo_soft_mask: bool = field(
+        default=False,
+        metadata={
+            "help": "If True, build a soft mask in [0,1] that sums to k per prompt (capped simplex).",
+        },
+    )
+
+    gfpo_soft_temperature: float = field(
+        default=0.5,
+        metadata={
+            "help": "Temperature for soft top-k logits; lower => peakier weights.",
+        },
+    )
+
+    gfpo_shrinkage_alpha: float = field(
+        default=0.5,
+        metadata={
+            "help": "Shrinkage strength toward full-group stats when computing subset mean/variance (0..1).",
+        },
+    )
+
+    gfpo_sigma_floor_c: float = field(
+        default=0.25,
+        metadata={
+            "help": "Sample-size-aware variance floor constant to stabilize tiny-k groups.",
+        },
+    )
+
+    gfpo_metric_switch_clip: float = field(
+        default=0.35,
+        metadata={
+            "help": "If clipped_fraction exceeds this, switch metric to 'length'; else may switch back to 'token_efficiency'.",
+        },
+    )
+
     # Adaptive strategy selection
     gfpo_adaptive_method: str = field(
         default="rolling",
@@ -173,11 +209,15 @@ class GFPOConfig(GRPOConfig):
                 raise ValueError("gfpo_adaptive_history_max must be >= 100")
             if not (0 < float(self.gfpo_adaptive_ema_alpha) <= 1.0):
                 raise ValueError("gfpo_adaptive_ema_alpha must be in (0, 1]")
+            # Validate soft/shrinkage toggles
+            if float(self.gfpo_soft_temperature) <= 0:
+                raise ValueError("gfpo_soft_temperature must be > 0")
+            if not (0.0 <= float(self.gfpo_shrinkage_alpha) <= 1.0):
+                raise ValueError("gfpo_shrinkage_alpha must be in [0,1]")
             print("DEBUG: GFPOConfig post_init completed successfully")
         except Exception as e:
             print(f"DEBUG: GFPOConfig post_init failed: {e}")
             raise
 
     __hash__ = hash_fn
-
 
