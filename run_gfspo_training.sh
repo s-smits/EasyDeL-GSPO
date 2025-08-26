@@ -75,7 +75,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --gfpo_adaptive false \
-  --use_wshrink true \
+  --use_stable true \
   --verbose true
 
 echo "Training completed!"
