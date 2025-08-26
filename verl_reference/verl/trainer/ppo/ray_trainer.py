@@ -1263,6 +1263,78 @@ class RayPPOTrainer:
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
+                    # Post-update diagnostics: recompute policy log-probs and compare to reference.
+                    # Provides immediate visibility into how the update shifts log-probs vs ref.
+                    try:
+                        diag_enable = self.config.trainer.get("logprob_analysis_enable", True)
+                    except Exception:
+                        diag_enable = True
+                    if diag_enable and self.use_reference_policy:
+                        with marked_timer("post_update_logprob_diag", timing_raw, color="blue"):
+                            # Recompute policy log-probs AFTER the update on the same batch
+                            post_lp = self.actor_rollout_wg.compute_log_prob(batch)
+                            policy_logp_post = post_lp.batch["old_log_probs"]  # (bsz, response_len)
+
+                            # Use existing ref log-prob if present; else compute now
+                            if "ref_log_prob" in batch.batch:
+                                ref_logp = batch.batch["ref_log_prob"]
+                            else:
+                                if not self.ref_in_actor:
+                                    ref_out = self.ref_policy_wg.compute_ref_log_prob(batch)
+                                else:
+                                    ref_out = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                ref_logp = ref_out.batch["ref_log_prob"]
+
+                            response_mask = batch.batch["response_mask"].to(policy_logp_post.dtype)
+
+                            # Masked token-level differences (policy - ref)
+                            delta = (policy_logp_post - ref_logp) * response_mask
+                            valid_tokens = torch.clamp(response_mask.sum(), min=1)
+                            token_mean = delta.sum() / valid_tokens
+                            # Compute masked variance: E[x^2] - (E[x])^2
+                            e2 = (delta.pow(2).sum()) / valid_tokens
+                            token_var = torch.clamp(e2 - token_mean.pow(2), min=0.0)
+                            token_std = torch.sqrt(token_var)
+
+                            # Sequence-level stats
+                            seq_valid = torch.clamp(response_mask.sum(dim=1), min=1)
+                            seq_sum = delta.sum(dim=1)
+                            seq_mean = seq_sum / seq_valid
+
+                            # Percentiles (approximate) with subsampling to reduce overhead
+                            try:
+                                max_tokens = int(self.config.trainer.get("logprob_analysis_max_tokens", 50000))
+                            except Exception:
+                                max_tokens = 50000
+                            flat_valid = delta[response_mask > 0]
+                            if flat_valid.numel() > 0:
+                                if (max_tokens > 0) and (flat_valid.numel() > max_tokens):
+                                    idx = torch.randint(0, flat_valid.numel(), (max_tokens,), device=flat_valid.device)
+                                    sample_vals = flat_valid.view(-1).index_select(0, idx)
+                                else:
+                                    sample_vals = flat_valid.view(-1)
+                                token_p50 = sample_vals.median().item()
+                                token_p90 = sample_vals.quantile(0.9).item()
+                                token_p99 = sample_vals.quantile(0.99).item()
+                            else:
+                                token_p50 = token_p90 = token_p99 = 0.0
+
+                            diag_metrics = {
+                                "diag/logprob_diff/token_mean": token_mean.detach().item(),
+                                "diag/logprob_diff/token_std": token_std.detach().item(),
+                                "diag/logprob_diff/token_p50": float(token_p50),
+                                "diag/logprob_diff/token_p90": float(token_p90),
+                                "diag/logprob_diff/token_p99": float(token_p99),
+                                "diag/logprob_diff/seq_sum_mean": seq_sum.mean().detach().item(),
+                                "diag/logprob_diff/seq_mean_mean": seq_mean.mean().detach().item(),
+                                "diag/policy_logp/token_mean": (policy_logp_post * response_mask).sum().detach().item()
+                                / torch.clamp(response_mask.sum(), min=1).detach().item(),
+                                "diag/ref_logp/token_mean": (ref_logp * response_mask).sum().detach().item()
+                                / torch.clamp(response_mask.sum(), min=1).detach().item(),
+                            }
+
+                            metrics.update(diag_metrics)
+
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
