@@ -49,7 +49,38 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
             reward_processing_classes=reward_processing_classes,
             data_tokenize_fn=data_tokenize_fn,
         )
-        # Keep initialization quiet to avoid host divergence and reduce noise
+        # Initialization log (mirror other trainers)
+        try:
+            alpha = getattr(arguments, "gfpo_shrinkage_alpha", 0.5)
+            c = getattr(arguments, "gfpo_sigma_floor_c", 0.25)
+            soft = getattr(arguments, "gfpo_soft_mask", False)
+            temp = getattr(arguments, "gfpo_soft_temperature", 0.5)
+            iw_norm = getattr(arguments, "importance_weight_normalization", "mean")
+            clip_log = getattr(arguments, "clip_in_log_space", True)
+            log_eps = getattr(arguments, "log_clip_epsilon", arguments.epsilon)
+
+            print(
+                "DEBUG: Initializing GFSPO wshrink trainer - "
+                f"G={arguments.gfpo_group_size}, "
+                f"k={arguments.gfpo_retain_count}, "
+                f"alpha={alpha}, c={c}, soft_mask={soft}, temp={temp}, "
+                f"iw_norm={iw_norm}, clip_log={clip_log}, log_eps={log_eps}, "
+                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+            )
+            logger.info(
+                "Initialized GFSPO wshrink trainer with "
+                f"G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, "
+                f"alpha={alpha}, sigma_floor_c={c}, soft_mask={soft}, temp={temp}, "
+                f"iw_norm={iw_norm}, clip_in_log_space={clip_log}, log_clip_epsilon={log_eps}, "
+                f"importance_sampling_level={arguments.importance_sampling_level}, "
+                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+            )
+        except Exception as e:
+            try:
+                print(f"DEBUG: Failed to log GFSPO wshrink trainer initialization: {e}")
+            except Exception:
+                ...
+            logger.warning(f"Failed to log GFSPO wshrink trainer initialization: {e}")
 
     def _preprocess_batch_input(
         self,
@@ -129,7 +160,7 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
             k = float(self.arguments.gfpo_retain_count)
             g = float(self.arguments.gfpo_group_size)
             eps_eff = float(eps0 * (k / max(g, 1.0)))
-            grpo_batch["epsilon_scale"] = jnp.asarray(eps_eff, dtype=jnp.float32)
+            grpo_batch["epsilon_scale"] = jnp.full((num_prompts * G,), eps_eff, dtype=jnp.float32)
         except Exception:
             pass
 
@@ -137,14 +168,33 @@ class GFSPOWShrinkTrainer(GFSPOTrainer):
         try:
             b_sel = float(getattr(self.arguments, "beta_sel_scale", 1.0))
             b_off = float(getattr(self.arguments, "beta_off_scale", 1.0))
-            grpo_batch["beta_sel_scale"] = jnp.asarray(b_sel, dtype=jnp.float32)
-            grpo_batch["beta_off_scale"] = jnp.asarray(b_off, dtype=jnp.float32)
+            grpo_batch["beta_sel_scale"] = jnp.full((num_prompts * G,), b_sel, dtype=jnp.float32)
+            grpo_batch["beta_off_scale"] = jnp.full((num_prompts * G,), b_off, dtype=jnp.float32)
         except Exception:
             pass
 
         # Optional metrics (host-only); skip if anything fails
         try:
             metrics.update(self._gfpo_compute_metrics_host(mask, lengths_grouped))
+        except Exception:
+            pass
+
+        # Ensure all batch leaves are per-sequence arrays (avoid scalar reshape issues)
+        try:
+            bs = int(grpo_batch.get("completion_lengths", grpo_batch["advantages"]).shape[0])
+            def _coerce_leaf(x):
+                try:
+                    if isinstance(x, jax.Array):
+                        return jnp.full((bs,), x, dtype=x.dtype) if x.ndim == 0 else x
+                    # Promote simple Python scalars to per-seq vectors
+                    if isinstance(x, (int, float, bool)):
+                        dt = jnp.float32 if isinstance(x, float) else (jnp.int32 if isinstance(x, int) else jnp.bool_)
+                        return jnp.full((bs,), x, dtype=dt)
+                except Exception:
+                    return x
+                return x
+            for _k in list(grpo_batch.keys()):
+                grpo_batch[_k] = _coerce_leaf(grpo_batch[_k])
         except Exception:
             pass
 

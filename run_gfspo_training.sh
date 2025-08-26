@@ -36,7 +36,7 @@ CURRICULUM_MATH="${2:-false}"
 
 # If DATASET is math-ds, force curriculum math to true
 if [ "$DATASET" = "math-ds" ]; then
-  CURRICULUM_MATH="true"
+  CURRICULUM_MATH="false"
 fi
 
 echo "Using dataset: ${DATASET}"
@@ -52,8 +52,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
   --gfpo_group_size 8 \
-  --gfpo_retain_count 2 \
-  --rollout_chunk_size 2 \
+  --gfpo_retain_count 4 \
+  --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
@@ -74,7 +74,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --gfpo_adaptive false \
+  --gfpo_adaptive false \ 
   --use_wshrink true \
   --verbose true
 

@@ -118,12 +118,19 @@ def gspo_step(
         else:
             lengths = jnp.maximum(lengths, 1.0)
 
+        # Determine effective epsilon (can be overridden per-minibatch without recompiles)
+        _eps_scale = minibatch.get("epsilon_scale", None)
+        if _eps_scale is not None:
+            eps_eff = jnp.asarray(_eps_scale, dtype=jnp.float32)
+        else:
+            eps_eff = jnp.asarray(epsilon, dtype=jnp.float32)
+
         # GSPO: Compute importance sampling weights based on specified level
         if importance_sampling_level == "token":
             # Standard GRPO: per-token importance weights
             log_importance_weights = log_ratio
             ratio = jnp.exp(log_importance_weights)
-            clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+            clipped_ratio = jnp.clip(ratio, 1 - eps_eff, 1 + eps_eff)
             clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask
             clipfrac = jnp.mean(clipped_frac_mask.astype(jnp.float32))
         elif importance_sampling_level == "sequence":
@@ -152,22 +159,13 @@ def gspo_step(
                 pass
             ratio = jnp.reshape(w, (-1, 1))
             # Stage 2: ratio clipping regardless of log clipping
-            clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+            clipped_ratio = jnp.clip(ratio, 1 - eps_eff, 1 + eps_eff)
             # Clipping fraction: max of log-clip hits and ratio-clip hits
             clip_hits_log = (jnp.abs(seq_log_ratios) >= log_clip_epsilon).astype(jnp.float32) if clip_in_log_space else jnp.zeros_like(seq_log_ratios, dtype=jnp.float32)
             clip_hits_ratio = (jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32)
             clipfrac = jnp.maximum(jnp.mean(clip_hits_log), jnp.mean(clip_hits_ratio))
         else:
             raise ValueError(f"Unknown importance_sampling_level: {importance_sampling_level}")
-        
-        # Compute importance sampling ratios
-        # Optional runtime epsilon scaling passed via batch
-        eps_scale = minibatch.get("epsilon_scale", None)
-        if eps_scale is not None:
-            try:
-                epsilon = float(eps_scale)
-            except Exception:
-                pass
         
         # Compute policy gradient loss
         pg_loss1 = -advantages[:, None] * ratio

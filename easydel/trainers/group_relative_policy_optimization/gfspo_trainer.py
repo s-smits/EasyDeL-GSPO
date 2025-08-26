@@ -187,6 +187,24 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
             except Exception:
                 ...
 
+        # Ensure no scalar leaves sneak into the batch (plays nice with minibatching)
+        try:
+            bs = int(grpo_batch.get("completion_lengths", grpo_batch["advantages"]).shape[0])
+            def _coerce_leaf(x):
+                try:
+                    if isinstance(x, jax.Array):
+                        return jnp.full((bs,), x, dtype=x.dtype) if x.ndim == 0 else x
+                    if isinstance(x, (int, float, bool)):
+                        dt = jnp.float32 if isinstance(x, float) else (jnp.int32 if isinstance(x, int) else jnp.bool_)
+                        return jnp.full((bs,), x, dtype=dt)
+                except Exception:
+                    return x
+                return x
+            for _k in list(grpo_batch.keys()):
+                grpo_batch[_k] = _coerce_leaf(grpo_batch[_k])
+        except Exception:
+            pass
+
         return grpo_batch, metrics_dict
 
 
