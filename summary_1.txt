@@ -1,0 +1,30 @@
+**Objective:** Implement post-update analysis of policy–reference log-prob differences for RL trainers (GRPO/GSPO/GFSPO), logging concise diagnostics (incl. p50/p90/p99) to WandB with low overhead.
+
+**User instructions:**
+- Audit whether any "log_logprobs" misuse exists and check how log-prob differences are computed.
+- Implement log-prob difference analysis right after model update and integrate with WandB.
+- Include p50, p90, p99 percentiles and reduce overhead (subsampling/frequency controls).
+- Ensure it’s implemented in GRPOTrainer (not PPO), since GFSPO inherits from GRPO.
+
+**AI actions / code behavior:**
+- Searched repo; confirmed no log(logprobs) misuse and standard (policy − ref) usage for diffs.
+- First added diagnostics to Ray PPO trainer (percentiles + subsampling) as a prototype.
+- Implemented canonical solution in EasyDeL GRPOTrainer:
+  - Added GRPOConfig flags: `logprob_analysis_enable`, `logprob_analysis_max_tokens`, `logprob_analysis_every_n_steps`.
+  - Compiled `compute_policymodel_logps` (mirrors `compute_refmodel_logps`) respecting sharding.
+  - Cached minimal tensors in `_preprocess_batch_input`: `ids`, `full_mask`, `completion_mask`, `ref_logps`.
+  - In `on_step_end`, recomputed policy logps post-update, computed masked deltas, means/std, token and sequence percentiles with subsampling, logged to WandB (rank 0), merged into `metrics.other_metrics`, and cleared cache.
+  - Fixed Pyright optional-operand warnings via None checks and `tp.cast(jax.Array, ...)`.
+
+**Important entities:**
+- Files: `easydel/trainers/group_relative_policy_optimization/grpo_trainer.py`, `easydel/trainers/group_relative_policy_optimization/grpo_config.py` (and earlier prototype in `verl_reference/verl/trainer/ppo/ray_trainer.py`).
+- Functions: `compute_policymodel_logps`, `compute_refmodel_logps`, `_preprocess_batch_input`, `on_step_end`.
+- Config/vars: `_last_logprob_diag`, `logprob_analysis_enable`, `logprob_analysis_max_tokens`, `logprob_analysis_every_n_steps`.
+- Metrics keys: `diag/logprob_diff/token_mean`, `token_std`, `token_p50/p90/p99`, `seq_sum_mean`, `seq_mean_mean`, `seq_sum_p50/p90/p99`, `seq_mean_p50/p90/p99`, `diag/policy_logp/token_mean`, `diag/ref_logp/token_mean`.
+
+**Open issues / next steps:**
+- Optional: add histogram logging and configurable namespaces; consider removing PPO-only diagnostics if not needed.
+- Validate runtime overhead in practice; tune `max_tokens` and `every_n_steps` settings.
+- Ensure WandB availability and add tests for cache presence and shape alignment.
+
+**Summary (concise):** Implemented low-overhead, post-update policy–reference log-prob analysis with percentile metrics and WandB logging directly in GRPOTrainer, affecting GRPO/GSPO/GFSPO, and added config flags plus type-safe guards.

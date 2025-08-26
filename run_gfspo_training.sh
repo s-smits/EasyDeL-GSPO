@@ -51,8 +51,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
-  --gfpo_group_size 8 \
-  --gfpo_retain_count 4 \
+  --gfpo_group_size 4 \
+  --gfpo_retain_count 3 \
   --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \

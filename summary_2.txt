@@ -1,0 +1,1 @@
+Fixed JAX broadcast bug in GSPO loss by making epsilon/beta scales broadcast-safe and adjusted token-mode metrics; also ensured curriculum uses the chosen (stable) trainer and corrected run script logic. Audited GFPO/G(S)PO trainers and utilities for shape/mask issues; next step is to rerun training and monitor kl/mean and clipped_fraction for stability.
