@@ -152,9 +152,23 @@ def minibatch_call(
     if num_accum_steps > 1:
 
         def reshape_to_minibatches(arr):
-            """Reshape the batch into minibatches for accumulation."""
-            batch_shape = (num_accum_steps, minibatch_size, *arr.shape[1:])
-            return jnp.reshape(arr, batch_shape)
+            """Reshape the batch into minibatches for accumulation.
+
+            Handles 0-D or singleton leading-dimension arrays by broadcasting them
+            across the total batch length before reshaping. This lets runtime
+            scalars (e.g., epsilon_scale, beta_scale) participate in minibatching
+            without causing reshape errors.
+            """
+            total = num_accum_steps * minibatch_size
+            a = arr
+            # Broadcast 0-D runtime scalars
+            if a.ndim == 0:
+                a = jnp.broadcast_to(a, (total,))
+            # Broadcast singleton leading dim when needed
+            elif a.ndim >= 1 and int(a.shape[0]) == 1 and total > 1:
+                a = jnp.broadcast_to(a, (total, *a.shape[1:]))
+            batch_shape = (num_accum_steps, minibatch_size, *a.shape[1:])
+            return jnp.reshape(a, batch_shape)
 
         batch = jax.tree_util.tree_map(reshape_to_minibatches, batch)
 

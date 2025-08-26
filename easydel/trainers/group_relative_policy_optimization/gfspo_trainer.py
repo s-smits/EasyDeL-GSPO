@@ -178,18 +178,23 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
         # Runtime knobs to avoid recompiles in step
         # epsilon_scale: prefer dynamic ESS-based if enabled and available; else fallback to k/G
         try:
+            # Broadcast runtime epsilon scale to vector matching batch (for minibatching reshape)
             if bool(getattr(self.arguments, "use_ess_epsilon", False)) and (self._epsilon_scale is not None):
-                grpo_batch["epsilon_scale"] = jnp.asarray(float(self._epsilon_scale), dtype=jnp.float32)
+                _scale = float(self._epsilon_scale)
             else:
                 k = float(self.arguments.gfpo_retain_count)
                 g = float(self.arguments.gfpo_group_size)
-                grpo_batch["epsilon_scale"] = jnp.asarray(k / max(g, 1.0), dtype=jnp.float32)
+                _scale = k / max(g, 1.0)
+            # Use completion_mask leading dim as canonical batch length
+            _n = int(grpo_batch["completion_mask"].shape[0])
+            grpo_batch["epsilon_scale"] = jnp.full((_n,), _scale, dtype=jnp.float32)
         except Exception:
             pass
 
         # beta_scale: multiplicative controller on top of static beta
         try:
-            grpo_batch["beta_scale"] = jnp.asarray(float(self._beta_scale), dtype=jnp.float32)
+            _n = int(grpo_batch["completion_mask"].shape[0])
+            grpo_batch["beta_scale"] = jnp.full((_n,), float(self._beta_scale), dtype=jnp.float32)
         except Exception:
             pass
 
