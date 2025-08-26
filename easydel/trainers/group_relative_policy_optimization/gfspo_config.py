@@ -24,6 +24,11 @@ class GFSPOConfig(GSPOConfig):
         default=16,
         metadata={"help": "Total number of responses (G) per prompt each step."},
     )
+    # Optional: prefer the stable trainer variant from scripts
+    use_stable: bool = field(
+        default=False,
+        metadata={"help": "If True, scripts may select GFSPOStableTrainer."},
+    )
     gfpo_retain_count: int = field(
         default=8,
         metadata={"help": "Number of responses (k) to retain per prompt; must be < G."},

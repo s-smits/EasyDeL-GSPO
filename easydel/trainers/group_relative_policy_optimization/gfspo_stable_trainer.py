@@ -1,4 +1,4 @@
-# gfspo_wshrink_trainer.py
+# gfspo_stable_trainer.py
 
 from __future__ import annotations
 
