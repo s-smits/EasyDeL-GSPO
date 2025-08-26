@@ -1566,6 +1566,7 @@ class GRPOTrainer(Trainer):
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
             "ref_per_token_logps": ref_per_token_logps,
+            "completion_lengths": completion_lengths_per_seq,
             "rewards": rewards,
             "advantages": advantages,
         }, processed_metrics_dict    

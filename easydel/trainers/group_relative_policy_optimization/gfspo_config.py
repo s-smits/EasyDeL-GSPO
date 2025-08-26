@@ -80,6 +80,78 @@ class GFSPOConfig(GSPOConfig):
         },
     )
 
+    # Weighted-shrinkage options (used by GFSPOWShrinkTrainer)
+    use_wshrink: bool = field(
+        default=False,
+        metadata={
+            "help": "Use weighted-shrinkage preprocessing (GFSPOWShrinkTrainer).",
+        },
+    )
+    gfpo_shrinkage_alpha: float = field(
+        default=0.5,
+        metadata={
+            "help": "Shrinkage mixing coefficient alpha in [0,1].",
+        },
+    )
+    gfpo_sigma_floor_c: float = field(
+        default=0.25,
+        metadata={
+            "help": "Sigma floor constant c; adds (c^2)/(n_eff-1) to variance.",
+        },
+    )
+
+    # Soft mask and log-space clipping options
+    gfpo_soft_mask: bool = field(
+        default=False,
+        metadata={
+            "help": "Use temperature-softmax soft top-k mask scaled to k.",
+        },
+    )
+    gfpo_soft_temperature: float = field(
+        default=0.5,
+        metadata={
+            "help": "Temperature for soft top-k mask (smaller = sharper).",
+        },
+    )
+    clip_in_log_space: bool = field(
+        default=True,
+        metadata={
+            "help": "Clip sequence-level log-importance ratios in log space.",
+        },
+    )
+    log_clip_epsilon: float = field(
+        default=0.2,
+        metadata={
+            "help": "Epsilon for log-space clipping of sequence log-ratios.",
+        },
+    )
+    importance_weight_normalization: str = field(
+        default="mean",
+        metadata={
+            "help": "Normalization for sequence IS weights: 'none'|'mean'|'ess'",
+        },
+    )
+    gfpo_metric_switch_clip: float = field(
+        default=0.35,
+        metadata={
+            "help": "If clipped_fraction > this threshold, switch metric to 'length'; switch back when <0.20.",
+        },
+    )
+
+    # Optional differential KL scales (selected vs off-selected). If left at 1.0, behavior matches beta.
+    beta_sel_scale: float = field(
+        default=1.0,
+        metadata={
+            "help": "Scale factor for KL penalty on selected sequences (multiplied by beta).",
+        },
+    )
+    beta_off_scale: float = field(
+        default=1.0,
+        metadata={
+            "help": "Scale factor for KL penalty on off-selected sequences (multiplied by beta).",
+        },
+    )
+
     def __post_init__(self):
         """Validate settings and set dependent parameters."""
         try:
@@ -115,5 +187,3 @@ class GFSPOConfig(GSPOConfig):
 def config(**kwargs) -> GFSPOConfig:
     """Convenience factory for building a GFSPOConfig."""
     return GFSPOConfig(**kwargs)
-
-

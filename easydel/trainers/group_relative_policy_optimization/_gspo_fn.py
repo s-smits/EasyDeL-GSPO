@@ -36,6 +36,9 @@ def gspo_step(
     beta: float,
     importance_sampling_level: str = "sequence",
     epsilon: float = 0.2,
+    clip_in_log_space: bool = True,
+    log_clip_epsilon: float = 0.2,
+    iw_norm_mode: str = "mean",  # none|mean|ess
     loss_config: LossConfig | None = None,
     learning_rate_fn: optax.Schedule = None,
     partition_spec: PartitionSpec | None = None,
@@ -108,21 +111,63 @@ def gspo_step(
         # Compute log ratios at token level
         log_ratio = per_token_logps - ref_per_token_logps
         
+        # Optional per-sequence lengths (precomputed) to avoid recomputing
+        lengths = minibatch.get("completion_lengths")
+        if lengths is None:
+            lengths = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
+        else:
+            lengths = jnp.maximum(lengths, 1.0)
+
         # GSPO: Compute importance sampling weights based on specified level
         if importance_sampling_level == "token":
             # Standard GRPO: per-token importance weights
             log_importance_weights = log_ratio
+            ratio = jnp.exp(log_importance_weights)
+            clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+            clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask
+            clipfrac = jnp.mean(clipped_frac_mask.astype(jnp.float32))
         elif importance_sampling_level == "sequence":
             # GSPO: sequence-level importance weights
             # Average log ratios across valid tokens to get single weight per sequence
-            seq_log_ratios = (log_ratio * completion_mask).sum(axis=1) / jnp.maximum(completion_mask.sum(axis=1), 1.0)
-            log_importance_weights = seq_log_ratios[:, None]  # Shape: (B, 1)
+            seq_log_ratios = (log_ratio * completion_mask).sum(axis=1) / lengths
+            # Optional log-space clipping for stability (prevents extreme ratios before exp)
+            if clip_in_log_space:
+                seq_log_ratios = jnp.clip(seq_log_ratios, -log_clip_epsilon, log_clip_epsilon)
+
+            # Stage 1: exponentiate to ratios
+            B = advantages.shape[0] // int(num_generations)
+            G = int(num_generations)
+            seq_lr_grouped = jnp.reshape(seq_log_ratios, (B, G))
+            w = jnp.exp(seq_lr_grouped)
+            if iw_norm_mode == "mean":
+                w = w / jnp.maximum(jnp.mean(w, axis=1, keepdims=True), 1e-8)
+            elif iw_norm_mode == "ess":
+                s1 = jnp.sum(w, axis=1, keepdims=True)
+                s2 = jnp.sum(w * w, axis=1, keepdims=True)
+                ess = (s1 * s1) / jnp.maximum(s2, 1e-8)
+                scale = jnp.sqrt(ess / float(G))
+                w = (w / jnp.maximum(jnp.mean(w, axis=1, keepdims=True), 1e-8)) * scale
+            else:
+                # no normalization
+                pass
+            ratio = jnp.reshape(w, (-1, 1))
+            # Stage 2: ratio clipping regardless of log clipping
+            clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+            # Clipping fraction: max of log-clip hits and ratio-clip hits
+            clip_hits_log = (jnp.abs(seq_log_ratios) >= log_clip_epsilon).astype(jnp.float32) if clip_in_log_space else jnp.zeros_like(seq_log_ratios, dtype=jnp.float32)
+            clip_hits_ratio = (jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32)
+            clipfrac = jnp.maximum(jnp.mean(clip_hits_log), jnp.mean(clip_hits_ratio))
         else:
             raise ValueError(f"Unknown importance_sampling_level: {importance_sampling_level}")
         
         # Compute importance sampling ratios
-        ratio = jnp.exp(log_importance_weights)
-        clipped_ratio = jnp.clip(ratio, 1 - epsilon, 1 + epsilon)
+        # Optional runtime epsilon scaling passed via batch
+        eps_scale = minibatch.get("epsilon_scale", None)
+        if eps_scale is not None:
+            try:
+                epsilon = float(eps_scale)
+            except Exception:
+                pass
         
         # Compute policy gradient loss
         pg_loss1 = -advantages[:, None] * ratio
@@ -131,29 +176,40 @@ def gspo_step(
         
         # KL divergence computation (same as GRPO)
         per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-        
-        # Add KL penalty
-        if importance_sampling_level == "sequence":
-            # For sequence-level, broadcast KL penalty
-            per_token_loss = per_token_loss + beta * per_token_kl
+
+        # Optional selection weights (for GFPO/GFSPO variants); shape (B,)
+        sel_w = minibatch.get("selection_weights")
+        if sel_w is not None:
+            sel_w = sel_w.astype(jnp.float32)
+            sel_w_bcast = sel_w[:, None]
         else:
-            # For token-level, standard addition
-            per_token_loss = per_token_loss + beta * per_token_kl
-        
+            sel_w_bcast = 1.0
+
+        # Differential KL penalty: beta for selected vs off-selected
+        beta_sel_scale = minibatch.get("beta_sel_scale")
+        beta_off_scale = minibatch.get("beta_off_scale")
+        if beta_sel_scale is None:
+            beta_sel_scale = 1.0
+        if beta_off_scale is None:
+            beta_off_scale = 1.0
+        beta_vec = beta * (beta_sel_scale * sel_w_bcast + beta_off_scale * (1.0 - sel_w_bcast))
+        per_token_loss = per_token_loss + beta_vec * per_token_kl
+
+        # Weighted compute by selection_weights and completion_mask
+        weighted_mask = completion_mask * sel_w_bcast
+        eff_comps = jnp.sum(weighted_mask, axis=1)
+
         # Compute loss
-        comps = jnp.sum(completion_mask, axis=1)
-        loss = jnp.mean(jnp.sum(per_token_loss * completion_mask, axis=1) / jnp.maximum(comps, 1.0))
-        
+        loss = jnp.mean(jnp.sum(per_token_loss * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
+
         # Compute metrics
-        mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / jnp.maximum(comps, 1.0))
+        mean_kl = jnp.mean(jnp.sum(per_token_kl * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
         
         # Clipping metrics computation
         if importance_sampling_level == "sequence":
-            # For sequence-level, compute clipping at sequence level
-            clipped_fraction = jnp.mean((jnp.abs(ratio[:, 0] - clipped_ratio[:, 0]) > 1e-6).astype(jnp.float32))
+            clipped_fraction = clipfrac
             mean_ratio = jnp.mean(ratio[:, 0])
         else:
-            # For token-level, compute clipping at token level
             clipped_fraction = jnp.mean(((jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask).astype(jnp.float32))
             mean_ratio = jnp.mean(ratio * completion_mask) / jnp.mean(completion_mask)
 

@@ -137,22 +137,61 @@ class GFPOFilterMixin:
                     else:
                         k_per.append(k_e)
 
-        # Clamp and build mask via host argsort
+        # Clamp k and build mask via host computation
         upper = max(1, int(gsize) - 1)
         k_per = [int(max(1, min(upper, int(x)))) for x in k_per]
 
-        try:
-            idx_sorted = _np.argsort(scores_h, axis=1) if ascending else _np.argsort(-scores_h, axis=1)
-        except Exception:
-            idx_sorted = jax.device_get(
-                jnp.argsort(jnp.asarray(scores_h), axis=1)
-                if ascending
-                else jnp.argsort(-jnp.asarray(scores_h), axis=1)
-            )
-        mask_h = _np.zeros((bsz, gsize), dtype=_np.float32)
-        for i in range(bsz):
-            ki = int(k_per[i])
-            mask_h[i, idx_sorted[i, :ki]] = 1.0
+        # Optionally build a soft mask using temperature-scaled softmax weights
+        if bool(getattr(self.arguments, "gfpo_soft_mask", False)):
+            try:
+                tau = float(getattr(self.arguments, "gfpo_soft_temperature", 0.5))
+            except Exception:
+                tau = 0.5
+            # Convert to numpy arrays if not already
+            try:
+                scores_np = _np.asarray(scores_h, dtype=_np.float32)
+            except Exception:
+                scores_np = jax.device_get(jnp.asarray(scores_h, dtype=jnp.float32))
+            logits = (-scores_np / tau) if ascending else (scores_np / tau)
+            # Stable softmax per row
+            logits = logits - logits.max(axis=1, keepdims=True)
+            weights = _np.exp(logits)
+            weights_sum = _np.maximum(weights.sum(axis=1, keepdims=True), 1e-8)
+            weights = weights / weights_sum
+            mask_h = _np.zeros((bsz, gsize), dtype=_np.float32)
+
+            # Projection helper: project v onto {w in [0,1]^G : sum w = k}
+            def _project_to_capped_simplex(v: _np.ndarray, k_val: float) -> _np.ndarray:
+                v = v.astype(_np.float32, copy=False)
+                # Bisection on dual variable tau for box-constrained simplex
+                lo, hi = -1e3, 1e3
+                for _ in range(40):
+                    tau = 0.5 * (lo + hi)
+                    w = _np.clip(v - tau, 0.0, 1.0)
+                    s = float(w.sum())
+                    if s > k_val:
+                        lo = tau
+                    else:
+                        hi = tau
+                tau = 0.5 * (lo + hi)
+                return _np.clip(v - tau, 0.0, 1.0)
+            for i in range(bsz):
+                ki = float(k_per[i])
+                row = weights[i] * ki
+                mask_h[i] = _project_to_capped_simplex(row, ki)
+        else:
+            try:
+                idx_sorted = _np.argsort(scores_h, axis=1) if ascending else _np.argsort(-scores_h, axis=1)
+            except Exception:
+                idx_sorted = jax.device_get(
+                    jnp.argsort(jnp.asarray(scores_h), axis=1)
+                    if ascending
+                    else jnp.argsort(-jnp.asarray(scores_h), axis=1)
+                )
+            mask_h = _np.zeros((bsz, gsize), dtype=_np.float32)
+            for i in range(bsz):
+                ki = int(k_per[i])
+                mask_h[i, idx_sorted[i, :ki]] = 1.0
 
         # Proc0-only debug
         try:
@@ -186,4 +225,3 @@ class GFPOFilterMixin:
             }
         except Exception:
             return {}
-

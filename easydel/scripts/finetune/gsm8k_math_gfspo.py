@@ -445,7 +445,8 @@ def main():
         print(f"DEBUG: About to initialize trainer with reward_funcs: {[f.__name__ for f in reward_funcs]}")
         print(f"DEBUG: reward_funcs modules: {[f.__module__ for f in reward_funcs]}")
 
-    trainer = ed.GFSPOTrainer(
+    TrainerCls = ed.GFSPOWShrinkTrainer if getattr(gfspo_config, "use_wshrink", False) else ed.GFSPOTrainer
+    trainer = TrainerCls(
         model=model,
         reward_funcs=reward_funcs,
         processing_class=tokenizer,
@@ -486,5 +487,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
