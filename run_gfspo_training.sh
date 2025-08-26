@@ -23,8 +23,10 @@ uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
 cd /home/air/EasyDeL-GSPO
 
-# Activate virtual environment if present
-if [ -f .venv/bin/activate ]; then
+# Activate virtual environment if present (prefer global ~/.venv)
+if [ -f /home/air/.venv/bin/activate ]; then
+  source /home/air/.venv/bin/activate
+elif [ -f .venv/bin/activate ]; then
   source .venv/bin/activate
 fi
 
@@ -76,6 +78,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --advantage_epsilon 1e-6 \
   --gfpo_adaptive false \
   --use_stable false \
+  --test_flight false \
   --verbose true
 
 echo "Training completed!"
