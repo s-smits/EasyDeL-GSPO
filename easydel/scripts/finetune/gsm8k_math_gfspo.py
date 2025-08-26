@@ -423,7 +423,8 @@ def main():
                 args.mini_batch_size = mini_batch_size_override
                 args.total_batch_size = mini_batch_size_override
 
-            new_tr = ed.GFSPOTrainer(
+            # Use the same trainer class (stable vs. regular) for curriculum
+            new_tr = TrainerCls(
                 model=trainer.model_state,
                 reward_funcs=trainer.reward_funcs,
                 processing_class=trainer.processing_class,
@@ -487,4 +488,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

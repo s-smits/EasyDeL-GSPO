@@ -124,6 +124,9 @@ def gspo_step(
             eps_eff = jnp.asarray(epsilon, dtype=jnp.float32) * jnp.asarray(_eps_scale, dtype=jnp.float32)
         else:
             eps_eff = jnp.asarray(epsilon, dtype=jnp.float32)
+        # Ensure epsilon broadcasts across tokens (B, T) safely
+        if hasattr(eps_eff, "ndim") and eps_eff.ndim == 1:
+            eps_eff = eps_eff[:, None]
 
         # Optional runtime beta scaling (host-updated, avoids recompiles)
         _beta_scale = minibatch.get("beta_scale", None)
@@ -131,6 +134,9 @@ def gspo_step(
             beta_eff = jnp.asarray(beta, dtype=jnp.float32) * jnp.asarray(_beta_scale, dtype=jnp.float32)
         else:
             beta_eff = jnp.asarray(beta, dtype=jnp.float32)
+        # Ensure beta broadcasts across tokens (B, T) safely
+        if hasattr(beta_eff, "ndim") and beta_eff.ndim == 1:
+            beta_eff = beta_eff[:, None]
 
         # GSPO: Compute importance sampling weights based on specified level
         if importance_sampling_level == "token":
@@ -138,8 +144,9 @@ def gspo_step(
             log_importance_weights = log_ratio
             ratio = jnp.exp(log_importance_weights)
             clipped_ratio = jnp.clip(ratio, 1 - eps_eff, 1 + eps_eff)
-            clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask
-            clipfrac = jnp.mean(clipped_frac_mask.astype(jnp.float32))
+            # Mask-aware clipping fraction: count over valid tokens only
+            clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32) * completion_mask
+            clipfrac = jnp.sum(clipped_frac_mask) / jnp.maximum(jnp.sum(completion_mask), 1.0)
         elif importance_sampling_level == "sequence":
             # GSPO: sequence-level importance weights
             # Average log ratios across valid tokens to get single weight per sequence
@@ -200,9 +207,13 @@ def gspo_step(
         # Compute loss
         loss = jnp.mean(jnp.sum(per_token_loss * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
 
-        # Compute metrics: ratio clipping fraction only (simpler, comparable across modes)
-        clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
-        mean_ratio = jnp.mean(ratio)
+        # Compute metrics: clipping fraction (masked for token mode) and mean ratio (masked if token mode)
+        if importance_sampling_level == "token":
+            clipped_fraction = clipfrac
+            mean_ratio = jnp.sum(ratio * completion_mask) / jnp.maximum(jnp.sum(completion_mask), 1.0)
+        else:
+            clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
+            mean_ratio = jnp.mean(ratio)
 
         # Compute advantage statistics for progress bar
         advantage_median_abs = jnp.median(jnp.abs(advantages))

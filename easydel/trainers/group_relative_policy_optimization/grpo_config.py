@@ -162,6 +162,26 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Post-update logprob analysis (policy vs reference)
+    logprob_analysis_enable: bool = field(
+        default=True,
+        metadata={
+            "help": "Enable post-update analysis of policy vs reference per-token logprob differences and log to WandB.",
+        },
+    )
+    logprob_analysis_max_tokens: int = field(
+        default=50000,
+        metadata={
+            "help": "Maximum number of valid tokens to sample uniformly when computing token-level percentiles to reduce overhead.",
+        },
+    )
+    logprob_analysis_every_n_steps: int = field(
+        default=1,
+        metadata={
+            "help": "Compute and log logprob analysis every N training steps to reduce overhead.",
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:

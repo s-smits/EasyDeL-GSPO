@@ -166,6 +166,8 @@ class GRPOTrainer(Trainer):
         self.train_is_conversational = False
         self.eval_is_conversational = False
         self.data_tokenize_fn = data_tokenize_fn
+        # Diagnostics cache for post-update logprob analysis
+        self._last_logprob_diag = None
         if train_dataset is not None:
             train_dataset = self._prepare_dataset(
                 dataset=train_dataset,
@@ -960,6 +962,29 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     pass
 
+            # Cache minimal inputs for post-update logprob diagnostics
+            try:
+                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
+                    try:
+                        # Build full mask: repeat prompt mask for each generation and concat with completion mask
+                        total_k = int(self.num_generations)
+                        ridmask_final = prompt_mask.repeat(total_k, 0)
+                        full_mask = jnp.concatenate([ridmask_final, completion_mask], axis=-1)
+                        # Keep only what we need to avoid large caches
+                        self._last_logprob_diag = {
+                            "ids": prompt_completion_ids,
+                            "full_mask": full_mask,
+                            "completion_mask": completion_mask,
+                            "ref_logps": ref_per_token_logps,
+                        }
+                    except Exception:
+                        self._last_logprob_diag = None
+                else:
+                    self._last_logprob_diag = None
+            except Exception:
+                # Never crash preprocessing due to diagnostics cache
+                self._last_logprob_diag = None
+
             # Print one local example from process 0 each step: prompt, ground truth, extracted prediction
             if getattr(self.arguments, "verbose", True) and jax.process_index() == 0:
                 try:
@@ -1577,8 +1602,134 @@ class GRPOTrainer(Trainer):
         metrics: MetricsType,
         step: int,
     ) -> tuple[EasyDeLState, MetricsType]:
-        """hook process to call in start of the step."""
+        """hook process to call in end of the step."""
 
+        # Post-update logprob diagnostics (policy vs reference)
+        try:
+            do_diag = bool(getattr(self.arguments, "logprob_analysis_enable", True))
+            every = int(getattr(self.arguments, "logprob_analysis_every_n_steps", 1))
+        except Exception:
+            do_diag, every = True, 1
+
+        if (
+            do_diag
+            and (every > 0)
+            and (step % every == 0)
+            and hasattr(self, "_last_logprob_diag")
+            and self._last_logprob_diag is not None
+        ):
+            try:
+                ids = self._last_logprob_diag.get("ids")
+                full_mask = self._last_logprob_diag.get("full_mask")
+                completion_mask = self._last_logprob_diag.get("completion_mask")
+                ref_logps = self._last_logprob_diag.get("ref_logps")
+
+                # Compute policy per-token log-probs with UPDATED state (post-update)
+                pol_logps = self.compute_policymodel_logps(
+                    state.graphstate,
+                    state.graphother,
+                    ids,
+                    full_mask,
+                )  # shape: (B*k, Tcomp)
+
+                # Token-level delta (policy - ref), masked by completion_mask
+                delta = (pol_logps - ref_logps) * completion_mask
+                valid_tokens = jnp.maximum(jnp.sum(completion_mask), 1.0)
+                token_mean = jnp.sum(delta) / valid_tokens
+                e2 = jnp.sum(delta * delta) / valid_tokens
+                token_var = jnp.maximum(e2 - token_mean * token_mean, 0.0)
+                token_std = jnp.sqrt(token_var)
+
+                # Sequence-level stats
+                seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
+                seq_sum = jnp.sum(delta, axis=1)
+                seq_mean = seq_sum / seq_valid
+
+                # Percentiles with subsampling to reduce overhead
+                try:
+                    max_tokens = int(getattr(self.arguments, "logprob_analysis_max_tokens", 50000))
+                except Exception:
+                    max_tokens = 50000
+                flat_valid = delta[completion_mask > 0]
+                if flat_valid.size > 0:
+                    if (max_tokens > 0) and (flat_valid.size > max_tokens):
+                        idx = jax.random.randint(
+                            jax.random.PRNGKey(step),
+                            shape=(max_tokens,),
+                            minval=0,
+                            maxval=flat_valid.size,
+                        )
+                        sample_vals = jnp.take(flat_valid, idx)
+                    else:
+                        sample_vals = flat_valid
+                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
+                    token_q = jnp.quantile(sample_vals.astype(jnp.float32), qs)
+                    token_p50, token_p90, token_p99 = [float(x) for x in jax.device_get(token_q)]
+                else:
+                    token_p50 = token_p90 = token_p99 = 0.0
+
+                if seq_mean.size > 0:
+                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
+                    seqm_q = jnp.quantile(seq_mean.astype(jnp.float32), qs)
+                    seqs_q = jnp.quantile(seq_sum.astype(jnp.float32), qs)
+                    seqm_p50, seqm_p90, seqm_p99 = [float(x) for x in jax.device_get(seqm_q)]
+                    seqs_p50, seqs_p90, seqs_p99 = [float(x) for x in jax.device_get(seqs_q)]
+                else:
+                    seqm_p50 = seqm_p90 = seqm_p99 = 0.0
+                    seqs_p50 = seqs_p90 = seqs_p99 = 0.0
+
+                # Absolute logp levels for sanity
+                pol_token_mean = jnp.sum(pol_logps * completion_mask) / valid_tokens
+                ref_token_mean = jnp.sum(ref_logps * completion_mask) / valid_tokens
+
+                diag_metrics = {
+                    "diag/logprob_diff/token_mean": float(jax.device_get(token_mean)),
+                    "diag/logprob_diff/token_std": float(jax.device_get(token_std)),
+                    "diag/logprob_diff/token_p50": float(token_p50),
+                    "diag/logprob_diff/token_p90": float(token_p90),
+                    "diag/logprob_diff/token_p99": float(token_p99),
+                    "diag/logprob_diff/seq_sum_mean": float(jax.device_get(jnp.mean(seq_sum))),
+                    "diag/logprob_diff/seq_mean_mean": float(jax.device_get(jnp.mean(seq_mean))),
+                    "diag/logprob_diff/seq_sum_p50": float(seqs_p50),
+                    "diag/logprob_diff/seq_sum_p90": float(seqs_p90),
+                    "diag/logprob_diff/seq_sum_p99": float(seqs_p99),
+                    "diag/logprob_diff/seq_mean_p50": float(seqm_p50),
+                    "diag/logprob_diff/seq_mean_p90": float(seqm_p90),
+                    "diag/logprob_diff/seq_mean_p99": float(seqm_p99),
+                    "diag/policy_logp/token_mean": float(jax.device_get(pol_token_mean)),
+                    "diag/ref_logp/token_mean": float(jax.device_get(ref_token_mean)),
+                }
+
+                # Merge into metrics.other_metrics for completeness (even if base logger won't include)
+                try:
+                    if hasattr(metrics, "other_metrics") and metrics.other_metrics is not None:
+                        merged = dict(metrics.other_metrics)
+                        merged.update({k: jnp.asarray(v, dtype=jnp.float32) for k, v in diag_metrics.items()})
+                        metrics.other_metrics = merged
+                except Exception:
+                    pass
+
+                # Direct WandB logging (best-effort, rank 0 only)
+                try:
+                    if (
+                        jax.process_index() == 0
+                        and self.arguments.use_wandb
+                        and self.arguments.can_log_metrics
+                        and wandb is not None
+                    ):
+                        wandb.log(diag_metrics, step=step)
+                except Exception:
+                    pass
+                # Release cached tensors ASAP to avoid holding extra memory
+                try:
+                    self._last_logprob_diag = None
+                except Exception:
+                    pass
+            except Exception:
+                # Never crash on diagnostics
+                pass
+
+        # Periodic reference model sync
         if (
             self.arguments.sync_ref_model
             and self.ref_state is not None

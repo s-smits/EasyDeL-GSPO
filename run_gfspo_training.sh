@@ -36,7 +36,7 @@ CURRICULUM_MATH="${2:-false}"
 
 # If DATASET is math-ds, force curriculum math to true
 if [ "$DATASET" = "math-ds" ]; then
-  CURRICULUM_MATH="false"
+  CURRICULUM_MATH="true"
 fi
 
 echo "Using dataset: ${DATASET}"
