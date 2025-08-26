@@ -30,6 +30,7 @@ tmp-files
 *.json
 .Python
 EasyDeL-Checkpoints
+.codex_tmp/
 easydel-Checkpoints
 build/
 develop-eggs/
