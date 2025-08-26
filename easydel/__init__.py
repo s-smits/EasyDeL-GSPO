@@ -111,11 +111,11 @@ _import_structure = {
     "inference": [
         "EngineRequest",
         "EngineRequestStatus",
-        "FunctionCallFormat",
-        "FunctionCallFormatter",
         "InferenceApiRouter",
         "JitableSamplingParams",
         "SamplingParams",
+        "ToolParser",
+        "ToolParserManager",
         "eSurge",
         "eSurgeApiServer",
         "eSurgeRunner",
@@ -533,11 +533,11 @@ if _tp.TYPE_CHECKING:
     from .inference import (
         EngineRequest,
         EngineRequestStatus,
-        FunctionCallFormat,
-        FunctionCallFormatter,
         InferenceApiRouter,
         JitableSamplingParams,
         SamplingParams,
+        ToolParser,
+        ToolParserManager,
         eSurge,
         eSurgeApiServer,
         eSurgeRunner,
@@ -967,7 +967,7 @@ else:
         extra_objects={"__version__": __version__},
     )
 
-    _targeted_versions = ["0.0.50"]
+    _targeted_versions = ["0.0.50", "0.0.51"]
 
     from eformer import __version__ as _eform_version
 

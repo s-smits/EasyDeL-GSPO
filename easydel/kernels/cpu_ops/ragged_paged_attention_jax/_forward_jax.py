@@ -22,24 +22,29 @@ from easydel.utils.compiling_utils import ejit
 @ejit(static_argnums=(7, 8))
 def _ragged_paged_attention(
     queries: jnp.ndarray,
-    key_pages: jnp.ndarray,
-    value_pages: jnp.ndarray,
+    kv_pages: jnp.ndarray,  # [P, PS, 2*KVH, D] (K at 0::2, V at 1::2)
     context_lens: jnp.ndarray,
-    block_tables: jnp.ndarray,
-    query_start_loc: jnp.ndarray,
-    num_seqs: jnp.ndarray,
+    block_tables: jnp.ndarray,  # [S, max_pages_per_sequence]
+    query_start_loc: jnp.ndarray,  # [S+1]
+    num_seqs: jnp.ndarray,  # [1] or scalar
     softmax_scale: float,
     soft_cap: float | None,
+    compute_dtype: jnp.dtype = jnp.bfloat16,
 ) -> jnp.ndarray:
     total_query_tokens, num_q_heads, head_size = queries.shape
-    page_size, num_kv_heads = value_pages.shape[1], value_pages.shape[2]
+    page_size = kv_pages.shape[1]
+    num_kv_heads = kv_pages.shape[2] // 2
     max_pages_per_sequence = block_tables.shape[-1]
     out_shape = (total_query_tokens, num_q_heads, head_size)
     q_heads_per_group = num_q_heads // num_kv_heads
+
+    # reshape to [T, KVH, QHG, D] and scale
     queries = queries.reshape(total_query_tokens, num_kv_heads, q_heads_per_group, head_size)
     qblocks = min(4, total_query_tokens if total_query_tokens > 0 else 4)
     kvblocks = min(64, max_pages_per_sequence if max_pages_per_sequence > 0 else 64)
     queries = queries * softmax_scale
+
+    # pad by at least one block to avoid dynamic_slice clamping at tail
     padd = (qblocks - total_query_tokens % qblocks) % qblocks + qblocks
     if padd > 0:
         padding_shape = (padd, num_kv_heads, q_heads_per_group, head_size)
@@ -47,6 +52,7 @@ def _ragged_paged_attention(
         padded_queries = jnp.concatenate([queries, query_padding], axis=0)
     else:
         padded_queries = queries
+
     attention_output = jnp.zeros_like(padded_queries)
 
     def _compute_attention_for_sequence(seq_idx, output_accumulator):
@@ -78,12 +84,20 @@ def _ragged_paged_attention(
                         (1, kvblocks),
                     )
                     page_indices_for_kv_block = jnp.squeeze(page_indices_for_block, axis=0)
+
                     key_block_shape = (kvblocks * page_size, num_kv_heads, head_size)
-                    key_block = key_pages[page_indices_for_kv_block, :, :, :].reshape(key_block_shape)
-                    value_block = value_pages[page_indices_for_kv_block, :, :, :].reshape(key_block_shape)
+                    key_block = kv_pages[page_indices_for_kv_block, :, 0::2, :].reshape(key_block_shape)
+                    value_block = kv_pages[page_indices_for_kv_block, :, 1::2, :].reshape(key_block_shape)
+
                     kv_token_start_index = kv_block_idx * kv_tokens_per_block
                     kv_token_indices = jnp.arange(kvblocks * page_size, dtype=jnp.int32) + kv_token_start_index
-                    attention_scores_block = jnp.einsum("bihd,kid->bihk", query_block, key_block, optimize=True)
+
+                    attention_scores_block = jnp.einsum(
+                        "bihd,kid->bihk",
+                        query_block.astype(compute_dtype),
+                        key_block.astype(compute_dtype),
+                        optimize=True,
+                    )
                     if soft_cap is not None:
                         attention_scores_block = jnp.tanh(attention_scores_block / soft_cap) * soft_cap
 
@@ -91,31 +105,39 @@ def _ragged_paged_attention(
                     kv_boundary_mask = jnp.expand_dims(kv_token_indices, 0) < kv_cache_len_for_seq
                     attention_mask = (causal_mask & kv_boundary_mask)[:, None, None, :]
                     attention_scores_block = jnp.where(attention_mask, attention_scores_block, -jnp.inf)
+
                     current_max_score = jnp.max(attention_scores_block, axis=3)
                     new_max_score_block = jnp.maximum(max_score_block, current_max_score)
+
                     probabilities_block = jnp.exp(attention_scores_block - jnp.expand_dims(new_max_score_block, axis=3))
                     probabilities_block = jnp.where(attention_mask, probabilities_block, 0.0)
+
                     rescale_factor = jnp.exp(max_score_block - new_max_score_block)
                     sum_exponentials_block = (rescale_factor * sum_exponentials_block) + jnp.sum(
                         probabilities_block, axis=3
                     )
-                    value_update = jnp.einsum("bihk,kid->bihd", probabilities_block, value_block)
+                    value_update = jnp.einsum(
+                        "bihk,kid->bihd",
+                        probabilities_block,
+                        value_block.astype(compute_dtype),
+                        optimize=True,
+                    )
                     output_block = jnp.expand_dims(rescale_factor, 3) * output_block + value_update
 
                     return output_block, sum_exponentials_block, new_max_score_block
 
                 initial_output_block = jnp.zeros(
                     (qblocks, num_kv_heads, q_heads_per_group, head_size),
-                    dtype=padded_queries.dtype,
+                    dtype=compute_dtype,
                 )
                 initial_sum_exponentials = jnp.zeros(
                     (qblocks, num_kv_heads, q_heads_per_group),
-                    dtype=padded_queries.dtype,
+                    dtype=compute_dtype,
                 )
                 initial_max_score = jnp.full(
                     (qblocks, num_kv_heads, q_heads_per_group),
                     -jnp.inf,
-                    dtype=padded_queries.dtype,
+                    dtype=compute_dtype,
                 )
 
                 output_block, sum_exponentials_block, _ = jax.lax.fori_loop(
@@ -130,7 +152,9 @@ def _ragged_paged_attention(
                 )
 
                 sum_exponentials_block = jnp.maximum(sum_exponentials_block, 1e-6)
-                normalized_output_block = output_block / jnp.expand_dims(sum_exponentials_block, axis=3)
+                normalized_output_block = (output_block / jnp.expand_dims(sum_exponentials_block, axis=3)).astype(
+                    padded_queries.dtype
+                )
 
                 return jax.lax.dynamic_update_slice(
                     block_output_accumulator,
@@ -146,10 +170,13 @@ def _ragged_paged_attention(
             lambda: output_accumulator,
         )
 
+    # IMPORTANT: do not int() this; keep it a JAX scalar
+    num_S = (num_seqs[0] if num_seqs.shape != () else num_seqs).astype(jnp.int32)
+
     return jax.lax.slice(
         jax.lax.fori_loop(
             0,
-            num_seqs[0] if num_seqs.shape != () else num_seqs,
+            num_S,  # JAX scalar, not Python int
             _compute_attention_for_sequence,
             attention_output,
         ),

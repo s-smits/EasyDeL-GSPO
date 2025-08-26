@@ -47,12 +47,6 @@ Request Handling
 Installation
 ------------
 
-eSurge is included with EasyDeL. To install EasyDeL with all inference dependencies:
-
-.. code-block:: bash
-
-    pip install easydel[inference]
-
 For TPU-specific optimizations:
 
 .. code-block:: bash
@@ -90,7 +84,7 @@ Here's a simple example to get started with eSurge:
         auto_shard_model=True,
         sharding_axis_dims=(1, 1, 1, -1, 1),
         config_kwargs=ed.EasyDeLBaseConfigDict(
-            attn_mechanism=ed.AttentionMechanisms.PAGED_ATTENTION,
+            attn_mechanism=ed.AttentionMechanisms.RAGGED_PAGE_ATTENTION,
             attn_dtype=jnp.bfloat16,
         ),
     )
@@ -180,8 +174,6 @@ eSurge provides extensive configuration options:
         page_size=64,                  # KV cache page size
         
         # Performance options
-        use_combined_forward=False,    # Use combined forward pass
-        use_aot_forward=True,          # Use ahead-of-time compilation
         runner_verbose=False,          # Verbose runner logging
         min_input_pad=32,              # Minimum input padding
         
@@ -350,7 +342,6 @@ For NVIDIA GPUs:
         max_model_len=4096,
         max_num_seqs=32,
         page_size=64,
-        use_combined_forward=True,  # Better for GPU memory patterns
         hbm_utilization=0.85,       # Leave headroom for kernels
     )
 
@@ -525,7 +516,7 @@ Complete example of a chat application:
             param_dtype=jnp.bfloat16,
             auto_shard_model=True,
             config_kwargs=ed.EasyDeLBaseConfigDict(
-                attn_mechanism=ed.AttentionMechanisms.PAGED_ATTENTION,
+                attn_mechanism=ed.AttentionMechanisms.RAGGED_PAGE_ATTENTION,
             ),
         )
         
