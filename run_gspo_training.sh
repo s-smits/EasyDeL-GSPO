@@ -54,19 +54,19 @@ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
 #!/usr/bin/env bash
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
-  --repo_id "Qwen/Qwen3-0.6B" \
+  --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
-  --num_return_sequences 2 \
-  --rollout_chunk_size 4 \
+  --num_return_sequences 8 \
+  --rollout_chunk_size 2 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 8 \
+  --force_data_parallel 2 \
   --log_logprobs_metrics false \
   --report_steps 1 \
   --log_global ${LOG_GLOBAL_VAL} \
@@ -79,6 +79,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --advantage_epsilon 1e-6
+  --logprob_analysis_enable false \
+  --advantage_epsilon 1e-6 \
+  --verbose true
 
 echo "Training completed!"

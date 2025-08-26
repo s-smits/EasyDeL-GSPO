@@ -53,17 +53,17 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
-  --gfpo_group_size 4 \
-  --gfpo_retain_count 3 \
-  --rollout_chunk_size 4 \
+  --gfpo_group_size 8 \
+  --gfpo_retain_count 4 \
+  --rollout_chunk_size 2 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
   --learning_rate 2e-6 \
   --dataset_use_pct 100 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 8 \
-  --log_logprobs_metrics true \
+  --force_data_parallel 2 \
+  --logprob_analysis_enable false \
   --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
   --report_steps 1 \

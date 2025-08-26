@@ -1100,13 +1100,40 @@ class GRPOTrainer(Trainer):
                         # Build full mask: repeat prompt mask for each generation and concat with completion mask
                         total_k = int(self.num_generations)
                         ridmask_final = prompt_mask.repeat(total_k, 0)
-                        full_mask = jnp.concatenate([ridmask_final, completion_mask], axis=-1)
-                        # Keep only what we need to avoid large caches
+
+                        # Deterministic per-host, per-step sampling of a FIXED number of sequences
+                        # to guarantee identical shapes across hosts during diagnostics.
+                        try:
+                            seqs_per_host = int(getattr(self.arguments, "logprob_sequences_per_host", 4))
+                            seqs_per_host = max(1, seqs_per_host)
+                        except Exception:
+                            seqs_per_host = 4
+
+                        try:
+                            cur_step_int = int(jax.device_get(state.step))
+                        except Exception:
+                            cur_step_int = 0
+                        # Simple, stable 32-bit seed per host
+                        seed = int((cur_step_int * 1103515245 + 12345 + int(jax.process_index())) % (2**31 - 1))
+                        key = jax.random.PRNGKey(seed)
+
+                        num_seq_local = int(prompt_completion_ids.shape[0])
+                        # Sample with replacement to produce exact seqs_per_host indices on every host
+                        idx = jax.random.randint(key, shape=(int(seqs_per_host),), minval=0, maxval=max(1, num_seq_local))
+
+                        # Subsample arrays to fixed shape [S, ...]
+                        ids_s = prompt_completion_ids[idx]
+                        cmask_s = completion_mask[idx]
+                        ridmask_s = ridmask_final[idx]
+                        full_mask_s = jnp.concatenate([ridmask_s, cmask_s], axis=-1)
+                        ref_logps_s = ref_per_token_logps[idx]
+
+                        # Keep only what we need at fixed shapes
                         self._last_logprob_diag = {
-                            "ids": prompt_completion_ids,
-                            "full_mask": full_mask,
-                            "completion_mask": completion_mask,
-                            "ref_logps": ref_per_token_logps,
+                            "ids": ids_s,
+                            "full_mask": full_mask_s,
+                            "completion_mask": cmask_s,
+                            "ref_logps": ref_logps_s,
                         }
                     except Exception:
                         self._last_logprob_diag = None
@@ -1796,66 +1823,114 @@ class GRPOTrainer(Trainer):
                     state.graphother,
                     ids,
                     full_mask,
-                )  # shape: (B*k, Tcomp)
+                )  # shape: (S, T)
 
                 # Token-level delta (policy - ref), masked by completion_mask
                 delta = (pol_logps - ref_logps) * completion_mask
-                valid_tokens = jnp.maximum(jnp.sum(completion_mask), 1.0)
-                token_mean = jnp.sum(delta) / valid_tokens
-                e2 = jnp.sum(delta * delta) / valid_tokens
+
+                # Exact global means/std via scalar allgathers
+                local_sum = jnp.sum(delta.astype(jnp.float32))
+                local_sqsum = jnp.sum((delta.astype(jnp.float32)) ** 2)
+                local_count = jnp.sum(completion_mask.astype(jnp.float32))
+                pol_sum = jnp.sum((pol_logps * completion_mask).astype(jnp.float32))
+                ref_sum = jnp.sum((ref_logps * completion_mask).astype(jnp.float32))
+
+                try:
+                    gather = jax.experimental.multihost_utils.process_allgather
+                    g_sum = jnp.sum(gather(local_sum))
+                    g_sqsum = jnp.sum(gather(local_sqsum))
+                    g_count = jnp.sum(gather(local_count))
+                    g_pol_sum = jnp.sum(gather(pol_sum))
+                    g_ref_sum = jnp.sum(gather(ref_sum))
+                except Exception:
+                    # Fallback to local-only if allgather not available
+                    g_sum, g_sqsum, g_count = local_sum, local_sqsum, jnp.maximum(local_count, 1.0)
+                    g_pol_sum, g_ref_sum = pol_sum, ref_sum
+
+                token_mean = g_sum / jnp.maximum(g_count, 1.0)
+                e2 = g_sqsum / jnp.maximum(g_count, 1.0)
                 token_var = jnp.maximum(e2 - token_mean * token_mean, 0.0)
                 token_std = jnp.sqrt(token_var)
+                pol_token_mean = g_pol_sum / jnp.maximum(g_count, 1.0)
+                ref_token_mean = g_ref_sum / jnp.maximum(g_count, 1.0)
 
-                # Sequence-level stats
-                seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
+                # Sequence-level aggregates (local per-host, small allgathers)
                 seq_sum = jnp.sum(delta, axis=1)
+                seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
                 seq_mean = seq_sum / seq_valid
 
-                # Percentiles with subsampling to reduce overhead
                 try:
-                    max_tokens = int(getattr(self.arguments, "logprob_analysis_max_tokens", 50000))
+                    seq_sum_all = jax.experimental.multihost_utils.process_allgather(seq_sum.astype(jnp.float32))
+                    seq_mean_all = jax.experimental.multihost_utils.process_allgather(seq_mean.astype(jnp.float32))
                 except Exception:
-                    max_tokens = 50000
-                flat_valid = delta[completion_mask > 0]
-                if flat_valid.size > 0:
-                    if (max_tokens > 0) and (flat_valid.size > max_tokens):
-                        idx = jax.random.randint(
-                            jax.random.PRNGKey(step),
-                            shape=(max_tokens,),
-                            minval=0,
-                            maxval=flat_valid.size,
-                        )
-                        sample_vals = jnp.take(flat_valid, idx)
+                    seq_sum_all = seq_sum
+                    seq_mean_all = seq_mean
+
+                # Approximate global percentiles using fixed-size per-host token samples (host 0 only computes)
+                token_p50 = token_p90 = token_p99 = 0.0
+                seqs_p50 = seqs_p90 = seqs_p99 = 0.0
+                seqm_p50 = seqm_p90 = seqm_p99 = 0.0
+
+                try:
+                    import numpy as _np
+                    # Bring small S×T arrays to host; S is small by construction
+                    delta_np = _np.asarray(jax.device_get(delta))
+                    mask_np = _np.asarray(jax.device_get(completion_mask))
+                    vals = delta_np[mask_np > 0]
+
+                    try:
+                        per_host_tokens = int(getattr(self.arguments, "logprob_token_samples_per_host", 4096))
+                        per_host_tokens = max(1, per_host_tokens)
+                    except Exception:
+                        per_host_tokens = 4096
+
+                    rng = _np.random.RandomState(int(step) + int(jax.process_index()))
+                    if vals.size == 0:
+                        sample_local = _np.zeros((per_host_tokens,), dtype=_np.float32)
+                    elif vals.size >= per_host_tokens:
+                        idx = rng.randint(0, vals.size, size=per_host_tokens)
+                        sample_local = vals[idx].astype(_np.float32, copy=False)
                     else:
-                        sample_vals = flat_valid
-                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
-                    token_q = jnp.quantile(sample_vals.astype(jnp.float32), qs)
-                    token_p50, token_p90, token_p99 = [float(x) for x in jax.device_get(token_q)]
-                else:
-                    token_p50 = token_p90 = token_p99 = 0.0
+                        # Sample with replacement to reach target size
+                        idx = rng.randint(0, vals.size, size=per_host_tokens)
+                        sample_local = vals[idx].astype(_np.float32, copy=False)
 
-                if seq_mean.size > 0:
-                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
-                    seqm_q = jnp.quantile(seq_mean.astype(jnp.float32), qs)
-                    seqs_q = jnp.quantile(seq_sum.astype(jnp.float32), qs)
-                    seqm_p50, seqm_p90, seqm_p99 = [float(x) for x in jax.device_get(seqm_q)]
-                    seqs_p50, seqs_p90, seqs_p99 = [float(x) for x in jax.device_get(seqs_q)]
-                else:
-                    seqm_p50 = seqm_p90 = seqm_p99 = 0.0
-                    seqs_p50 = seqs_p90 = seqs_p99 = 0.0
+                    sample_local_j = jax.device_put(sample_local)
+                    try:
+                        sample_all = jax.experimental.multihost_utils.process_allgather(sample_local_j)
+                    except Exception:
+                        sample_all = sample_local_j
 
-                # Absolute logp levels for sanity
-                pol_token_mean = jnp.sum(pol_logps * completion_mask) / valid_tokens
-                ref_token_mean = jnp.sum(ref_logps * completion_mask) / valid_tokens
+                    if jax.process_index() == 0:
+                        flat = _np.asarray(jax.device_get(sample_all)).reshape(-1)
+                        token_p50 = float(_np.quantile(flat, 0.5))
+                        token_p90 = float(_np.quantile(flat, 0.9))
+                        token_p99 = float(_np.quantile(flat, 0.99))
+
+                        # Seq-level percentiles from allgathered small arrays
+                        seq_sum_flat = _np.asarray(jax.device_get(seq_sum_all)).reshape(-1)
+                        seq_mean_flat = _np.asarray(jax.device_get(seq_mean_all)).reshape(-1)
+                        if seq_sum_flat.size > 0:
+                            seqs_p50 = float(_np.quantile(seq_sum_flat, 0.5))
+                            seqs_p90 = float(_np.quantile(seq_sum_flat, 0.9))
+                            seqs_p99 = float(_np.quantile(seq_sum_flat, 0.99))
+                        if seq_mean_flat.size > 0:
+                            seqm_p50 = float(_np.quantile(seq_mean_flat, 0.5))
+                            seqm_p90 = float(_np.quantile(seq_mean_flat, 0.9))
+                            seqm_p99 = float(_np.quantile(seq_mean_flat, 0.99))
+                except Exception:
+                    pass
 
                 diag_metrics = {
                     "diag/logprob_diff/token_mean": float(jax.device_get(token_mean)),
                     "diag/logprob_diff/token_std": float(jax.device_get(token_std)),
+                    # Percentiles are approximate across hosts; computed on proc0
                     "diag/logprob_diff/token_p50": float(token_p50),
                     "diag/logprob_diff/token_p90": float(token_p90),
                     "diag/logprob_diff/token_p99": float(token_p99),
-                    "diag/logprob_diff/seq_sum_mean": float(jax.device_get(jnp.mean(seq_sum))),
-                    "diag/logprob_diff/seq_mean_mean": float(jax.device_get(jnp.mean(seq_mean))),
+                    # Seq means
+                    "diag/logprob_diff/seq_sum_mean": float(jax.device_get(jnp.mean(seq_sum.astype(jnp.float32)))),
+                    "diag/logprob_diff/seq_mean_mean": float(jax.device_get(jnp.mean(seq_mean.astype(jnp.float32)))),
                     "diag/logprob_diff/seq_sum_p50": float(seqs_p50),
                     "diag/logprob_diff/seq_sum_p90": float(seqs_p90),
                     "diag/logprob_diff/seq_sum_p99": float(seqs_p99),

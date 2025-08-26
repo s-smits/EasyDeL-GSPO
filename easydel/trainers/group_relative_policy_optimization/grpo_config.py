@@ -169,10 +169,23 @@ class GRPOConfig(TrainingArguments):
             "help": "Enable post-update analysis of policy vs reference per-token logprob differences and log to WandB.",
         },
     )
+    # Fixed-size per-host subsample to ensure identical shapes across hosts
+    logprob_sequences_per_host: int = field(
+        default=4,
+        metadata={
+            "help": "Number of sequences per host to sample for diagnostics (fixed shape across hosts).",
+        },
+    )
     logprob_analysis_max_tokens: int = field(
         default=50000,
         metadata={
             "help": "Maximum number of valid tokens to sample uniformly when computing token-level percentiles to reduce overhead.",
+        },
+    )
+    logprob_token_samples_per_host: int = field(
+        default=4096,
+        metadata={
+            "help": "Per-host number of token deltas to sample for approximate global percentiles; kept small to limit allgather size.",
         },
     )
     logprob_analysis_every_n_steps: int = field(

@@ -750,13 +750,12 @@ class BaseTrainer(BaseTrainerProtocol):
                         "steps for a generator/streaming dataset."
                     )
 
-            # 2) Account for per-process sharding (best-effort floor)
+            # 2) Account for per-process sharding with a UNIFORM floor across all shards
+            #    Do NOT add the remainder for earlier shards here; that leads to different
+            #    steps_per_epoch on different workers and causes TPU multi-host divergence.
             shard_count = int(self.arguments.grain_shard_count or 1)
             shard_index = int(self.arguments.grain_shard_index or 0)
             per_shard_len_base = total_data_len // max(1, shard_count)
-            remainder = total_data_len % max(1, shard_count)
-            # Distribute remainder to the first `remainder` shards deterministically
-            per_shard_len = per_shard_len_base + (1 if shard_index < remainder else 0)
 
             # 3) Use the actual batch size each worker sees
             try:
@@ -765,8 +764,9 @@ class BaseTrainer(BaseTrainerProtocol):
                 batch_size_val = int(self.arguments.total_batch_size) if is_train else int(self.evaluation_batch_size)
             batch_size = max(1, batch_size_val)
 
-            # 4) Grain drops remainder, so use floor
-            steps_per_epoch = per_shard_len // batch_size
+            # 4) Grain drops remainder, so use floor.
+            #    Use the base per-shard length for a uniform step count across all workers.
+            steps_per_epoch = per_shard_len_base // batch_size
             num_epochs = self.arguments.num_train_epochs if is_train else 1
             num_steps = steps_per_epoch * num_epochs
 
