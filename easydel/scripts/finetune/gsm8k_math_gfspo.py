@@ -351,6 +351,49 @@ def main():
 
         reward_funcs = [math_answer_reward]
 
+        # Prepend a simple sanity sample to both train and test datasets (2+4 -> 6)
+        try:
+            sanity_sample = {
+                "prompt": [
+                    {"role": "system", "content": SYSTEM_PROMPT_MATH},
+                    {"role": "user", "content": "Compute 2 + 4."},
+                ],
+                # Keep full solution text for Math-Verify/boxed fallback
+                "solution": "We add 2 and 4 to obtain \\boxed{6}.",
+                "level": "Level 0",
+                "type": "sanity",
+            }
+            sanity_ds = Dataset.from_list([sanity_sample])
+            train_ds = concatenate_datasets([sanity_ds, train_ds])
+            if test_ds is not None:
+                test_ds = concatenate_datasets([sanity_ds, test_ds])
+            if jax.process_index() == 0:
+                print("[Sanity] Prepended 2+4=6 sample to math datasets.")
+        except Exception as _e:
+            if jax.process_index() == 0:
+                print(f"[Sanity] Could not prepend sample: {_e}")
+
+        # Quick preflight verification on process 0
+        if jax.process_index() == 0:
+            try:
+                details = []
+                # Case A: no boxed, exercise Math-Verify fallback if available
+                comp_mv = [[{"content": "Calculate 2+4. The result is 6."}]]
+                batch_mv = {"solution_normalized": ["6"]}
+                score_mv = math_answer_reward(None, comp_mv, batch_mv, verification_details=details)[0]
+                method_mv = details[0].get("verification_method", "?") if details else "?"
+                print(f"[Sanity] Math verify (no boxed) 2+4->6 score={score_mv} method={method_mv}")
+
+                # Case B: boxed path should also succeed
+                details2 = []
+                comp_boxed = [[{"content": "Final answer: \\boxed{6}"}]]
+                batch_boxed = {"solution_normalized": ["6"]}
+                score_boxed = math_answer_reward(None, comp_boxed, batch_boxed, verification_details=details2)[0]
+                method_boxed = details2[0].get("verification_method", "?") if details2 else "?"
+                print(f"[Sanity] Boxed verify 2+4->6 score={score_boxed} method={method_boxed}")
+            except Exception as _e:
+                print(f"[Sanity] Preflight verification failed: {_e}")
+
     else:
         raise ValueError("dataset must be 'gsm8k' or 'math'")
 

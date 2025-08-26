@@ -1474,7 +1474,27 @@ class GRPOTrainer(Trainer):
         eos_stop_rate = jnp.mean(eos_found.astype(jnp.float32))
         no_eos_maxlen_rate = jnp.float32(1.0) - eos_stop_rate
         
-        # Debug output removed to prevent TPU coordination issues
+        # Lightweight debug visibility on proc0
+        try:
+            if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                print(
+                    "[GRPOTrainer:termination] eos_stop_rate=",
+                    float(jax.device_get(eos_stop_rate)),
+                    "no_eos_max_length_rate=",
+                    float(jax.device_get(no_eos_maxlen_rate)),
+                    "eos_ids=",
+                    self.eos_token_id,
+                )
+                # Show a tiny head of completion ids for 2 samples to verify EOS presence (host copy minimal)
+                try:
+                    _cid = jax.device_get(completion_ids[:2, :16])
+                    print("[GRPOTrainer:termination] completion_ids head (2x16):", _cid.tolist())
+                except Exception:
+                    ...
+        except Exception:
+            ...
+        
+        # Debug output otherwise removed to prevent TPU coordination issues
             
         # Ensure all batch tensors share the same leading dimension for downstream minibatching
         # Repeat prompts to match completions if needed
