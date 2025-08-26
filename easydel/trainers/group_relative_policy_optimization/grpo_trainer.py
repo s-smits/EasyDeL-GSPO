@@ -1109,6 +1109,38 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             seqs_per_host = 4
 
+                        # Ensure diagnostics batch dimension is divisible by batch-partition axes (e.g., dp, fsdp)
+                        try:
+                            step_spec = getattr(self.arguments, "step_partition_spec", None)
+                            batch_spec = step_spec[0] if (step_spec is not None and len(step_spec) > 0) else None
+                            mesh_shape = getattr(self.model.mesh, "shape", {})
+
+                            def _axis_mult(ax):
+                                if ax is None:
+                                    return 1
+                                if isinstance(ax, tuple):
+                                    m = 1
+                                    for a in ax:
+                                        try:
+                                            m *= int(mesh_shape.get(a, 1))
+                                        except Exception:
+                                            m *= 1
+                                    return max(1, int(m))
+                                try:
+                                    return max(1, int(mesh_shape.get(ax, 1)))
+                                except Exception:
+                                    return 1
+
+                            batch_mult = _axis_mult(batch_spec)
+                            if batch_mult < 1:
+                                batch_mult = 1
+                            # Round up to nearest multiple to satisfy with_sharding_constraint in diagnostics
+                            if seqs_per_host % batch_mult != 0:
+                                seqs_per_host = ((seqs_per_host + batch_mult - 1) // batch_mult) * batch_mult
+                        except Exception:
+                            # Fallback: keep as-is; in worst case, diagnostics are skipped by except below
+                            pass
+
                         try:
                             cur_step_int = int(jax.device_get(state.step))
                         except Exception:

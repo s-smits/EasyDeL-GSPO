@@ -67,7 +67,6 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
   --force_data_parallel 2 \
-  --log_logprobs_metrics false \
   --report_steps 1 \
   --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
@@ -79,8 +78,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --logprob_analysis_enable false \
   --advantage_epsilon 1e-6 \
+  --logprob_analysis_enable false \
   --verbose true
 
 echo "Training completed!"

@@ -228,4 +228,30 @@ class GRPOConfig(TrainingArguments):
             print(f"DEBUG: GRPOConfig post_init failed: {e}")
             raise
 
+        # After parent post_init, enforce robust, efficient multi-host-safe diagnostics defaults.
+        # Clamp to safe ranges automatically; users need not set these.
+        try:
+            import jax as _jax  # lazy import
+            procs = int(_jax.process_count())
+        except Exception:
+            procs = 1
+
+        try:
+            # Clamp sequences per host to [2,4] on multi-host for shape stability and efficiency
+            if procs > 1:
+                s = int(getattr(self, "logprob_sequences_per_host", 4))
+                # Heuristic: very long completions => prefer smaller S
+                if int(self.max_completion_length) >= 4096:
+                    s = min(s, 2)
+                s = max(2, min(4, s))
+                self.logprob_sequences_per_host = s
+
+                # Clamp token samples per host to [1024, 4096]
+                m = int(getattr(self, "logprob_token_samples_per_host", 4096))
+                m = max(1024, min(4096, m))
+                self.logprob_token_samples_per_host = m
+        except Exception:
+            # Best-effort; keep defaults if clamping fails
+            ...
+
     __hash__ = hash_fn
