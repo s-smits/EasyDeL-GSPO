@@ -482,8 +482,18 @@ def main():
         try:
             args.num_train_epochs = 1
             if mini_batch_size_override:
+                # Keep DP constant across phases by NOT mutating total_batch_size.
+                # Only adjust mini_batch_size to accommodate small levels.
                 args.mini_batch_size = mini_batch_size_override
-                args.total_batch_size = mini_batch_size_override
+
+            # In multi-host runs, synchronize before creating the second trainer to avoid
+            # launch-group divergence if hosts arrive here at slightly different times.
+            try:
+                if jax.process_count() > 1:
+                    from jax.experimental.multihost_utils import sync_global_devices as _sync
+                    _sync("pre_curriculum_trainer_init")
+            except Exception:
+                pass
 
             # Use the same trainer class for curriculum
             new_tr = ed.GSPOTrainer(
@@ -496,6 +506,14 @@ def main():
                 data_tokenize_fn=trainer.data_tokenize_fn,
             )
             out = new_tr.train()
+
+            # Synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
+            try:
+                if jax.process_count() > 1:
+                    from jax.experimental.multihost_utils import sync_global_devices as _sync
+                    _sync("post_curriculum_trainer_train")
+            except Exception:
+                pass
             return out.state
         finally:
             # Restore original knobs

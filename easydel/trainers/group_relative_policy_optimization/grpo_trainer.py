@@ -1025,6 +1025,15 @@ class GRPOTrainer(Trainer):
                 nrs_remaining -= cur_nrs
                 chunk_idx += 1
 
+            # In multi-host runs, ensure all hosts finish generation and ref-logps
+            # before proceeding to downstream aggregation and optimization.
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
+            except Exception:
+                # Best-effort; do not crash if barrier is unavailable
+                pass
+
             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
             if len(sequences_chunks) == 1:
                 prompt_completion_ids = sequences_chunks[0]
@@ -1095,7 +1104,8 @@ class GRPOTrainer(Trainer):
 
             # Cache minimal inputs for post-update logprob diagnostics
             try:
-                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
+                # Multi-host safety: run diagnostics only in single-host mode
+                if (jax.process_count() == 1) and bool(getattr(self.arguments, "logprob_analysis_enable", True)):
                     try:
                         # Build full mask: repeat prompt mask for each generation and concat with completion mask
                         total_k = int(self.num_generations)
@@ -1109,37 +1119,22 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             seqs_per_host = 4
 
-                        # Ensure diagnostics batch dimension is divisible by batch-partition axes (e.g., dp, fsdp)
+                        # Ensure diagnostics batch dimension is divisible by per-host DP to satisfy sharding
                         try:
-                            step_spec = getattr(self.arguments, "step_partition_spec", None)
-                            batch_spec = step_spec[0] if (step_spec is not None and len(step_spec) > 0) else None
                             mesh_shape = getattr(self.model.mesh, "shape", {})
-
-                            def _axis_mult(ax):
-                                if ax is None:
-                                    return 1
-                                if isinstance(ax, tuple):
-                                    m = 1
-                                    for a in ax:
-                                        try:
-                                            m *= int(mesh_shape.get(a, 1))
-                                        except Exception:
-                                            m *= 1
-                                    return max(1, int(m))
-                                try:
-                                    return max(1, int(mesh_shape.get(ax, 1)))
-                                except Exception:
-                                    return 1
-
-                            batch_mult = _axis_mult(batch_spec)
-                            if batch_mult < 1:
-                                batch_mult = 1
-                            # Round up to nearest multiple to satisfy with_sharding_constraint in diagnostics
-                            if seqs_per_host % batch_mult != 0:
-                                seqs_per_host = ((seqs_per_host + batch_mult - 1) // batch_mult) * batch_mult
+                            dp_global = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
                         except Exception:
-                            # Fallback: keep as-is; in worst case, diagnostics are skipped by except below
-                            pass
+                            dp_global = 1
+                        try:
+                            pc = int(jax.process_count())
+                        except Exception:
+                            pc = 1
+                        if dp_global >= pc and (dp_global % max(1, pc) == 0):
+                            dp_per_host = max(1, dp_global // max(1, pc))
+                        else:
+                            dp_per_host = 1
+                        if seqs_per_host % dp_per_host != 0:
+                            seqs_per_host = ((seqs_per_host + dp_per_host - 1) // dp_per_host) * dp_per_host
 
                         try:
                             cur_step_int = int(jax.device_get(state.step))
@@ -1821,13 +1816,14 @@ class GRPOTrainer(Trainer):
         except Exception:
             do_diag, every = True, 1
 
-        if (
-            do_diag
-            and (every > 0)
-            and (step % every == 0)
-            and hasattr(self, "_last_logprob_diag")
-            and self._last_logprob_diag is not None
-        ):
+                if (
+                    do_diag
+                    and (every > 0)
+                    and (step % every == 0)
+                    and hasattr(self, "_last_logprob_diag")
+                    and self._last_logprob_diag is not None
+                    and jax.process_count() == 1
+                ):
             try:
                 ids = self._last_logprob_diag.get("ids")
                 full_mask = self._last_logprob_diag.get("full_mask")

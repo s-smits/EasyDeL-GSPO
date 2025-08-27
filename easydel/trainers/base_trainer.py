@@ -687,27 +687,53 @@ class BaseTrainer(BaseTrainerProtocol):
             per_shard_base = num_records // max(1, shard_count)
             remainder = num_records % max(1, shard_count)
             per_shard_len = per_shard_base + (1 if shard_index < remainder else 0)
-            base_eff = max(1, min(int(batch_size), int(per_shard_len)))
+            # IMPORTANT: Use uniform per_shard_base (not per_shard_len) to derive effective batch size,
+            # so all hosts choose the SAME batch size even when remainder differs.
+            base_eff = max(1, min(int(batch_size), int(per_shard_base)))
             if base_eff < int(batch_size):
                 logger.warning(
                     f"Batch size {int(batch_size)} reduced to {base_eff} for shard {shard_index}/{shard_count} "
                     f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
                 )
-            # Align batch size to a multiple of DP axis to satisfy pjit sharding requirements
-            dp_axis = int(self.arguments.grain_shard_count or 1)
-            aligned_eff = (base_eff // max(1, dp_axis)) * max(1, dp_axis)
+            # Align batch size to a multiple of per-host DP to satisfy pjit sharding requirements
+            # Compute dp_per_host from the model mesh: dp_global / process_count when divisible; else 1
+            try:
+                mesh_shape = getattr(self.model.mesh, "shape", {})
+                dp_global = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
+            except Exception:
+                dp_global = 1
+            try:
+                pc = int(jax.process_count())
+            except Exception:
+                pc = 1
+            if dp_global >= pc and (dp_global % max(1, pc) == 0):
+                dp_per_host = max(1, dp_global // max(1, pc))
+            else:
+                dp_per_host = 1
+            # Also ensure divisibility by gradient_accumulation_steps to avoid scan reshape mismatches
+            try:
+                gas = int(self.arguments.gradient_accumulation_steps or 1)
+            except Exception:
+                gas = 1
+            mult = max(1, int(dp_per_host)) * max(1, gas)
+            aligned_eff = (base_eff // mult) * mult
             if aligned_eff == 0:
-                # Cannot form any DP-consistent batch on this shard; keep base_eff to let drop_remainder yield 0 steps
-                effective_batch_size = base_eff
+                # Fallback: try DP-only alignment
+                aligned_eff = (base_eff // max(1, dp_per_host)) * max(1, dp_per_host)
+                if aligned_eff == 0:
+                    # Cannot form any DP-aligned batch on this shard; keep base_eff to let drop_remainder yield 0 steps
+                    effective_batch_size = base_eff
+                else:
+                    effective_batch_size = aligned_eff
                 logger.warning(
-                    f"No DP-aligned batch can be formed on shard {shard_index}/{shard_count} (per-shard={per_shard_len}, dp={dp_axis}). "
-                    f"This shard will likely yield 0 steps due to drop_remainder."
+                    f"Batch size not divisible by dp_per_host*GAS; relaxed to dp alignment only: base={base_eff} -> {effective_batch_size} "
+                    f"(dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
                 )
             else:
                 effective_batch_size = aligned_eff
                 if effective_batch_size != base_eff:
                     logger.warning(
-                        f"Batch size aligned to DP multiple: {base_eff} -> {effective_batch_size} (dp={dp_axis})"
+                        f"Batch size aligned to per-host DP * GAS: {base_eff} -> {effective_batch_size} (dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
                     )
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,

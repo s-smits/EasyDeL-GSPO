@@ -20,6 +20,13 @@ class GRPOConfig(TrainingArguments):
         default="grpotrainer",
         metadata={"help": "default prefix name for trainer."},
     )
+    # Synchronize multi-host phase transitions to avoid TPU launch-group divergence
+    sync_multihost_phases: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, inserts a cross-host barrier between generation/ref-logps and optimization to keep all hosts in lockstep.",
+        },
+    )
     remove_unused_columns: bool | None = field(
         default=False,
         metadata={"help": "Whether to remove unused columns from the dataset."},

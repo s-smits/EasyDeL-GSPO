@@ -335,16 +335,40 @@ class Trainer(BaseTrainer):
         run_exception = None
         for _ in range(iters):
             current_step = int(jax.device_get(state.step))
+            # Robust multi-host end-of-epoch coordination: if any host runs out of data,
+            # all hosts stop together to avoid TPU launch-id mismatches.
+            has_batch_local = 1
+            next_batch = None
             try:
-                batch, train_iter = self._get_next_batch(train_iter, train_dataset)
-                if self._should_skip_step(current_step):
-                    pbar.update(1)
-                    continue
-                step_metrics.start_step()
-                state = self.on_step_start(state=state, step=current_step)
-            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, StopIteration) as exect:
+                next_batch, train_iter = self._get_next_batch(train_iter, train_dataset)
+            except (StopIteration,) as _:
+                has_batch_local = 0
+            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest) as exect:
                 run_exception = exect
                 return state, run_exception, train_iter
+
+            # Allgather a tiny scalar to check if any host ran out of data
+            try:
+                import jax
+                import jax.numpy as jnp
+                gathered = jax.experimental.multihost_utils.process_allgather(jnp.array(has_batch_local, dtype=jnp.int32))
+                any_missing = int(jnp.sum(gathered == 0)) > 0
+            except Exception:
+                # Best-effort fallback: use local status only
+                any_missing = (has_batch_local == 0)
+
+            if any_missing:
+                # If any host is out of data, stop the epoch in lockstep without executing another step
+                run_exception = StopIteration()
+                return state, run_exception, train_iter
+
+            # All hosts have a batch; continue
+            batch = next_batch
+            if self._should_skip_step(current_step):
+                pbar.update(1)
+                continue
+            step_metrics.start_step()
+            state = self.on_step_start(state=state, step=current_step)
 
             # Execute training step
             with self.train_tracker.trace_compilation():
