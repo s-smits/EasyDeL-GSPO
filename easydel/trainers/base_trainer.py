@@ -652,6 +652,16 @@ class BaseTrainer(BaseTrainerProtocol):
             from datasets import IterableDataset
 
             if isinstance(dataset, IterableDataset):
+                # Pre-shard streaming datasets to guarantee non-overlapping data across workers.
+                # This avoids redundant processing and potential OOM from duplicated work.
+                if shard_count > 1:
+                    try:
+                        dataset = dataset.shard(num_shards=shard_count, index=shard_index)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to pre-shard IterableDataset (index={shard_index}, count={shard_count}): {e!s}. "
+                            "Proceeding without dataset-level shard; relying on Grain may duplicate streams."
+                        )
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
                 # Use a consistent shuffle seed across processes to ensure identical shuffling
                 seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
