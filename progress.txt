@@ -35,7 +35,7 @@
 - Expected overhead: ~4–12 ms per step from barriers (<2% typically); alignment check off by default on multi-host, zero amortized cost.
 
 **Comprehensive Multi-Host Synchronization Fixes (2025-08-27)**
-- Fixed **deterministic seeding**: Removed `jax.process_index()` from generation seeds to ensure identical sequences across hosts.
+- Fixed **deterministic base seeding**: Removed `jax.process_index()` from chunk seeds while preserving per-replica diversity via mesh axis indices.
 - **Gated alignment check**: Limited logprob alignment check to single-host to avoid device op divergence in on_step_start hook.
 - **Removed debug prints**: Eliminated process-specific debug statements that could cause host divergence.
 - **Added barriers**: Strategic barriers around critical transitions (before/after on_step_start, around train step).
@@ -51,8 +51,14 @@
 **Solution Impact:**
 - Performance: ~4-12ms overhead per step from barriers (<2% in typical workloads)
 - Stability: Eliminates "unexpected peer with different launch id" TPU errors
-- Determinism: Ensures identical behavior across all hosts
+- Determinism: Ensures identical behavior across all hosts while preserving per-replica diversity
 - Flexibility: Configurable sync options for different deployment scenarios
+
+**Elegant Randomness Strategy:**
+- **Base seeds**: Deterministic across hosts (step + chunk only)
+- **Prompt diversity**: Hash-based folding for per-prompt variation
+- **Replica diversity**: Mesh axis indices (dp/fsdp/tp) for per-device variation
+- **Result**: Stable compilation + rich sampling diversity without cross-controller divergence
 
 **Recommended Configuration for Multi-Host:**
 ```bash

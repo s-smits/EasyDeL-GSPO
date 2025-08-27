@@ -694,19 +694,20 @@ class GRPOTrainer(Trainer):
                     prng_key = jax.random.fold_in(base_key, int(jnp.bitwise_xor.reduce(ph.astype(jnp.uint32))))
                 except Exception:
                     prng_key = base_key
-                # Add safe per-replica randomness without host/process dependency by
-                # folding in mesh axis indices (dp/fsdp/ep/tp/sp) deterministically.
+                
+                # Add per-replica diversity using mesh axis indices (safe within SPMD context)
                 try:
-                    rep_mix = 0
-                    for _name, _mul in (("dp", 1), ("fsdp", 97), ("ep", 31), ("tp", 197), ("sp", 389)):
+                    replica_mix = 0
+                    for axis_name in ["dp", "fsdp", "tp"]:
                         try:
-                            _idx = jax.lax.axis_index(_name)
-                        except Exception:
-                            _idx = 0
-                        rep_mix = (rep_mix * 1315423911 + int(_idx) * _mul) & 0x7FFFFFFF
-                    prng_key = jax.random.fold_in(prng_key, int(rep_mix))
+                            axis_idx = jax.lax.axis_index(axis_name)
+                            replica_mix = replica_mix ^ (axis_idx * 97)  # Simple mixing
+                        except (NameError, ValueError):
+                            pass  # Axis doesn't exist in this mesh
+                    if replica_mix > 0:
+                        prng_key = jax.random.fold_in(prng_key, replica_mix)
                 except Exception:
-                    pass
+                    pass  # Fallback: use prompt-only diversity
 
                 sequences = module.generate(
                     input_ids=input_ids,
