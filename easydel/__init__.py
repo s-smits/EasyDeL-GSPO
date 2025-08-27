@@ -31,20 +31,23 @@ from .utils import is_package_available as _is_package_available
 _logger = _get_logger("EasyDeL")
 if _check_bool_flag("EASYDEL_AUTO", True):
     _sys.setrecursionlimit(10000)
+    # Quiet noisy third-party loggers unless explicitly disabled
+    if _check_bool_flag("EASYDEL_QUIET_3P", True):
+        _getlogger("jax._src.xla_bridge").setLevel(30)
+        _getlogger("jax._src.mesh_utils").setLevel(30)
+        _getlogger("datasets").setLevel(30)
 
-    # Tell jax xla bridge to stay quiet and only yied warnings or errors.
-    _getlogger("jax._src.xla_bridge").setLevel(30)
-    _getlogger("jax._src.mesh_utils").setLevel(30)
-    _getlogger("datasets").setLevel(30)
-
-    _os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-    _os.environ["KMP_AFFINITY"] = "noverbose"
-    _os.environ["GRPC_VERBOSITY"] = "3"
-    _os.environ["GLOG_minloglevel"] = "3"
-    _os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-    _os.environ["CACHE_TRITON_KERNELS"] = "1"
-    _os.environ["TPU_MIN_LOG_LEVEL"] = "2"
-    _os.environ["TPU_STDERR_LOG_LEVEL"] = "2"
+    # Conservative environment defaults; avoid glog/verbosity pitfalls
+    _os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    _os.environ.setdefault("KMP_AFFINITY", "noverbose")
+    _os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")
+    _os.environ.setdefault("CACHE_TRITON_KERNELS", "1")
+    # Only set GRPC/GLOG/TPU log vars if explicitly requested
+    if _check_bool_flag("EASYDEL_TWEAK_GLOG", False):
+        _os.environ.setdefault("GRPC_VERBOSITY", "1")
+        _os.environ.setdefault("GLOG_minloglevel", "2")
+        _os.environ.setdefault("TPU_MIN_LOG_LEVEL", "2")
+        _os.environ.setdefault("TPU_STDERR_LOG_LEVEL", "2")
     _os.environ["XLA_FLAGS"] = (
         _os.getenv("XLA_FLAGS", "") + " "
         "--xla_gpu_triton_gemm_any=true  "

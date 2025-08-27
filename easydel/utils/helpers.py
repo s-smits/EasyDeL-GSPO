@@ -12,38 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Helper utilities for EasyDeL framework.
+"""Lightweight helpers and logging for EasyDeL.
 
-Provides logging, timing, caching, and general utility functions used
-throughout the EasyDeL framework.
-
-Classes:
-    ColorFormatter: Colored console logging formatter
-    LazyLogger: Deferred initialization logger
-    Timer: Simple timing utility
-    Timers: Multiple timer management with logging
-    DummyStream: Null output stream for suppression
-
-Functions:
-    get_logger: Create a lazy logger instance
-    set_loggers_level: Set logging level globally
-    capture_time: Context manager for timing
-    get_cache_dir: Get EasyDeL cache directory
-    quiet: Context manager to suppress output
-    check_bool_flag: Parse boolean environment variables
-
-Constants:
-    COLORS: Terminal color codes
-    LEVEL_COLORS: Log level to color mapping
-    _LOGGING_LEVELS: String to log level mapping
-
-Example:
-    >>> from easydel.utils.helpers import Timer
-    >>>
-    >>> with Timer("computation") as timer:
-    ...     result = expensive_computation()
-    >>> print(f"Took {timer.elapsed_time()} seconds")
-
+Focuses on a minimal, robust logging setup and common utilities
+(timers, cache dir, quiet context). The logging API centers around
+`get_logger(name)` which configures a single console handler once.
 """
 
 from __future__ import annotations
@@ -61,8 +34,6 @@ from pathlib import Path
 from functools import wraps
 
 # Note: Avoid importing from easydel.utils here to prevent circular imports.
-# Define a stub name for 'jax' to satisfy static analyzers without importing at runtime.
-jax = tp.cast(tp.Any, None)
 
 if tp.TYPE_CHECKING:
     from flax.metrics.tensorboard import SummaryWriter
@@ -73,27 +44,8 @@ except ModuleNotFoundError:
 
 
 COLORS: dict[str, str] = {
-    "PURPLE": "\033[95m",
-    "BLUE": "\033[94m",
-    "CYAN": "\033[96m",
-    "GREEN": "\033[92m",
-    "YELLOW": "\033[93m",
-    "RED": "\033[91m",
-    "ORANGE": "\033[38;5;208m",
-    "BOLD": "\033[1m",
-    "UNDERLINE": "\033[4m",
     "RESET": "\033[0m",
-    "BLUE_PURPLE": "\033[38;5;99m",
-}
-
-# Mapping log levels to colors
-LEVEL_COLORS: dict[str, str] = {
-    "DEBUG": COLORS["ORANGE"],
-    "INFO": COLORS["BLUE_PURPLE"],
-    "WARNING": COLORS["YELLOW"],
-    "ERROR": COLORS["RED"],
-    "CRITICAL": COLORS["RED"] + COLORS["BOLD"],
-    "FATAL": COLORS["RED"] + COLORS["BOLD"],
+    "BOLD": "\033[1m",
 }
 
 _LOGGING_LEVELS: dict[str, int] = {
@@ -115,138 +67,44 @@ _LOGGING_LEVELS: dict[str, int] = {
     "notset": 0,
 }
 
+_LOGGING_CONFIGURED = False
 
-class ColorFormatter(logging.Formatter):
-    """Custom formatter that adds colors to log messages.
 
-    Formats log messages with colored level names and timestamps.
-    Colors are based on the log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+def setup_logging(level: int | None = None) -> None:
+    """Configure a single console handler if not already set.
 
-    Example:
-        >>> handler = logging.StreamHandler()
-        >>> handler.setFormatter(ColorFormatter())
-        >>> logger.addHandler(handler)
+    - Honors EASYDEL_LOG_LEVEL env var if `level` is None.
+    - Keeps configuration idempotent across calls.
     """
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        if level is not None:
+            logging.getLogger().setLevel(level)
+        return
 
-    def format(self, record: logging.LogRecord) -> str:
-        """Format log record with colors.
+    env_level = os.getenv("EASYDEL_LOG_LEVEL", "INFO")
+    lvl = level if level is not None else _LOGGING_LEVELS.get(env_level, logging.INFO)
 
-        Args:
-            record: Log record to format.
+    root = logging.getLogger()
+    root.setLevel(lvl)
 
-        Returns:
-            Formatted log message with ANSI color codes.
-        """
-        orig_levelname = record.levelname
-        color = LEVEL_COLORS.get(record.levelname, COLORS["RESET"])
-        record.levelname = f"{color}{record.levelname:<8}{COLORS['RESET']}"
-        current_time = datetime.datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
-        formatted_name = f"{color}({current_time} {record.name}){COLORS['RESET']}"
-        message = f"{formatted_name} {record.getMessage()}"
-        record.levelname = orig_levelname
-        return message
+    # Avoid duplicate handlers in interactive environments
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        handler = logging.StreamHandler()
+        handler.setLevel(lvl)
+        # Simple, robust format: "(HH:MM:SS module) message"
+        fmt = "(%(asctime)s %(name)s) %(message)s"
+        datefmt = "%H:%M:%S"
+        handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+        root.addHandler(handler)
 
-
-class LazyLogger:
-    """Logger that initializes only when first used.
-
-    Defers logger initialization until the first logging call,
-    reducing startup overhead. Automatically adjusts log level
-    for non-primary JAX processes.
-
-    Attributes:
-        _name: Logger name.
-        _level: Logging level.
-        _logger: Underlying logger (initialized on first use).
-
-    Example:
-        >>> logger = LazyLogger(__name__)
-        >>> # Logger not initialized yet
-        >>> logger.info("First message")  # Initializes here
-    """
-
-    def __init__(self, name: str, level: int | None = None):
-        """Initialize LazyLogger.
-
-        Args:
-            name: Logger name.
-            level: Optional logging level, defaults to LOGGING_LEVEL_ED env var.
-        """
-        self._name = name
-        self._level = level or _LOGGING_LEVELS[os.getenv("LOGGING_LEVEL_ED", "INFO")]
-        self._logger: logging.Logger | None = None
-
-    def _ensure_initialized(self) -> None:
-        if self._logger is not None:
-            return
-
-        # Prefer environment hint to avoid forcing TPU backend init in child processes
-        env_idx = os.getenv("JAX_PROCESS_INDEX")
-        if env_idx is not None:
-            try:
-                if int(env_idx) > 0:
-                    self._level = logging.WARNING
-            except Exception:
-                pass
-        else:
-            try:
-                import importlib
-                _jax = importlib.import_module("jax")
-                if getattr(_jax, "process_index", lambda: 0)() > 0:
-                    self._level = logging.WARNING
-            except Exception:
-                # Avoid initializing JAX backends in processes where TPU is unavailable
-                pass
-
-        logger = logging.getLogger(self._name)
-        logger.propagate = False
-
-        # Set the logging level
-        logger.setLevel(self._level)
-
-        # Create a console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(self._level)
-
-        # Use our custom color formatter
-        formatter = ColorFormatter()
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-        self._logger = logger
-
-    def __getattr__(self, name: str) -> tp.Callable:
-        if name in _LOGGING_LEVELS or name.upper() in _LOGGING_LEVELS or name in ("exception", "log"):
-
-            @wraps(getattr(logging.Logger, name))
-            def wrapped_log_method(*args: tp.Any, **kwargs: tp.Any) -> tp.Any:
-                self._ensure_initialized()
-                return getattr(self._logger, name)(*args, **kwargs)
-
-            return wrapped_log_method
-        raise AttributeError(f"'LazyLogger' object has no attribute '{name}'")
+    _LOGGING_CONFIGURED = True
 
 
-def get_logger(
-    name: str,
-    level: int | None = None,
-) -> LazyLogger:
-    """Create a lazy logger that only initializes when first used.
-
-    Args:
-        name: The name of the logger.
-        level: The logging level. Defaults to environment
-            variable LOGGING_LEVEL_ED or "INFO".
-
-    Returns:
-        A lazy logger instance that initializes on first use.
-
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Process started")
-        >>> logger.debug("Debug information")
-    """
-    return LazyLogger(name, level)
+def get_logger(name: str, level: int | None = None) -> logging.Logger:
+    """Return a standard Python logger with basic console configuration."""
+    setup_logging(level)
+    return logging.getLogger(name)
 
 
 def set_loggers_level(level: int = logging.WARNING):
@@ -260,8 +118,9 @@ def set_loggers_level(level: int = logging.WARNING):
         >>> set_loggers_level(logging.DEBUG)  # Enable debug logging
         >>> set_loggers_level(logging.ERROR)  # Only show errors
     """
-    logging.root.setLevel(level)
-    for handler in logging.root.handlers:
+    root = logging.getLogger()
+    root.setLevel(level)
+    for handler in root.handlers:
         handler.setLevel(level)
 logger = get_logger(__name__)
 
