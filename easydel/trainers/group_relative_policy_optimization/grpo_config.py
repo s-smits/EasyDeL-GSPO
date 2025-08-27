@@ -84,15 +84,6 @@ class GRPOConfig(TrainingArguments):
         default=64,
         metadata={"help": "The number of steps between syncing the reference model."},
     )
-    # Skip reference sync at the very first step (step==0).
-    # Default False; we prefer consistent behavior and will handle divergence elsewhere.
-    ref_model_skip_first_sync: bool = field(
-        default=False,
-        metadata={
-            "help": "If True, do not perform reference sync at step 0 even if step%ref_model_sync_steps==0.",
-        },
-    )
-
     # Deterministic generation across hosts: avoid folding replica/axis indices into PRNG
     # seeds so multi-controller runs produce identical sampling schedules during compile.
     deterministic_generation_across_hosts: bool = field(

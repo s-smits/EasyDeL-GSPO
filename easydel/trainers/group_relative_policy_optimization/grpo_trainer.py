@@ -2226,14 +2226,12 @@ class GRPOTrainer(Trainer):
                 ...
             sync_enabled = getattr(self.arguments, "sync_ref_model", False)
             sync_on_start = getattr(self.arguments, "sync_ref_model_on_step_start", True)
-            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", False)
             interval = int(getattr(self.arguments, "ref_model_sync_steps", 64))
             should_sync = (
                 sync_enabled
                 and sync_on_start
                 and self.ref_state is not None
                 and (step % max(1, interval) == 0)
-                and (not skip_first or step > 0)
             )
             if should_sync:
                 try:

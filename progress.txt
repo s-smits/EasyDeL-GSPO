@@ -123,3 +123,4 @@ Use this script to get rich per‑step host and JIT logs without destabilizing m
 [2025-08-27T15:59:34Z] Added per-run log tee to file in gsm8k_math_gspo.py (logs/gspo_<TS>/*_p<proc>.log); kept flags in run script.
 [2025-08-27T16:08:26Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
 [2025-08-27T16:14:01Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
+[2025-08-27T16:22:15Z] Removed ref_model_skip_first_sync from config and trainer; using interval-based sync only.
