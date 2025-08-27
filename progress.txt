@@ -171,3 +171,12 @@ Fail-Fast Assertions
 - GRPOConfig: Added environment checks for DP/TP vs device_count and multi-host divisibility (DP % process_count == 0 and total_batch_size % dp_per_host == 0) to catch misconfigurations early.
 - GFPOConfig: Explicit asserts to ensure `num_return_sequences == gfpo_group_size` and `gfpo_retain_count < gfpo_group_size`.
 - BaseTrainer.calculate_steps: Assert at least one training step per epoch per worker (batch_size <= per_shard_len_base) to prevent idle/hanging workers.
+---
+Reference Trainer Streamlining
+
+- Updated `easydel/trainers/base_trainer_reference_file.py` (Grain path) with minimal features needed:
+  - Pre-shard `IterableDataset` per worker via `dataset.shard(num_shards, index)`.
+  - Deterministic seeding across workers; enforce `seed >= 1` when training.
+  - Per-worker dataloader logs (seed, shard index/count, shuffle, epochs, batch size).
+  - `calculate_steps` revised to use uniform per-shard base length and floor semantics; asserts at least one train step per epoch to fail fast.
+  - No unrelated changes pulled in; TFDS path left intact.
