@@ -367,7 +367,20 @@ class Trainer(BaseTrainer):
                 pbar.update(1)
                 continue
             step_metrics.start_step()
+            # Keep all controllers in lockstep around on_step_start
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
+            except Exception:
+                pass
+
             state = self.on_step_start(state=state, step=current_step)
+
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
+            except Exception:
+                pass
 
             # Execute training step
             with self.train_tracker.trace_compilation():
@@ -398,11 +411,24 @@ class Trainer(BaseTrainer):
                     mean_accuracy=mean_accuracy,
                     mode="train",
                 )
+                # Keep controllers synchronized around on_step_end as well
+                try:
+                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
+                except Exception:
+                    pass
+
                 state, metrics = self.on_step_end(
                     state=state,
                     metrics=metrics,
                     step=current_step,
                 )
+
+                try:
+                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
+                except Exception:
+                    pass
                 self.log_metrics(
                     metrics=train_metrics,
                     pbar=pbar,
@@ -560,6 +586,14 @@ class Trainer(BaseTrainer):
                 is_train=True,
             )
 
+            # Optional cross-host barrier to keep all controllers in lockstep
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("before_train_step")
+            except Exception:
+                # Best-effort; do not crash if barrier is unavailable
+                pass
+
             state, metrics = jax.block_until_ready(
                 self.sharded_training_step_function(
                     state,
@@ -568,6 +602,14 @@ class Trainer(BaseTrainer):
                     *self._train_shared_fn_static_args,
                 )
             )
+
+            # Optional cross-host barrier to keep all controllers in lockstep
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("after_train_step")
+            except Exception:
+                # Best-effort; do not crash if barrier is unavailable
+                pass
 
             if len(informations) != 0:
                 if metrics.other_metrics is not None:

@@ -74,7 +74,23 @@ def gspo_step(
         gradient_accumulation_steps=gradient_accumulation_steps,
         batch_partition_spec=partition_spec,
     )
-    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
+    # Apply per-leaf sharding constraints to avoid rank/spec mismatches across hosts
+    try:
+        bdim = partition_spec[0] if isinstance(partition_spec, PartitionSpec) else None
+        spec_1d = PartitionSpec(bdim) if bdim is not None else PartitionSpec()
+    except Exception:
+        spec_1d = PartitionSpec()
+
+    def _constrain_leaf(x):
+        try:
+            if hasattr(x, "ndim") and int(x.ndim) == 1:
+                return with_sharding_constraint(x, spec_1d)
+            else:
+                return with_sharding_constraint(x, partition_spec)
+        except Exception:
+            return with_sharding_constraint(x, partition_spec)
+
+    batch = jax.tree_util.tree_map(_constrain_leaf, batch)
 
     def loss_fn(tree, minibatch):
         module = flax.nnx.merge(state.graphdef, tree, state.graphother)

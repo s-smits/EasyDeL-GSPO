@@ -169,7 +169,24 @@ def grpo_step(
         gradient_accumulation_steps=gradient_accumulation_steps,
         batch_partition_spec=partition_spec,
     )
-    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
+    # Apply per-leaf sharding constraints: 2D spec for token-level arrays, 1D for vectors
+    try:
+        # Derive a 1D spec that lumps (dp, fsdp) onto the leading batch axis
+        bdim = partition_spec[0] if isinstance(partition_spec, PartitionSpec) else None
+        spec_1d = PartitionSpec(bdim) if bdim is not None else PartitionSpec()
+    except Exception:
+        spec_1d = PartitionSpec()
+
+    def _constrain_leaf(x):
+        try:
+            if hasattr(x, "ndim") and int(x.ndim) == 1:
+                return with_sharding_constraint(x, spec_1d)
+            else:
+                return with_sharding_constraint(x, partition_spec)
+        except Exception:
+            return with_sharding_constraint(x, partition_spec)
+
+    batch = jax.tree_util.tree_map(_constrain_leaf, batch)
 
     def loss_fn(tree, minibatch):
         module = flax.nnx.merge(state.graphdef, tree, state.graphother)
@@ -206,10 +223,11 @@ def grpo_step(
         ref_per_token_logps = minibatch["ref_per_token_logps"]
         per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
 
-        per_token_loss = jnp.exp(per_token_logps - jax.lax.stop_gradient(per_token_logps)) * jnp.expand_dims(
-            advantages, 1
-        )
-        per_token_loss = -(per_token_loss - beta * per_token_kl)
+        # Importance ratio: policy vs reference per-token log-probabilities
+        # Use ref_per_token_logps as the frozen "old" policy; do not stop-gradient the numerator
+        # to avoid collapsing the ratio to 1.0.
+        ratio = jnp.exp(per_token_logps - ref_per_token_logps)
+        per_token_loss = -(ratio * jnp.expand_dims(advantages, 1) - beta * per_token_kl)
         comps = jnp.sum(completion_mask, axis=1)
         loss = jnp.mean(jnp.sum(per_token_loss * completion_mask, axis=1) / comps)
         mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / comps)

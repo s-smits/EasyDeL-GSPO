@@ -152,11 +152,10 @@ def dr_grpo_step(
         per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
 
         # Policy gradient loss with DR GRPO advantage computation
-        # Note: advantages are already computed with DR GRPO corrections in preprocessing
-        per_token_loss = jnp.exp(per_token_logps - jax.lax.stop_gradient(per_token_logps)) * jnp.expand_dims(
-            advantages, 1
-        )
-        per_token_loss = -(per_token_loss - beta * per_token_kl)
+        # Use reference log-probs to form proper importance weights
+        log_ratio = per_token_logps - ref_per_token_logps
+        ratio = jnp.exp(log_ratio)
+        per_token_loss = -(ratio * jnp.expand_dims(advantages, 1) - beta * per_token_kl)
         
         if use_constant_normalization:
             # DR GRPO: Use constant normalization instead of length-dependent normalization

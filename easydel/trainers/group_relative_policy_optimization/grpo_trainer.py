@@ -242,6 +242,19 @@ class GRPOTrainer(Trainer):
             except (AttributeError, TypeError):
                 logger.debug("Could not update model_state config mesh, using new mesh for training only")
 
+    def _update_ref_mesh(self, mesh):
+        """Update reference state to use the same mesh as the policy state."""
+        try:
+            if hasattr(self.ref_state, 'model') and hasattr(self.ref_state.model, 'config'):
+                try:
+                    self.ref_state = self.ref_state.replace(
+                        model=self.ref_state.model.replace(config=self.ref_state.model.config.replace(mesh=mesh))
+                    )
+                except (AttributeError, TypeError):
+                    logger.debug("Could not update ref_state config mesh; proceeding with current mesh")
+        except Exception as e:
+            logger.debug(f"Failed to update ref mesh: {e}")
+
     @cached_property
     def pad_token_id(self):
         if isinstance(self.processing_class, ProcessorMixin):
@@ -556,6 +569,11 @@ class GRPOTrainer(Trainer):
         # Get or create mesh with adaptive configuration
         mesh = self._get_or_create_mesh()
         self._update_model_mesh(mesh)
+        # Keep the reference state on the same mesh/sharding as the policy
+        try:
+            self._update_ref_mesh(mesh)
+        except Exception:
+            pass
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
         
@@ -941,7 +959,14 @@ class GRPOTrainer(Trainer):
                 rollout_chunk_size = int(self.num_generations)
             # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
             rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
-            # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
+            # Cap rollout chunk to TP size if requested to reduce instability with TP>1
+            try:
+                mesh_shape = getattr(self.model.mesh, "shape", {})
+                tp_size = int(mesh_shape.get("tp", 1)) if hasattr(mesh_shape, "get") else 1
+            except Exception:
+                tp_size = 1
+            if bool(getattr(self.arguments, "cap_rollout_chunk_to_tp", True)) and tp_size > 1:
+                rollout_chunk_size = max(1, min(int(rollout_chunk_size), int(tp_size)))
 
             sequences_chunks = []
             completion_ids_chunks = []
@@ -1083,8 +1108,7 @@ class GRPOTrainer(Trainer):
 
             # Cache minimal inputs for post-update logprob diagnostics
             try:
-                # Multi-host safety: run diagnostics only in single-host mode
-                if (jax.process_count() == 1) and bool(getattr(self.arguments, "logprob_analysis_enable", True)):
+                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
                     try:
                         # Build full mask: repeat prompt mask for each generation and concat with completion mask
                         total_k = int(self.num_generations)
@@ -1385,17 +1409,34 @@ class GRPOTrainer(Trainer):
             
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
-                # Robust, config-driven advantage normalization per prompt group
+                # Config-driven advantage normalization per prompt group
                 grouped_rewards = rewards.reshape(-1, self.num_generations)
                 group_means = jnp.mean(grouped_rewards, axis=-1, keepdims=True)
-                group_stds = jnp.std(grouped_rewards, axis=-1, keepdims=True)
-                eps = jnp.float32(getattr(self.arguments, "advantage_epsilon", 1e-6))
-                # Zero-out groups with very low variance to avoid spurious gradients
-                safe_stds = jnp.maximum(group_stds, eps)
-                normalized = (grouped_rewards - group_means) / safe_stds
-                zero_mask = (group_stds < eps).astype(normalized.dtype)
-                normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
-                advantages = normalized.reshape(-1)
+                raw_adv = grouped_rewards - group_means
+
+                mode = getattr(self.arguments, "advantage_norm_mode", "std")
+                if bool(getattr(self.arguments, "advantage_whitening", False)) or mode == "whiten":
+                    # Global whitening: zero mean, unit variance across all completions
+                    flat = raw_adv.reshape(-1)
+                    mean = jnp.mean(flat)
+                    std = jnp.std(flat)
+                    w_eps = jnp.float32(getattr(self.arguments, "advantage_whitening_epsilon", 1e-8))
+                    advantages = (flat - mean) / jnp.maximum(std, w_eps)
+                elif mode == "constant":
+                    const = jnp.float32(getattr(self.arguments, "advantage_constant_factor", 1.0))
+                    const = jnp.maximum(const, 1e-8)
+                    advantages = (raw_adv / const).reshape(-1)
+                elif mode == "none":
+                    advantages = raw_adv.reshape(-1)
+                else:
+                    # Default: per-group std scaling with epsilon floor and zeroing low-variance groups
+                    group_stds = jnp.std(grouped_rewards, axis=-1, keepdims=True)
+                    eps = jnp.float32(getattr(self.arguments, "advantage_epsilon", 1e-6))
+                    safe_stds = jnp.maximum(group_stds, eps)
+                    normalized = raw_adv / safe_stds
+                    zero_mask = (group_stds < eps).astype(normalized.dtype)
+                    normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
+                    advantages = normalized.reshape(-1)
             grouped_comp_time = grouped_comp_time_fn()
             # Compute mean reward per completion locally (no cross-host ops)
             # Optionally compute safe global scalars via allgather of scalars only
@@ -1977,14 +2018,130 @@ class GRPOTrainer(Trainer):
                 # Never crash on diagnostics
                 pass
 
-        # Periodic reference model sync
-        if (
-            self.arguments.sync_ref_model
-            and self.ref_state is not None
-            and (step % self.arguments.ref_model_sync_steps == 0)
-        ):
-            self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
+        # Periodic reference model sync moved to on_step_start for robustness
         return state, metrics
+
+    def _sync_reference_state(self, state: EasyDeLState) -> None:
+        """Synchronize reference model with policy using the configured strategy.
+
+        - 'hard': exact copy of parameters (and optionally graphother)
+        - 'ema':  ref <- alpha*ref + (1-alpha)*policy (parameters only)
+        """
+        try:
+            strategy = getattr(self.arguments, "ref_model_sync_strategy", "hard")
+            alpha = float(getattr(self.arguments, "ref_model_mixup_alpha", 0.9))
+        except Exception:
+            strategy, alpha = "hard", 0.9
+
+        # Align graphdef for safety
+        try:
+            self.ref_state = self.ref_state.replace(graphdef=self.model_state.graphdef)
+        except Exception:
+            ...
+
+        def _is_array(x):
+            return isinstance(x, jax.Array)
+
+        if strategy == "ema":
+            def _ema(r, p):
+                if _is_array(r) and _is_array(p):
+                    return jnp.asarray(alpha, r.dtype) * r + jnp.asarray(1.0 - alpha, p.dtype) * p
+                return p
+            new_graphstate = jax.tree_util.tree_map(_ema, self.ref_state.graphstate, state.graphstate, is_leaf=_is_array)
+        else:
+            new_graphstate = deepcopy_model(state.graphstate)
+
+        if bool(getattr(self.arguments, "ref_sync_copy_graphother", True)):
+            try:
+                new_graphother = deepcopy_model(state.graphother)
+                self.ref_state = self.ref_state.replace(graphother=new_graphother)
+            except Exception:
+                ...
+
+        self.ref_state = self.ref_state.replace(graphstate=new_graphstate)
+
+    def on_step_start(
+        self,
+        state: EasyDeLState,
+        step: int,
+    ) -> EasyDeLState:
+        """At the beginning of a step, optionally realign the reference model to the policy.
+
+        Ensures that this step's rollouts/ratios are computed against a synchronized reference.
+        Also performs a lightweight logprob alignment check on a cached sample and, if needed,
+        forces a hard copy to eliminate drift.
+        """
+        try:
+            # Synchronize controllers before any device work in this hook
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("before_ref_sync_on_step_start")
+            except Exception:
+                ...
+            if (
+                getattr(self.arguments, "sync_ref_model", False)
+                and getattr(self.arguments, "sync_ref_model_on_step_start", True)
+                and self.ref_state is not None
+                and (step % int(getattr(self.arguments, "ref_model_sync_steps", 64)) == 0)
+            ):
+                # Refresh reference first
+                self._sync_reference_state(state)
+
+                # Optional immediate alignment check on a fixed small sample
+                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)):
+                    # On multi-host, wrap with barriers to avoid mismatched launches
+                    try:
+                        if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                            jax.experimental.multihost_utils.sync_global_devices("before_alignment_check")
+                    except Exception:
+                        ...
+                    diag = getattr(self, "_last_logprob_diag", None)
+                    if isinstance(diag, dict):
+                        try:
+                            ids = tp.cast(jax.Array, diag.get("ids"))
+                            full_mask = tp.cast(jax.Array, diag.get("full_mask"))
+                            completion_mask = tp.cast(jax.Array, diag.get("completion_mask"))
+                            if ids is not None and full_mask is not None and completion_mask is not None:
+                                pol = self.compute_logps(state.graphstate, state.graphother, ids, full_mask)
+                                ref = self.compute_logps(self.ref_state.graphstate, self.ref_state.graphother, ids, full_mask)
+                                delta = (pol - ref) * completion_mask
+                                valid = jnp.maximum(jnp.sum(completion_mask.astype(jnp.float32)), 1.0)
+                                mad = jnp.sum(jnp.abs(delta).astype(jnp.float32)) / valid
+                                tol = float(getattr(self.arguments, "ref_policy_logprob_tolerance", 1e-4))
+                                if float(jax.device_get(mad)) > tol:
+                                    try:
+                                        logger.warning(
+                                            f"Ref-policy logprob |Δ| mean {float(jax.device_get(mad)):.2e} exceeds tol {tol:.2e}; forcing hard copy."
+                                        )
+                                    except Exception:
+                                        ...
+                                    # Force hard copy to recover
+                                    self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
+                                    if bool(getattr(self.arguments, "ref_sync_copy_graphother", True)):
+                                        try:
+                                            self.ref_state = self.ref_state.replace(graphother=deepcopy_model(state.graphother))
+                                        except Exception:
+                                            ...
+                        finally:
+                            try:
+                                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                                    jax.experimental.multihost_utils.sync_global_devices("after_alignment_check")
+                            except Exception:
+                                ...
+                        except Exception:
+                            # Never crash on diagnostics
+                            ...
+        except Exception:
+            # Best-effort: never block training on ref sync
+            ...
+        finally:
+            # Ensure all controllers exit this hook together
+            try:
+                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    jax.experimental.multihost_utils.sync_global_devices("after_ref_sync_on_step_start")
+            except Exception:
+                ...
+        return state
 
     def generate_final_verification_report(self, verification_details_list: list = None):
         """Generate a comprehensive final verification report at the end of training.

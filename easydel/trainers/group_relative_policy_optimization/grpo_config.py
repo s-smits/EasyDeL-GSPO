@@ -55,9 +55,30 @@ class GRPOConfig(TrainingArguments):
         default=False,
         metadata={"help": "Whether to periodically sync the reference model with the policy model."},
     )
+    # Placement of reference sync: begin-of-step avoids intra-step drift
+    sync_ref_model_on_step_start: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, refresh the reference model at the BEGINNING of a step whose index is divisible by ref_model_sync_steps."
+        },
+    )
+    # Strategy to update reference: 'hard' exact copy or 'ema' smoothing to reduce sudden logprob jumps
+    ref_model_sync_strategy: tp.Literal["hard", "ema"] = field(
+        default="hard",
+        metadata={
+            "help": "Reference update strategy: 'hard' copies policy weights exactly; 'ema' applies EMA with ref_model_mixup_alpha."
+        },
+    )
     ref_model_mixup_alpha: float = field(
         default=0.9,
         metadata={"help": "The alpha parameter for mixing the reference model with the policy model."},
+    )
+    # Also copy 'graphother' (RNG/meta) to keep inference behavior identical post-sync
+    ref_sync_copy_graphother: bool = field(
+        default=True,
+        metadata={
+            "help": "Copy EasyDeLState.graphother into the reference at sync time to ensure identical non-parameter state (e.g., RNGs)."
+        },
     )
     ref_model_sync_steps: int = field(
         default=64,
@@ -174,6 +195,19 @@ class GRPOConfig(TrainingArguments):
         default=True,
         metadata={
             "help": "Enable post-update analysis of policy vs reference per-token logprob differences and log to WandB.",
+        },
+    )
+    # Validate alignment immediately after ref sync using cached sample
+    logprob_alignment_check_on_sync: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, after reference sync compute policy-vs-ref logprob deltas on a fixed small sample to verify alignment."
+        },
+    )
+    ref_policy_logprob_tolerance: float = field(
+        default=1e-4,
+        metadata={
+            "help": "Tolerance (abs mean delta) for policy vs reference per-token logprob immediately after sync; warn and force hard copy if exceeded."
         },
     )
     # Fixed-size per-host subsample to ensure identical shapes across hosts

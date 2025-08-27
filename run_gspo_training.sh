@@ -57,9 +57,9 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
-  --total_batch_size 2 \
+  --total_batch_size 1 \
   --num_return_sequences 8 \
-  --rollout_chunk_size 2 \
+  --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
@@ -73,7 +73,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 8 \
+  --gradient_accumulation_steps 16 \
   --beta 0.04 \
   --temperature 0.7 \
   --top_p 0.95 \
