@@ -180,3 +180,37 @@ Reference Trainer Streamlining
   - Per-worker dataloader logs (seed, shard index/count, shuffle, epochs, batch size).
   - `calculate_steps` revised to use uniform per-shard base length and floor semantics; asserts at least one train step per epoch to fail fast.
   - No unrelated changes pulled in; TFDS path left intact.
+
+[$ts] JAX metric logging hardening (host-0 + shard-aware)
+- Centralized: Updated `easydel/trainers/training_configurations.py::get_safe_arr` to use `easydel.utils.jax_safety.safe_to_float` for scalar-like values, avoiding unsafe `.item()` on globally sharded arrays.
+- GRPO fix: In `grpo_trainer.py`, metric conversion now runs only on host 0 and uses `safe_to_float(value, default=0.0)`; non-hosts keep `jax.Array` values to preserve identical types/control flow.
+- Weight stats: Replaced `.item()` on histogram scalars with `safe_to_float` to prevent cross-host collectives during periodic weight distribution logging.
+- Result: Prevents FAILED_PRECONDITION and hangs when a peer worker has failed; removes hidden cross-host sync from metric logging while keeping training/control flow symmetric across workers.
+
+[2025-08-27T20:15:58Z] JAX metric logging hardening (host-0 + shard-aware)
+- Centralized: Updated  to use  for scalar-like values, avoiding unsafe  on globally sharded arrays.
+- GRPO fix: In , metric conversion now runs only on host 0 and uses ; non-hosts keep  values to preserve identical types/control flow.
+- Weight stats: Replaced  on histogram scalars with  to prevent cross-host collectives during periodic weight distribution logging.
+- Result: Prevents FAILED_PRECONDITION and hangs when a peer worker has failed; removes hidden cross-host sync from metric logging while keeping training/control flow symmetric across workers.
+
+[2025-08-27T20:19:53Z] Clarification: root cause and fix scope
+- Root cause: unsafe scalar materialization (.item()/implicit device_get) on global jax.Array during logging on host 0, which triggered cross-host collectives and FAILED_PRECONDITION when a peer died.
+- Fix scope: use shard-aware  and a host-0 guard at call sites; keep other workers returning arrays to maintain identical control flow. Multi-worker coherence still matters, but the immediate crash was the unsafe scalar conversion.
+
+[2025-08-27T20:23:02Z] Added debug logs around safe metric conversion
+- GRPO: Added pre/post debug logs around  conversion per metric (host 0 only, no value materialization; logs type/shape before and result type after).
+- Logging utils:  now has opt-in debug via  (host 0) to trace conversions without triggering device transfers.
+
+[2025-08-27T20:25:13Z] Where debug logs go and how to see them
+- Location: Emitted to console via Python logging StreamHandler (defaults to STDERR), no file by default.
+- Enable: Set  or call  early.
+- Capture: Redirect stderr (e.g., ) or add a  to the root logger.
+- Scope: Many debug logs are host-0 only and gated by ;  path needs .
+- Progress bars: Rich/tqdm can obscure output; consider  or capture stderr to a file.
+
+[2025-08-27T20:25:45Z] Confirmation: Fix aligns with unified best-practice
+- Central utility: Using  with shard awareness (fully-addressable -> local shard) exactly as recommended.
+- Host-0 guard: Applied at call site in  so only process 0 converts to float; other workers keep .
+- System rollout: Replaced unsafe scalarization in  and weight stats (.item() -> safe_to_float). GRPO metrics path patched. More sites (e.g., ) can be hardened on request.
+- Debug visibility: Added pre/post conversion DEBUG logs (host 0; ) and opt-in  for shared path.
+- Outcome: Removes hidden collectives from logging, prevents FAILED_PRECONDITION after peer failure, preserves symmetric control flow across workers.

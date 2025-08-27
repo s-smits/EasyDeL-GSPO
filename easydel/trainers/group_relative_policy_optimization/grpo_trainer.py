@@ -24,6 +24,7 @@ from easydel.infra.base_state import EasyDeLState
 from easydel.infra.utils import ProcessingClassType
 from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
+from easydel.utils.jax_safety import safe_to_float
 from easydel.utils.traversals import deepcopy_model
 from ._jit_utils import compile_step_pair
 
@@ -1764,20 +1765,37 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
-        # Convert metrics to plain floats early so we can safely log to WandB below
+        # Convert metrics for logging on host 0 only; leave arrays on other hosts
         processed_metrics_dict = {}
         for key, value in metrics_dict.items():
-            if hasattr(value, 'item'):
-                try:
-                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' via .item()")
-                    processed_metrics_dict[key] = float(value.item())
-                except Exception as e:
-                    logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")
-                    processed_metrics_dict[key] = 0.0
-            elif isinstance(value, (int, float)):
-                processed_metrics_dict[key] = float(value)
-            else:
+            # Debug: pre-conversion info (host 0 only; no value printing)
+            try:
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    _shape = getattr(value, "shape", None)
+                    logger.debug(
+                        f"[GRPOTrainer:metrics] pre-convert key='{key}' type={type(value).__name__} shape={_shape}"
+                    )
+            except Exception:
+                pass
+
+            try:
+                if jax.process_index() == 0:
+                    processed_metrics_dict[key] = safe_to_float(value, default=0.0)
+                else:
+                    processed_metrics_dict[key] = value
+            except Exception:
+                # Fail-soft: keep original value on any unexpected issue
                 processed_metrics_dict[key] = value
+
+            # Debug: post-conversion info (host 0 only)
+            try:
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    _ptype = type(processed_metrics_dict[key]).__name__
+                    logger.debug(
+                        f"[GRPOTrainer:metrics] post-convert key='{key}' result_type={_ptype}"
+                    )
+            except Exception:
+                pass
 
         # Per-reward metrics (local)
         for i, reward_func in enumerate(self.reward_funcs):

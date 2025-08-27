@@ -47,6 +47,7 @@ from easydel.infra.etils import (
 )
 from easydel.infra.loss_utils import LossConfig
 from easydel.utils.compiling_utils import hash_fn
+from easydel.utils.jax_safety import safe_to_float
 
 from .metrics import MetricsHistogram, compute_weight_stats
 from .utils import JaxDistributedConfig
@@ -69,9 +70,33 @@ logger = get_logger(__name__)
 
 
 def get_safe_arr(xs):
-    if isinstance(xs, np.generic | jax.Array):
-        if xs.size == 1:  # Only try .item() on size-1 arrays
-            return xs.item()
+    """Safely convert scalar-like arrays to host floats without cross-host collectives.
+
+    - For size>1 arrays or non-arrays, return unchanged.
+    - For size==1 scalars, use shard-aware safe_to_float.
+    - Optional debug (host 0 only) via `EASYDEL_DEBUG_SAFE_FLOAT=1`.
+    """
+    _debug = os.getenv("EASYDEL_DEBUG_SAFE_FLOAT", "0") == "1"
+    if isinstance(xs, (np.generic, jax.Array)):
+        if _debug and _safe_process_index() == 0:
+            try:
+                logger.debug(
+                    f"[get_safe_arr] pre type={type(xs).__name__} shape={getattr(xs, 'shape', None)} size={getattr(xs, 'size', None)}"
+                )
+            except Exception:
+                ...
+        try:
+            if int(np.size(xs)) == 1:
+                out = safe_to_float(xs, default=0.0)
+                if _debug and _safe_process_index() == 0:
+                    try:
+                        logger.debug(f"[get_safe_arr] post result_type={type(out).__name__}")
+                    except Exception:
+                        ...
+                return out
+        except Exception:
+            # If size check fails, fall through and return as-is
+            ...
         return xs
     return xs
 
@@ -924,10 +949,10 @@ class TrainingArguments:
                         )
 
                         base_path = path.replace("/histogram", "")
-                        metrics[f"weights-information/{base_path}/mean"] = float(histogram.mean)
-                        metrics[f"weights-information/{base_path}/std"] = histogram.std.item()
-                        metrics[f"weights-information/{base_path}/min"] = histogram.min.item()
-                        metrics[f"weights-information/{base_path}/max"] = histogram.max.item()
+                        metrics[f"weights-information/{base_path}/mean"] = safe_to_float(histogram.mean, default=0.0)
+                        metrics[f"weights-information/{base_path}/std"] = safe_to_float(histogram.std, default=0.0)
+                        metrics[f"weights-information/{base_path}/min"] = safe_to_float(histogram.min, default=0.0)
+                        metrics[f"weights-information/{base_path}/max"] = safe_to_float(histogram.max, default=0.0)
                     else:
                         path = key.replace("/", ".")
                         metrics[f"weights-information/{path}"] = histogram
