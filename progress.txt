@@ -88,3 +88,7 @@ Validated small-scope imports and functions across utils and trainers without tr
 [air] 2025-08-27T14:49:52Z
 Addressed basedpyright 'jax is not defined' in helpers.py by defining a stub 'jax' name (no runtime import) and switching to dynamic import when needed; should clear reportUndefinedVariable.
 
+[air] 2025-08-27T14:52:59Z
+Committed and pushed: utils/init fixes for circular import, get_logger export, safe JAX init gating, and pyright jax stub.
+Branch: gfspo-wshrink, Commit: 90f4e313
+

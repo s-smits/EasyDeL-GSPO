@@ -425,9 +425,11 @@ class TrainingArguments:
         default=None,
         metadata={"help": "The dtype to use for the `tx.mu` variable."},
     )
-    track_memory: bool | float = field(
-        default=False,
-        metadata={"help": "Whether to track memory usage. If a float, it sets the memory tracking interval in seconds."},
+    track_memory: float = field(
+        default=0.0,
+        metadata={
+            "help": "Track memory usage at a fixed interval in seconds (0 to disable). Example: --track_memory 1.0",
+        },
     )
     use_data_collactor: bool = field(
         default=True,
