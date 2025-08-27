@@ -1816,14 +1816,14 @@ class GRPOTrainer(Trainer):
         except Exception:
             do_diag, every = True, 1
 
-                if (
-                    do_diag
-                    and (every > 0)
-                    and (step % every == 0)
-                    and hasattr(self, "_last_logprob_diag")
-                    and self._last_logprob_diag is not None
-                    and jax.process_count() == 1
-                ):
+        if (
+            do_diag
+            and (every > 0)
+            and (step % every == 0)
+            and hasattr(self, "_last_logprob_diag")
+            and self._last_logprob_diag is not None
+            and jax.process_count() == 1
+        ):
             try:
                 ids = self._last_logprob_diag.get("ids")
                 full_mask = self._last_logprob_diag.get("full_mask")
