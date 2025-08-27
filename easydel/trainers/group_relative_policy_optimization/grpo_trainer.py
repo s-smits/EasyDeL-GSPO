@@ -695,19 +695,20 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     prng_key = base_key
                 
-                # Add per-replica diversity using mesh axis indices (safe within SPMD context)
+                # Optional per-replica diversity; off by default to improve multi-host determinism
                 try:
-                    replica_mix = 0
-                    for axis_name in ["dp", "fsdp", "tp"]:
-                        try:
-                            axis_idx = jax.lax.axis_index(axis_name)
-                            replica_mix = replica_mix ^ (axis_idx * 97)  # Simple mixing
-                        except (NameError, ValueError):
-                            pass  # Axis doesn't exist in this mesh
-                    if replica_mix > 0:
-                        prng_key = jax.random.fold_in(prng_key, replica_mix)
+                    if not bool(getattr(self.arguments, "deterministic_generation_across_hosts", True)):
+                        replica_mix = 0
+                        for axis_name in ["dp", "fsdp", "tp"]:
+                            try:
+                                axis_idx = jax.lax.axis_index(axis_name)
+                                replica_mix = replica_mix ^ (axis_idx * 97)  # Simple mixing
+                            except (NameError, ValueError):
+                                pass  # Axis doesn't exist in this mesh
+                        if replica_mix > 0:
+                            prng_key = jax.random.fold_in(prng_key, replica_mix)
                 except Exception:
-                    pass  # Fallback: use prompt-only diversity
+                    pass  # Fallback: use prompt-only determinism
 
                 sequences = module.generate(
                     input_ids=input_ids,
@@ -1867,7 +1868,8 @@ class GRPOTrainer(Trainer):
             proc_idx = int(jax.process_index())
         except Exception:
             proc_idx = 0
-        debug_active = 1 if (dbg_enable and dbg_every > 0 and (cur_step_int % dbg_every == 0) and (not dbg_rank0 or proc_idx == 0)) else 0
+        # Make the debug flag uniform across hosts to avoid any chance of path divergence in the jitted step.
+        debug_active = 1 if (dbg_enable and dbg_every > 0 and (cur_step_int % dbg_every == 0)) else 0
 
         # Optional: dump key shapes before pjit step (host-side only)
         try:
@@ -2222,12 +2224,18 @@ class GRPOTrainer(Trainer):
                     jax.experimental.multihost_utils.sync_global_devices("before_ref_sync_on_step_start")
             except Exception:
                 ...
-            if (
-                getattr(self.arguments, "sync_ref_model", False)
-                and getattr(self.arguments, "sync_ref_model_on_step_start", True)
+            sync_enabled = getattr(self.arguments, "sync_ref_model", False)
+            sync_on_start = getattr(self.arguments, "sync_ref_model_on_step_start", True)
+            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", True)
+            interval = int(getattr(self.arguments, "ref_model_sync_steps", 64))
+            should_sync = (
+                sync_enabled
+                and sync_on_start
                 and self.ref_state is not None
-                and (step % int(getattr(self.arguments, "ref_model_sync_steps", 64)) == 0)
-            ):
+                and (step % max(1, interval) == 0)
+                and (not skip_first or step > 0)
+            )
+            if should_sync:
                 try:
                     logger.debug("[GRPOTrainer:on_step_start] triggering reference sync")
                 except Exception:
