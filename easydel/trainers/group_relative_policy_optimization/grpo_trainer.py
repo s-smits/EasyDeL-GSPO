@@ -24,7 +24,45 @@ from easydel.infra.base_state import EasyDeLState
 from easydel.infra.utils import ProcessingClassType
 from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
-from easydel.utils.jax_safety import safe_to_float
+# Prefer centralized safety util, but provide local fallback if unavailable
+try:  # pragma: no cover - import guard
+    from easydel.utils.jax_safety import safe_to_float as _ed_safe_to_float  # type: ignore
+except Exception:  # pragma: no cover
+    _ed_safe_to_float = None  # type: ignore
+
+def safe_to_float(x, default: float = 0.0):
+    if _ed_safe_to_float is not None:
+        try:
+            return _ed_safe_to_float(x, default=default)  # type: ignore[misc]
+        except Exception:
+            ...
+    # Local fallback: shard-aware best-effort
+    try:
+        import numbers as _numbers
+        import numpy as _np
+        if isinstance(x, _numbers.Number):
+            return float(x)
+        if isinstance(x, _np.generic):
+            return float(x.item())
+        if isinstance(x, jax.Array):
+            try:
+                if getattr(x, "is_fully_addressable", False):
+                    hv = jax.device_get(x)
+                    if int(_np.size(hv)) == 1:
+                        return float(_np.asarray(hv).reshape(-1)[0])
+            except Exception:
+                ...
+            try:
+                shards = getattr(x, "addressable_shards", None)
+                if shards and len(shards) > 0:
+                    hv = jax.device_get(shards[0].data)
+                    if int(_np.size(hv)) == 1:
+                        return float(_np.asarray(hv).reshape(-1)[0])
+            except Exception:
+                ...
+    except Exception:
+        ...
+    return float(default)
 from easydel.utils.traversals import deepcopy_model
 from ._jit_utils import compile_step_pair
 
