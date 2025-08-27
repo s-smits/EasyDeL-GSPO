@@ -124,3 +124,19 @@ Use this script to get rich per‑step host and JIT logs without destabilizing m
 [2025-08-27T16:08:26Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
 [2025-08-27T16:14:01Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
 [2025-08-27T16:22:15Z] Removed ref_model_skip_first_sync from config and trainer; using interval-based sync only.
+---
+Deterministic Dataloader Seeding Fix
+
+- Change: Removed per-process seed offset in `easydel/trainers/base_trainer.py` so all workers use the same `shuffle_seed_train`.
+- IterableDataset: `seed = int(self.arguments.shuffle_seed_train or 0)`.
+- MapDataset: `seed = int(base_seed)` and enforce `seed = max(1, seed)`; removed `jax.process_index()` offset logic.
+- Why: Prevents divergent data streams that lead to different JAX compilations across workers and the resulting multi-host "launch id mismatch" failures.
+- Effect: All workers see the same global shuffle and then shard via `grain.ShardOptions`, ensuring identical program shapes, deterministic compilation, and stable first-step execution without needing to skip syncs.
+- Next: Run a multi-host step-0 sanity check; ensure `shuffle_seed_train` is set; remove any prior workaround that skipped initial sync if still present in configs/scripts.
+---
+GRPO Warmup Compilation
+
+- Change: Added explicit JIT warmup in `easydel/trainers/group_relative_policy_optimization/grpo_trainer.py::GRPOTrainer.train`.
+- What: Builds a shape-correct synthetic batch (based on `training_batch_size`, `num_return_sequences`, `max_prompt_length`, `max_completion_length`), compiles the eval step, blocks until ready, then performs a cross-host barrier via `jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")`.
+- Why: Hardens multi-host startup by ensuring all workers complete initial compilation before the real loop, avoiding first-step race conditions; complementary to deterministic dataloader seeding.
+- Notes: Uses eval-path compilation to avoid donating/updating the real training state; no functional change to training loop afterward.

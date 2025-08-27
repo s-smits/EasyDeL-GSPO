@@ -930,6 +930,76 @@ class GRPOTrainer(Trainer):
         
         return rebuilt_batch
 
+    def train(self) -> TrainerOutput:
+        """Run training with a pre-step compilation warmup for multi-host stability.
+
+        Performs an explicit JIT warmup on a synthetic batch (eval path) so that all
+        hosts compile the core step ahead of time, then synchronizes with a barrier
+        before entering the real training loop.
+        """
+        self.start_training_hook()
+        state = self.model_state
+        metrics_tracker = MetricsTracker()
+        step_metrics = StepMetrics(self.arguments)
+        self._setup_initial_metrics(state)
+
+        # Explicit compilation warmup to harden multi-host startup
+        try:
+            if jax.process_count() > 1:
+                B = int(self.training_batch_size)
+                G = int(self.num_generations)
+                # Lengths: prefer explicit prompt/completion limits, fall back conservatively
+                PL = int(getattr(self.arguments, "max_prompt_length", 64) or 64)
+                CL = int(getattr(self.arguments, "max_completion_length", 64) or 64)
+                PL = max(1, PL)
+                CL = max(1, CL)
+
+                pad_id = int(self.pad_token_id)
+
+                # Build a minimal, shape-correct batch for GRPO step (eval path)
+                dummy_batch = {
+                    "prompt_ids": jnp.full((B, PL), pad_id, dtype=jnp.int32),
+                    "prompt_mask": jnp.ones((B, PL), dtype=jnp.int32),
+                    "completion_ids": jnp.full((B * G, CL), pad_id, dtype=jnp.int32),
+                    "completion_mask": jnp.ones((B * G, CL), dtype=jnp.int32),
+                    "advantages": jnp.zeros((B * G,), dtype=jnp.float32),
+                    "ref_per_token_logps": jnp.zeros((B * G, CL), dtype=jnp.float32),
+                }
+
+                # Compile eval path to avoid donating/altering training state
+                with self.mesh:
+                    metrics = self.sharded_evaluation_step_function(
+                        state,
+                        dummy_batch,
+                        *self._eval_shared_fn_extra_args,
+                        *self._eval_shared_fn_static_args,
+                    )
+                    # Ensure compilation completes
+                    try:
+                        _ = jax.block_until_ready(metrics.loss)
+                    except Exception:
+                        _ = jax.block_until_ready(jnp.asarray(0, dtype=jnp.int32))
+
+                # Cross-host barrier so all workers enter the real loop in sync
+                try:
+                    jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
+                except Exception:
+                    pass
+        except Exception as e:
+            # Best-effort warmup; continue even if warmup fails
+            try:
+                if jax.process_index() == 0:
+                    logger.debug(f"Warmup compilation skipped due to: {e!s}")
+            except Exception:
+                pass
+
+        output, run_exception = self._run_training_loop(
+            state=self.model_state,
+            metrics_tracker=metrics_tracker,
+            step_metrics=step_metrics,
+        )
+        return self._finalize_training(output, run_exception)
+
     def _preprocess_batch_input(
         self,
         state: EasyDeLState,
