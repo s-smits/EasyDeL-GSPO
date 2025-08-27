@@ -251,6 +251,77 @@ def grpo_step(
             "dist/per_token_kl_mean": jnp.mean(per_token_kl * completion_mask) / jnp.mean(completion_mask),
         }
 
+        # Optional JIT-time debug prints (guarded by minibatch flags)
+        try:
+            debug_flag = minibatch.get("debug_jit", None)
+            debug_step = minibatch.get("debug_step", None)
+            debug_proc = minibatch.get("debug_proc_index", None)
+        except Exception:
+            debug_flag, debug_step, debug_proc = None, None, None
+
+        def _jit_debug(_):
+            # Shapes and lengths
+            B = input_ids.shape[0]
+            SL = input_ids.shape[1]
+            comp_tokens = jnp.sum(completion_mask)
+            comp_lens = jnp.sum(completion_mask, axis=1)
+            comp_len_min = jnp.min(comp_lens)
+            comp_len_max = jnp.max(comp_lens)
+            comp_len_mean = jnp.mean(comp_lens)
+
+            # Masked statistics for per-token values
+            valid = jnp.maximum(comp_tokens, 1)
+            pol_sum = jnp.sum(per_token_logps * completion_mask)
+            ref_sum = jnp.sum(ref_per_token_logps * completion_mask)
+            dlt = (per_token_logps - ref_per_token_logps) * completion_mask
+            dlt_sum = jnp.sum(dlt)
+            dlt_abs_mean = jnp.sum(jnp.abs(dlt)) / valid
+            ratio_min = jnp.min(ratio)
+            ratio_max = jnp.max(ratio)
+            ratio_mean = jnp.sum(ratio * completion_mask) / valid
+            frac_gt_2 = jnp.mean((ratio > 2.0).astype(jnp.float32))
+            frac_lt_05 = jnp.mean((ratio < 0.5).astype(jnp.float32))
+
+            # Print a compact, single-line summary
+            jax.debug.print(
+                (
+                    "jit-dbg p{p} step={s} B={B} SL={SL} comp_tokens={ct} comp_len[min/mean/max]={lmin}/{lmean:.1f}/{lmax} "
+                    "loss={loss:.3e} mean_kl={mkl:.3e} pol_mean={pmean:.3e} ref_mean={rmean:.3e} dlt_mean={dmean:.3e} |dlt|_mean={dabs:.3e} "
+                    "ratio[min/mean/max]={rmin:.3e}/{rmu:.3e}/{rmax:.3e} frac_gt_2={fg2:.3f} frac_lt_0.5={fl05:.3f}"
+                ),
+                p=jax.lax.convert_element_type(debug_proc if debug_proc is not None else jnp.int32(0), jnp.int32),
+                s=jax.lax.convert_element_type(debug_step if debug_step is not None else jnp.int32(-1), jnp.int32),
+                B=B,
+                SL=SL,
+                ct=comp_tokens,
+                lmin=comp_len_min,
+                lmean=comp_len_mean,
+                lmax=comp_len_max,
+                loss=loss,
+                mkl=mean_kl,
+                pmean=pol_sum / valid,
+                rmean=ref_sum / valid,
+                dmean=dlt_sum / valid,
+                dabs=dlt_abs_mean,
+                rmin=ratio_min,
+                rmu=ratio_mean,
+                rmax=ratio_max,
+                fg2=frac_gt_2,
+                fl05=frac_lt_05,
+            )
+            return 0
+
+        try:
+            if debug_flag is not None:
+                _ = jax.lax.cond(
+                    jnp.asarray(debug_flag) > 0,
+                    _jit_debug,
+                    lambda _: 0,
+                    0,
+                )
+        except Exception:
+            ...
+
         # Assemble metrics
         other_items = {
             "advantages_mean": jnp.mean(advantages),

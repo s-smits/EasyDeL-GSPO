@@ -248,6 +248,66 @@ def gspo_step(
                 ess = (s1 * s1) / jnp.maximum(s2, 1e-8)
                 ess_mean = jnp.mean(ess / float(G))  # normalize by G for interpretability
 
+        # Optional JIT-time debug prints (guarded by minibatch flags)
+        try:
+            debug_flag = minibatch.get("debug_jit", None)
+            debug_step = minibatch.get("debug_step", None)
+            debug_proc = minibatch.get("debug_proc_index", None)
+        except Exception:
+            debug_flag, debug_step, debug_proc = None, None, None
+
+        def _jit_debug(_):
+            B = input_ids.shape[0]
+            SL = input_ids.shape[1]
+            comp_tokens = jnp.sum(completion_mask)
+            lengths_min = jnp.min(lengths)
+            lengths_mean = jnp.mean(lengths)
+            lengths_max = jnp.max(lengths)
+            # Token-level masked means
+            valid = jnp.maximum(comp_tokens, 1)
+            pol_mean = jnp.sum(per_token_logps * completion_mask) / valid
+            ref_mean = jnp.sum(ref_per_token_logps * completion_mask) / valid
+            # Ratio stats (sequence or token depending on mode)
+            r_min = jnp.min(ratio)
+            r_max = jnp.max(ratio)
+            if importance_sampling_level == "token":
+                r_mu = jnp.sum(ratio * completion_mask) / valid
+            else:
+                r_mu = jnp.mean(ratio)
+            jax.debug.print(
+                (
+                    "jit-dbg GSPO p{p} step={s} B={B} SL={SL} comp_tokens={ct} len[min/mean/max]={lmin}/{lmean:.1f}/{lmax} "
+                    "loss={loss:.3e} mean_ratio={rmu:.3e} ratio[min/max]={rmin:.3e}/{rmax:.3e} pol_mean={pmean:.3e} ref_mean={rmean:.3e} clipfrac={cf:.3f}"
+                ),
+                p=jax.lax.convert_element_type(debug_proc if debug_proc is not None else jnp.int32(0), jnp.int32),
+                s=jax.lax.convert_element_type(debug_step if debug_step is not None else jnp.int32(-1), jnp.int32),
+                B=B,
+                SL=SL,
+                ct=comp_tokens,
+                lmin=lengths_min,
+                lmean=lengths_mean,
+                lmax=lengths_max,
+                loss=loss,
+                rmu=r_mu,
+                rmin=r_min,
+                rmax=r_max,
+                pmean=pol_mean,
+                rmean=ref_mean,
+                cf=clipfrac,
+            )
+            return 0
+
+        try:
+            if debug_flag is not None:
+                _ = jax.lax.cond(
+                    jnp.asarray(debug_flag) > 0,
+                    _jit_debug,
+                    lambda _: 0,
+                    0,
+                )
+        except Exception:
+            ...
+
         return loss, LossMetrics(
             loss=loss,
             accuracy=1,

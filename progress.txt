@@ -95,3 +95,20 @@ Branch: gfspo-wshrink, Commit: 90f4e313
 [air] 2025-08-27T15:05:13Z
 Refactored logging to be simple & robust: removed LazyLogger/ColorFormatter, added idempotent setup_logging + get_logger; gated 3P log silencing and glog env tweaks behind EASYDEL_QUIET_3P/EASYDEL_TWEAK_GLOG; fixed parser union (track_memory -> float). Committed and pushed.
 
+[air] 2025-08-27T15:18:08Z
+Fixed JAX dist assert by gating AsyncCheckpointManager construction; single-process returns NullCheckpointManager; defaults already avoid optimizer saving. Committed and pushed.
+
+[air] 2025-08-27T15:19:18Z
+Assessed JAX dist assert: caused by AsyncCheckpointManager constructing before dist init; kept safe gating (NullCheckpointManager when not initialized) rather than reverting to risky auto-init. Noted optimizer save/load still uses AsyncCheckpointManager and remains off by default.
+
+Debug instrumentation added:
+- Trainer._execute_train_step: logs key batch shapes/dtypes before pjit; barriers already logged with step and process.
+- GRPOTrainer._preprocess_batch_input: adds debug_jit flags to batch; logs shapes and NaN/Inf counts for ref_per_token_logps on rank 0.
+- GRPO jitted step (_fn.py/grpo_step): jax.debug.print every N steps with step, B/SL, comp_tokens, comp_len[min/mean/max], loss, mean_kl, per-token policy/ref means, delta stats, ratio[min/mean/max], frac_gt_2, frac_lt_0.5.
+- GSPO jitted step (_gspo_fn.py/gspo_step): jax.debug.print with step, B/SL, comp_tokens, lengths[min/mean/max], loss, mean_ratio, ratio[min/max], policy/ref means, clipfrac.
+- GRPOTrainer.on_step_start: logs ref-sync decision and alignment-check MAD vs tolerance; multi-host barriers retained.
+- GRPOTrainer._sync_reference_state: logs strategy, alpha, leaf counts, and completion.
+Config toggles:
+- debug_enable (bool), debug_jit_print_every_n (int), debug_rank0_only (bool), debug_dump_batch_shapes (bool).
+How to use:
+- Set debug_enable=True; pick debug_jit_print_every_n (e.g., 64); keep debug_rank0_only=True for stability.

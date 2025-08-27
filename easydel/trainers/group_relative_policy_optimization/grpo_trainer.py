@@ -968,6 +968,20 @@ class GRPOTrainer(Trainer):
             if bool(getattr(self.arguments, "cap_rollout_chunk_to_tp", True)) and tp_size > 1:
                 rollout_chunk_size = max(1, min(int(rollout_chunk_size), int(tp_size)))
 
+            # Debug rollout configuration on host
+            try:
+                _pi = jax.process_index()
+                _mesh_shape = getattr(self.model.mesh, "shape", {}) if hasattr(self, "model") and hasattr(self.model, "mesh") else {}
+                _dp = int(_mesh_shape.get("dp", 1)) if hasattr(_mesh_shape, "get") else 1
+                logger.debug(
+                    f"[GRPOTrainer:preprocess] p{_pi} num_generations={self.num_generations} rollout_chunk_size={rollout_chunk_size} tp={tp_size} dp={_dp}"
+                )
+                logger.debug(
+                    f"[GRPOTrainer:preprocess] p{_pi} prompt_ids.shape={getattr(prompt_ids,'shape',None)} mask.shape={getattr(prompt_mask,'shape',None)}"
+                )
+            except Exception:
+                pass
+
             sequences_chunks = []
             completion_ids_chunks = []
             completion_mask_chunks = []
@@ -1073,6 +1087,15 @@ class GRPOTrainer(Trainer):
                 completion_mask = _reorder_from_chunks(completion_mask_chunks)
                 ref_per_token_logps = _reorder_from_chunks(ref_logps_chunks)
                 completion_lengths_per_seq = _reorder_from_chunks(comp_len_chunks)
+            # Debug aggregated tensor shapes before reward/advantage computation
+            try:
+                _pi = jax.process_index()
+                logger.debug(
+                    f"[GRPOTrainer:preprocess] p{_pi} agg shapes: ids={getattr(prompt_completion_ids,'shape',None)}, "
+                    f"comp_ids={getattr(completion_ids,'shape',None)}, comp_mask={getattr(completion_mask,'shape',None)}, ref_logps={getattr(ref_per_token_logps,'shape',None)}"
+                )
+            except Exception:
+                pass
             # Always initialize prompts to safe placeholders to avoid UnboundLocalError
             try:
                 _local_prompt_count = int(batch["input_ids"].shape[0])
@@ -1805,9 +1828,78 @@ class GRPOTrainer(Trainer):
             # Safe best-effort logging; never crash the step
             pass
                 
+        # Debug: prepare runtime debug flags for jitted step prints
+        try:
+            cur_step_int = int(jax.device_get(state.step))
+        except Exception:
+            cur_step_int = 0
+        try:
+            dbg_enable = bool(getattr(self.arguments, "debug_enable", False))
+            dbg_every = int(getattr(self.arguments, "debug_jit_print_every_n", 64))
+            dbg_rank0 = bool(getattr(self.arguments, "debug_rank0_only", True))
+        except Exception:
+            dbg_enable, dbg_every, dbg_rank0 = False, 64, True
+        try:
+            proc_idx = int(jax.process_index())
+        except Exception:
+            proc_idx = 0
+        debug_active = 1 if (dbg_enable and dbg_every > 0 and (cur_step_int % dbg_every == 0) and (not dbg_rank0 or proc_idx == 0)) else 0
+
+        # Optional: dump key shapes before pjit step (host-side only)
+        try:
+            if dbg_enable and bool(getattr(self.arguments, "debug_dump_batch_shapes", True)) and proc_idx == 0:
+                # Basic batch summary
+                logger.debug(
+                    "batch-shapes: prompt_ids={} prompt_mask={} completion_ids={} completion_mask={} ref_logps={} advantages={}".format(
+                        tuple(prompt_ids_rep.shape),
+                        tuple(prompt_mask_rep.shape),
+                        tuple(completion_ids.shape),
+                        tuple(completion_mask.shape),
+                        tuple(ref_per_token_logps.shape),
+                        tuple(advantages.shape),
+                    )
+                )
+                # Quick sanity on numeric pathologies for ref_per_token_logps
+                try:
+                    nan_ct = int(jax.device_get(jnp.sum(jnp.isnan(ref_per_token_logps))))
+                    inf_ct = int(jax.device_get(jnp.sum(jnp.isinf(ref_per_token_logps))))
+                    logger.debug(f"batch-check: ref_logps nan_ct={nan_ct} inf_ct={inf_ct}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # Ensure all arrays are moved to host memory (unsharded) before returning
         # This is necessary because the training step expects empty_sharding on inputs
         # and arrays from generation/computation may have device sharding that conflicts
+        # Final debug on batch shapes heading into the training step
+        try:
+            _pi = jax.process_index()
+            _shapes = {
+                "prompt_ids": getattr(prompt_ids_rep, 'shape', None),
+                "prompt_mask": getattr(prompt_mask_rep, 'shape', None),
+                "completion_ids": getattr(completion_ids, 'shape', None),
+                "completion_mask": getattr(completion_mask, 'shape', None),
+                "ref_per_token_logps": getattr(ref_per_token_logps, 'shape', None),
+                "completion_lengths": getattr(completion_lengths_per_seq, 'shape', None),
+                "rewards": getattr(rewards, 'shape', None),
+                "advantages": getattr(advantages, 'shape', None),
+            }
+            _dtypes = {
+                "prompt_ids": getattr(prompt_ids_rep, 'dtype', None),
+                "prompt_mask": getattr(prompt_mask_rep, 'dtype', None),
+                "completion_ids": getattr(completion_ids, 'dtype', None),
+                "completion_mask": getattr(completion_mask, 'dtype', None),
+                "ref_per_token_logps": getattr(ref_per_token_logps, 'dtype', None),
+                "completion_lengths": getattr(completion_lengths_per_seq, 'dtype', None),
+                "rewards": getattr(rewards, 'dtype', None),
+                "advantages": getattr(advantages, 'dtype', None),
+            }
+            logger.debug(f"[GRPOTrainer:preprocess] p{_pi} train-batch shapes={_shapes}")
+            logger.debug(f"[GRPOTrainer:preprocess] p{_pi} train-batch dtypes={_dtypes}")
+        except Exception:
+            pass
+
         return {
             "prompt_ids": prompt_ids_rep,
             "prompt_mask": prompt_mask_rep,
@@ -1817,6 +1909,10 @@ class GRPOTrainer(Trainer):
             "completion_lengths": completion_lengths_per_seq,
             "rewards": rewards,
             "advantages": advantages,
+            # Debug controls for jitted step
+            "debug_jit": jnp.asarray(debug_active, dtype=jnp.int32),
+            "debug_step": jnp.asarray(cur_step_int, dtype=jnp.int32),
+            "debug_proc_index": jnp.asarray(proc_idx, dtype=jnp.int32),
         }, processed_metrics_dict    
     
     def on_step_end(
@@ -2031,6 +2127,18 @@ class GRPOTrainer(Trainer):
         except Exception:
             strategy, alpha = "hard", 0.9
 
+        # Debug: report planned sync strategy and basic sizes
+        try:
+            pi = jax.process_index()
+            # Cheap leaf counts only
+            pol_leaves = len(jax.tree_util.tree_leaves(state.graphstate)) if hasattr(state, "graphstate") else -1
+            ref_leaves = len(jax.tree_util.tree_leaves(self.ref_state.graphstate)) if hasattr(self.ref_state, "graphstate") else -1
+            logger.debug(
+                f"[GRPOTrainer:_sync_reference_state] p{pi} strategy={strategy} alpha={alpha} pol_leaves={pol_leaves} ref_leaves={ref_leaves}"
+            )
+        except Exception:
+            pass
+
         # Align graphdef for safety
         try:
             self.ref_state = self.ref_state.replace(graphdef=self.model_state.graphdef)
@@ -2057,6 +2165,10 @@ class GRPOTrainer(Trainer):
                 ...
 
         self.ref_state = self.ref_state.replace(graphstate=new_graphstate)
+        try:
+            logger.debug("[GRPOTrainer:_sync_reference_state] reference state synced")
+        except Exception:
+            pass
 
     def on_step_start(
         self,
@@ -2070,6 +2182,16 @@ class GRPOTrainer(Trainer):
         forces a hard copy to eliminate drift.
         """
         try:
+            try:
+                pi = jax.process_index()
+                cfg = self.arguments
+                logger.debug(
+                    f"[GRPOTrainer:on_step_start] p{pi} step={step} sync_ref_model={getattr(cfg,'sync_ref_model',False)} "
+                    f"on_start={getattr(cfg,'sync_ref_model_on_step_start',True)} sync_steps={getattr(cfg,'ref_model_sync_steps',64)} "
+                    f"strategy={getattr(cfg,'ref_model_sync_strategy','hard')} align_check={getattr(cfg,'logprob_alignment_check_on_sync',True)}"
+                )
+            except Exception:
+                pass
             # Synchronize controllers before any device work in this hook
             try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
@@ -2082,6 +2204,10 @@ class GRPOTrainer(Trainer):
                 and self.ref_state is not None
                 and (step % int(getattr(self.arguments, "ref_model_sync_steps", 64)) == 0)
             ):
+                try:
+                    logger.debug("[GRPOTrainer:on_step_start] triggering reference sync")
+                except Exception:
+                    pass
                 # Refresh reference first
                 self._sync_reference_state(state)
 
@@ -2094,6 +2220,13 @@ class GRPOTrainer(Trainer):
                             full_mask = tp.cast(jax.Array, diag.get("full_mask"))
                             completion_mask = tp.cast(jax.Array, diag.get("completion_mask"))
                             if ids is not None and full_mask is not None and completion_mask is not None:
+                                try:
+                                    logger.debug(
+                                        f"[GRPOTrainer:on_step_start] align-check inputs: ids={getattr(ids,'shape',None)}, "
+                                        f"full_mask={getattr(full_mask,'shape',None)}, comp_mask={getattr(completion_mask,'shape',None)}"
+                                    )
+                                except Exception:
+                                    pass
                                 pol = self.compute_logps(state.graphstate, state.graphother, ids, full_mask)
                                 ref = self.compute_logps(self.ref_state.graphstate, self.ref_state.graphother, ids, full_mask)
                                 delta = (pol - ref) * completion_mask
@@ -2114,6 +2247,12 @@ class GRPOTrainer(Trainer):
                                             self.ref_state = self.ref_state.replace(graphother=deepcopy_model(state.graphother))
                                         except Exception:
                                             ...
+                                try:
+                                    logger.debug(
+                                        f"[GRPOTrainer:on_step_start] align-check MAD={float(jax.device_get(mad)):.3e} tol={tol:.3e}"
+                                    )
+                                except Exception:
+                                    pass
                         except Exception:
                             # Never crash on diagnostics
                             ...

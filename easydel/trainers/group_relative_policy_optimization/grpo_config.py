@@ -236,6 +236,32 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Debugging controls
+    debug_enable: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable extra debug logging and runtime summaries (host + jax.debug.print).",
+        },
+    )
+    debug_jit_print_every_n: int = field(
+        default=64,
+        metadata={
+            "help": "Every N steps, enable jax.debug.print summaries inside the jitted step on selected hosts.",
+        },
+    )
+    debug_rank0_only: bool = field(
+        default=True,
+        metadata={
+            "help": "If True, only process 0 emits debug prints to reduce noise and avoid divergence.",
+        },
+    )
+    debug_dump_batch_shapes: bool = field(
+        default=True,
+        metadata={
+            "help": "If True and debug_enable, log key batch tensor shapes/dtypes before the pjit train step.",
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:

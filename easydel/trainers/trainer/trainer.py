@@ -369,6 +369,12 @@ class Trainer(BaseTrainer):
             step_metrics.start_step()
             # Keep all controllers in lockstep around on_step_start
             try:
+                _pi = jax.process_index()
+                _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_start")
+            except Exception:
+                pass
+            try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                     jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
             except Exception:
@@ -379,6 +385,12 @@ class Trainer(BaseTrainer):
             try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                     jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
+            except Exception:
+                pass
+            try:
+                _pi = jax.process_index()
+                _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                logger.debug(f"[Trainer] p{_pi} step={_st} barrier: after_on_step_start")
             except Exception:
                 pass
 
@@ -413,6 +425,12 @@ class Trainer(BaseTrainer):
                 )
                 # Keep controllers synchronized around on_step_end as well
                 try:
+                    _pi = jax.process_index()
+                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                    logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_end")
+                except Exception:
+                    pass
+                try:
                     if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                         jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
                 except Exception:
@@ -427,6 +445,12 @@ class Trainer(BaseTrainer):
                 try:
                     if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                         jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
+                except Exception:
+                    pass
+                try:
+                    _pi = jax.process_index()
+                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                    logger.debug(f"[Trainer] p{_pi} step={_st} barrier: after_on_step_end")
                 except Exception:
                     pass
                 self.log_metrics(
@@ -586,7 +610,37 @@ class Trainer(BaseTrainer):
                 is_train=True,
             )
 
+            # Optional: dump key batch shapes/dtypes for debugging
+            try:
+                if getattr(self.arguments, "debug_enable", False) and getattr(self.arguments, "debug_dump_batch_shapes", True) and jax.process_index() == 0:
+                    def _shape_dtype(x):
+                        try:
+                            return f"shape={tuple(x.shape)} dtype={getattr(x, 'dtype', None)}"
+                        except Exception:
+                            return str(type(x))
+                    keys = [
+                        "prompt_ids",
+                        "prompt_mask",
+                        "completion_ids",
+                        "completion_mask",
+                        "ref_per_token_logps",
+                        "advantages",
+                    ]
+                    parts = []
+                    for k in keys:
+                        if k in batch:
+                            parts.append(f"{k}({_shape_dtype(batch[k])})")
+                    logger.debug("[Trainer] batch prepared: " + ", ".join(parts))
+            except Exception:
+                pass
+
             # Optional cross-host barrier to keep all controllers in lockstep
+            try:
+                _pi = jax.process_index()
+                _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_train_step")
+            except Exception:
+                pass
             try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                     jax.experimental.multihost_utils.sync_global_devices("before_train_step")
@@ -604,6 +658,12 @@ class Trainer(BaseTrainer):
             )
 
             # Optional cross-host barrier to keep all controllers in lockstep
+            try:
+                _pi = jax.process_index()
+                _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                logger.debug(f"[Trainer] p{_pi} step={_st} barrier: after_train_step")
+            except Exception:
+                pass
             try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                     jax.experimental.multihost_utils.sync_global_devices("after_train_step")
