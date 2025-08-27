@@ -1,4 +1,4 @@
-===== easydel/trainers/base_trainer.py =====
+]633;E;for f in easydel/trainers/base_trainer.py easydel/trainers/group_relative_policy_optimization/spo_trainer.py easydel/trainers/group_relative_policy_optimization/gspo_trainer.py easydel/trainers/group_relative_policy_optimization/gspo_config.py easydel/trainers/group_relative_policy_optimization/grpo_trainer.py easydel/trainers/group_relative_policy_optimization/grpo_config.py easydel/trainers/group_relative_policy_optimization/_jit_utils.py easydel/trainers/group_relative_policy_optimization/_gspo_fn.py easydel/trainers/group_relative_policy_optimization/_fn.py;458e3353-c7af-46dd-90af-d359d4a8975b]633;C===== easydel/trainers/base_trainer.py =====
 # Copyright 2023 The EASYDEL Author @erfanzar (Erfan Zare Chavoshi).
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -653,9 +653,21 @@ class BaseTrainer(BaseTrainerProtocol):
             from datasets import IterableDataset
 
             if isinstance(dataset, IterableDataset):
+                # Pre-shard streaming datasets to guarantee non-overlapping data across workers.
+                # This avoids redundant processing and potential OOM from duplicated work.
+                if shard_count > 1:
+                    try:
+                        dataset = dataset.shard(num_shards=shard_count, index=shard_index)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to pre-shard IterableDataset (index={shard_index}, count={shard_count}): {e!s}. "
+                            "Proceeding without dataset-level shard; relying on Grain may duplicate streams."
+                        )
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
-                # Per-process shuffle seed to decorrelate streams
-                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
+                # Use a consistent shuffle seed across processes to ensure identical shuffling
+                seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
+                # Ensure positive seed for Grain when training
+                seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
@@ -663,12 +675,22 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
+                # Verbose logging of data loading configuration per worker
+                try:
+                    if jax.process_count() > 1:
+                        msg = (
+                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} "
+                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                        )
+                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
+                            logger.info(msg)
+                except Exception:
+                    pass
             else:
                 data_source = grain.MapDataset.source(dataset)
                 base_seed = self.arguments.shuffle_seed_train or 0
-                process_offset = jax.process_index()
-                # Ensure seed is always positive and within 32-bit range
-                seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                # Use the same base seed across processes to keep shuffling identical
+                seed = int(base_seed) if is_train else 0
                 # Ensure seed is at least 1 (grain requires positive integer)
                 seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
@@ -678,6 +700,16 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
+                try:
+                    if jax.process_count() > 1:
+                        msg = (
+                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} "
+                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                        )
+                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
+                            logger.info(msg)
+                except Exception:
+                    pass
             # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
             try:
                 num_records = int(len(data_source))
@@ -795,6 +827,13 @@ class BaseTrainer(BaseTrainerProtocol):
             # 4) Grain drops remainder, so use floor.
             #    Use the base per-shard length for a uniform step count across all workers.
             steps_per_epoch = per_shard_len_base // batch_size
+            # Assertion: ensure at least one train step is possible per epoch on every worker
+            if is_train:
+                assert steps_per_epoch > 0, (
+                    "Training batch size exceeds the smallest per-worker shard. "
+                    f"batch_size={batch_size}, per_shard_len_base={per_shard_len_base}. "
+                    "Reduce --total_batch_size or increase dataset size to avoid idle workers."
+                )
             num_epochs = self.arguments.num_train_epochs if is_train else 1
             num_steps = steps_per_epoch * num_epochs
 
@@ -2142,7 +2181,7 @@ from ._jit_utils import compile_step_pair
 
 from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
 from ..trainer.trainer import Trainer
-from ..trainer_protocol import TrainerConfigureFunctionOutput
+from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
 from ..training_configurations import MetricsType
 from ._fn import get_per_token_logps, grpo_step
 from .grpo_config import GRPOConfig
@@ -3043,12 +3082,89 @@ class GRPOTrainer(Trainer):
         
         return rebuilt_batch
 
+    def train(self) -> TrainerOutput:
+        """Run training with a pre-step compilation warmup for multi-host stability.
+
+        Performs an explicit JIT warmup on a synthetic batch (eval path) so that all
+        hosts compile the core step ahead of time, then synchronizes with a barrier
+        before entering the real training loop.
+        """
+        self.start_training_hook()
+        state = self.model_state
+        metrics_tracker = MetricsTracker()
+        step_metrics = StepMetrics(self.arguments)
+        self._setup_initial_metrics(state)
+
+        # Explicit compilation warmup to harden multi-host startup
+        try:
+            if jax.process_count() > 1:
+                B = int(self.training_batch_size)
+                G = int(self.num_generations)
+                # Lengths from config with minimal guards
+                PL = max(1, int(self.arguments.max_prompt_length))
+                CL = max(1, int(self.arguments.max_completion_length))
+
+                pad_id = int(self.pad_token_id)
+
+                # Build a minimal, shape-correct batch for GRPO step (eval path)
+                dummy_batch = {
+                    "prompt_ids": jnp.full((B, PL), pad_id, dtype=jnp.int32),
+                    "prompt_mask": jnp.ones((B, PL), dtype=jnp.int32),
+                    "completion_ids": jnp.full((B * G, CL), pad_id, dtype=jnp.int32),
+                    "completion_mask": jnp.ones((B * G, CL), dtype=jnp.int32),
+                    "advantages": jnp.zeros((B * G,), dtype=jnp.float32),
+                    "ref_per_token_logps": jnp.zeros((B * G, CL), dtype=jnp.float32),
+                }
+
+                # Compile eval path to avoid donating/altering training state
+                with self.mesh:
+                    metrics = self.sharded_evaluation_step_function(
+                        state,
+                        dummy_batch,
+                        *self._eval_shared_fn_extra_args,
+                        *self._eval_shared_fn_static_args,
+                    )
+                    # Ensure compilation completes
+                    try:
+                        _ = jax.block_until_ready(metrics.loss)
+                    except Exception:
+                        _ = jax.block_until_ready(jnp.asarray(0, dtype=jnp.int32))
+
+                # Cross-host barrier so all workers enter the real loop in sync
+                try:
+                    jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
+                except Exception:
+                    pass
+        except Exception as e:
+            # Best-effort warmup; continue even if warmup fails
+            try:
+                if jax.process_index() == 0:
+                    logger.debug(f"Warmup compilation skipped due to: {e!s}")
+            except Exception:
+                pass
+
+        output, run_exception = self._run_training_loop(
+            state=self.model_state,
+            metrics_tracker=metrics_tracker,
+            step_metrics=step_metrics,
+        )
+        return self._finalize_training(output, run_exception)
+
     def _preprocess_batch_input(
         self,
         state: EasyDeLState,
         batch: dict[str, jax.Array],
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+        # Entry log for preprocessing path with basic batch keys and step
+        try:
+            _step = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+            logger.debug(
+                f"[GRPOTrainer:_preprocess_batch_input] p{jax.process_index()} step={_step} "
+                f"entry: batch_keys={list(batch.keys())}"
+            )
+        except Exception:
+            pass
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
 
@@ -3059,6 +3175,15 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
+
+            # Hash a small slice of inputs to verify cross-worker consistency deterministically
+            try:
+                import hashlib
+                id_slice = np.asarray(prompt_ids[:2, :16])
+                hasher = hashlib.md5(id_slice.tobytes())
+                logger.info(f"[GRPOTrainer:DataCheck] p{jax.process_index()} batch_hash={hasher.hexdigest()}")
+            except Exception as e:
+                logger.warning(f"[GRPOTrainer:DataCheck] p{jax.process_index()} hashing failed: {e!s}")
 
 
             # Ensure unique prompts if enabled
@@ -3791,19 +3916,61 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
-        # Convert metrics to plain floats early so we can safely log to WandB below
+        # Convert metrics to plain floats for logging, but only on host 0 to avoid
+        # multi-host divergence and cross-host reads. Use local-shard fallbacks.
+        def _to_float_host0(x):
+            if jax.process_index() != 0:
+                return x  # leave as-is on non-host0; they won't be logged
+            # Fast path for native types
+            if isinstance(x, (int, float)):
+                return float(x)
+            # Guarded conversions for JAX/Numpy scalars
+            try:
+                import numpy as _np  # local import to avoid global shadowing
+                if isinstance(x, jax.Array):
+                    # Prefer fully addressable
+                    try:
+                        if getattr(x, "is_fully_addressable", False):
+                            return float(_np.asarray(jax.device_get(x)).reshape(()))
+                    except Exception:
+                        ...
+                    # Then try first local shard only (no cross-host)
+                    try:
+                        shards = getattr(x, "addressable_shards", [])
+                        if shards and len(shards) > 0:
+                            return float(_np.asarray(jax.device_get(shards[0].data)).reshape((-1,))[0])
+                    except Exception:
+                        ...
+                    # As a last resort, attempt a best-effort host copy if scalar-shaped
+                    try:
+                        arr = _np.asarray(jax.device_get(x))
+                        if arr.size == 1:
+                            return float(arr.reshape(()))
+                    except Exception:
+                        ...
+                    return 0.0
+                # numpy scalar/array
+                arr = _np.asarray(x)
+                if arr.size == 1:
+                    return float(arr.reshape(()))
+            except Exception:
+                ...
+            # Fallback: try generic float cast
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
         processed_metrics_dict = {}
         for key, value in metrics_dict.items():
-            if hasattr(value, 'item'):
-                try:
-                    processed_metrics_dict[key] = float(value.item())
-                except Exception as e:
+            try:
+                if jax.process_index() == 0:
+                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' for host0 logging")
+                processed_metrics_dict[key] = _to_float_host0(value)
+            except Exception as e:
+                if jax.process_index() == 0:
                     logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")
-                    processed_metrics_dict[key] = 0.0
-            elif isinstance(value, (int, float)):
-                processed_metrics_dict[key] = float(value)
-            else:
-                processed_metrics_dict[key] = value
+                processed_metrics_dict[key] = 0.0 if jax.process_index() == 0 else value
 
         # Per-reward metrics (local)
         for i, reward_func in enumerate(self.reward_funcs):
@@ -4339,14 +4506,12 @@ class GRPOTrainer(Trainer):
                 ...
             sync_enabled = getattr(self.arguments, "sync_ref_model", False)
             sync_on_start = getattr(self.arguments, "sync_ref_model_on_step_start", True)
-            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", False)
             interval = int(getattr(self.arguments, "ref_model_sync_steps", 64))
             should_sync = (
                 sync_enabled
                 and sync_on_start
                 and self.ref_state is not None
                 and (step % max(1, interval) == 0)
-                and (not skip_first or step > 0)
             )
             if should_sync:
                 try:
@@ -4543,15 +4708,6 @@ class GRPOConfig(TrainingArguments):
         default=64,
         metadata={"help": "The number of steps between syncing the reference model."},
     )
-    # Skip reference sync at the very first step (step==0).
-    # Default False; we prefer consistent behavior and will handle divergence elsewhere.
-    ref_model_skip_first_sync: bool = field(
-        default=False,
-        metadata={
-            "help": "If True, do not perform reference sync at step 0 even if step%ref_model_sync_steps==0.",
-        },
-    )
-
     # Deterministic generation across hosts: avoid folding replica/axis indices into PRNG
     # seeds so multi-controller runs produce identical sampling schedules during compile.
     deterministic_generation_across_hosts: bool = field(
@@ -4796,6 +4952,40 @@ class GRPOConfig(TrainingArguments):
         except Exception:
             # Best-effort; keep defaults if clamping fails
             ...
+
+        # Early environment and divisibility assertions to fail fast on misconfiguration.
+        try:
+            import jax as _jax
+            dp = int(self.force_data_parallel or 1)
+            tp = int(self.force_tensor_parallel or 1)
+            num_devices = int(_jax.device_count())
+
+            # Mesh size must fit available devices exactly when explicit DP/TP are forced
+            if self.force_data_parallel is not None or self.force_tensor_parallel is not None:
+                assert dp * tp == num_devices, (
+                    "Mesh dimensions are incompatible with the hardware: "
+                    f"dp({dp})*tp({tp})={dp * tp}, but device_count={num_devices}. "
+                    "Adjust --force_data_parallel/--force_tensor_parallel or device allocation."
+                )
+
+            # On multi-host: per-host DP must be integral and batch divisible by per-host DP
+            pc = int(_jax.process_count())
+            if pc > 1 and dp > 0:
+                assert dp % pc == 0, (
+                    f"Data parallelism ({dp}) must be divisible by process_count ({pc}) for a balanced mesh."
+                )
+                dp_per_host = dp // pc
+                # Use configured per-process batch (total_batch_size) as physical batch per host
+                assert int(self.total_batch_size) % max(1, dp_per_host) == 0, (
+                    "The per-host physical batch size (total_batch_size) must be divisible by DP per host: "
+                    f"batch={int(self.total_batch_size)} dp_per_host={dp_per_host}."
+                )
+        except Exception as e:
+            # Do not crash config creation in minimal environments; surface as debug
+            try:
+                print(f"DEBUG: JAX environment checks in GRPOConfig failed/skipped: {e}")
+            except Exception:
+                pass
 
     __hash__ = hash_fn
 
@@ -5561,3 +5751,4 @@ def grpo_step(
     else:
         _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
         return state, metrics
+

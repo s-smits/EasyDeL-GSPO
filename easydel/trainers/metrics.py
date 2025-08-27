@@ -123,9 +123,21 @@ class StepMetrics:
         if metrics.accuracy is not None:
             basic_metrics["accuracy"] = float(metrics.accuracy)
         if metrics.chosen_rewards is not None:
-            basic_metrics["chosen_rewards"] = float(jnp.mean(metrics.chosen_rewards).item())
+            try:
+                basic_metrics["chosen_rewards"] = float(np.asarray(jax.device_get(jnp.mean(metrics.chosen_rewards))).reshape(()))
+            except Exception:
+                try:
+                    basic_metrics["chosen_rewards"] = float(jnp.mean(metrics.chosen_rewards))
+                except Exception:
+                    pass
         if metrics.rejected_rewards is not None:
-            basic_metrics["rejected_rewards"] = float(jnp.mean(metrics.rejected_rewards).item())
+            try:
+                basic_metrics["rejected_rewards"] = float(np.asarray(jax.device_get(jnp.mean(metrics.rejected_rewards))).reshape(()))
+            except Exception:
+                try:
+                    basic_metrics["rejected_rewards"] = float(jnp.mean(metrics.rejected_rewards))
+                except Exception:
+                    pass
         if metrics.other_metrics is not None:
             basic_metrics.update(metrics.other_metrics)
         if not self.arguments.performance_mode and (mode == "train" or mode is None):
@@ -302,10 +314,20 @@ class JSONProgressBar(BaseProgressBar):
     def set_postfix(self, **kwargs) -> None:
         for k in list(kwargs.keys()):
             val = kwargs.get(k)
-            if hasattr(val, "size") and val.size == 1:
-                kwargs[k] = val.item()
-            if isinstance(val, float):
-                kwargs[k] = round(val, 3)
+            try:
+                if hasattr(val, "size") and getattr(val, "size", None) == 1:
+                    try:
+                        host = jax.device_get(val)
+                        kwargs[k] = float(np.asarray(host).reshape(()))
+                    except Exception:
+                        try:
+                            kwargs[k] = float(np.asarray(val).reshape(()))
+                        except Exception:
+                            pass
+                if isinstance(val, float):
+                    kwargs[k] = round(val, 3)
+            except Exception:
+                ...
         logger.info(kwargs)
 
     def reset(self) -> None: ...

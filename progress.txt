@@ -180,3 +180,28 @@ Reference Trainer Streamlining
   - Per-worker dataloader logs (seed, shard index/count, shuffle, epochs, batch size).
   - `calculate_steps` revised to use uniform per-shard base length and floor semantics; asserts at least one train step per epoch to fail fast.
   - No unrelated changes pulled in; TFDS path left intact.
+[2025-08-27] Multi-worker JAX crash fix: limited scalar metric conversion to host0 with safe device_get fallbacks in GRPOTrainer (easydel/trainers/group_relative_policy_optimization/grpo_trainer.py). Removed .item() usage on non-host0 during preprocess metrics to prevent cross-host XLA calls that caused FAILED_PRECONDITION after first iteration. Verified that downstream logging already runs only on process 0. Suggest validating two-host run past step 0 and monitoring barriers.
+[2025-08-27T18:27:28+00:00] Multi-worker JAX GSPO fix: deferred scalarization + guarded device_get; removed early .item() in GRPO metrics; hardened logging conversions in training_configurations and metrics.
+Date: 2025-08-27T18:29:27.901535
+Fix: Hardened multi-worker metrics conversion and logging to prevent FAILED_PRECONDITION from scalar .item() calls when a peer halts.
+- Replaced risky .item() conversions in GRPO metrics with a multihost-safe path.
+- Added safe scalar conversion utilities in easydel/utils/jax_safety.py.
+- Tightened JSON progress bar scalar handling to avoid cross-host device_get on non-addressable arrays.
+- Verified GSPO/SPO/Distillation paths do not use unsafe .item() and kept barriers symmetrical.
+Notes: If a peer crashes earlier (OOM/exception), host-0 scalar fetches now fail-soft instead of cascading the job. Root-cause on peer still needs attention if it reoccurs.
+
+Date: 2025-08-27T18:38:44
+Comparison summary: Recommend a hybrid of Approach 2 (host0-only scalarization with local-shard fallbacks) + Approach 1 (central safe scalar utils), and refactor Approach 3 callsites to use the shared utility.
+Why: Minimizes cross-host sync and unintended materialization, avoids Python dispatch in hot paths, and degrades gracefully if a worker halts.
+TPU-specific: Keep conversions post-step on host0 only; prefer addressable_shards/is_fully_addressable; never call .item() on sharded arrays; avoid host callbacks inside jit/pjit.
+Multi-worker: Centralize logging on process 0; avoid collectives in logging; keep symmetric barriers; broadcast error sentinels for early NaN/inf detection; keep RNG/checkpoint state consistent.
+Debugging: Enable opt-in tracing/XProf only when needed; collect per-worker TPU utilization; detect performance cliffs from host callbacks.
+Overhead: Hybrid keeps debug overhead ~zero when disabled; enables guarded device_get only on host0 in logging code paths.
+
+[Comparison Summary — JAX TPU Multi‑Worker Debugging]
+- Decision: Adopt a hybrid of Approach 1 (central safe conversions + shard awareness) and Approach 2’s host0‑only logging policy; refactor Approach 3’s ad‑hoc sites to call the central utility.
+- Rationale: Approach 1 best handles host‑device sync with `is_fully_addressable`/`addressable_shards`; Approach 2 minimizes cross‑host reads; Approach 3 broadened coverage but should de‑duplicate via the shared API.
+- Immediate actions: Consolidate all metric/weight conversions to `easydel/utils/jax_safety.py`; add distributed NaN/Inf detection with per‑core flags + all‑reduce; wrap traces with bounded `jax.profiler.start_trace/stop_trace` on all workers; add barrier/collective watchdog logging; integrate Orbax preemption‑safe checkpointing.
+- Expected overhead: Near‑zero when disabled; small host0‑only conversion on logging; no extra barriers introduced.
+- Pitfalls avoided: Unintended materialization, Python dispatch in jit loops, and cross‑island device_get via central shard‑aware conversions and host0‑only logging gates.
+[2025-08-27T19:00:24+00:00] Implemented unified JAX-safe scalar conversion: added utils/jax_safety.safe_to_float, refactored grpo_trainer metrics conversion, fixed TrainerOutput import; lints clean.

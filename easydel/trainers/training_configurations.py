@@ -69,9 +69,32 @@ logger = get_logger(__name__)
 
 
 def get_safe_arr(xs):
-    if isinstance(xs, np.generic | jax.Array):
-        if xs.size == 1:  # Only try .item() on size-1 arrays
-            return xs.item()
+    """Safely convert scalar-like arrays to Python types for logging.
+
+    - Avoids unconditional `.item()` which can trigger device sync errors on TPU
+      when another host has failed or diverged.
+    - Falls back to best-effort host copy for true scalars.
+    - Leaves non-scalar arrays untouched for higher-level logging handlers.
+    """
+    try:
+        if isinstance(xs, (np.generic, jax.Array)):
+            size = getattr(xs, "size", None)
+            if size == 1:
+                # Attempt guarded device->host copy before scalarizing
+                try:
+                    host = jax.device_get(np.asarray(xs))
+                    return np.asarray(host).reshape(()).item()
+                except Exception:
+                    # Last resort: try .item() directly; if that fails, return a float cast
+                    try:
+                        return xs.item()  # type: ignore[attr-defined]
+                    except Exception:
+                        try:
+                            return float(np.asarray(xs))
+                        except Exception:
+                            return xs
+            return xs
+    except Exception:
         return xs
     return xs
 
@@ -925,9 +948,28 @@ class TrainingArguments:
 
                         base_path = path.replace("/histogram", "")
                         metrics[f"weights-information/{base_path}/mean"] = float(histogram.mean)
-                        metrics[f"weights-information/{base_path}/std"] = histogram.std.item()
-                        metrics[f"weights-information/{base_path}/min"] = histogram.min.item()
-                        metrics[f"weights-information/{base_path}/max"] = histogram.max.item()
+                        # Convert scalar-like stats safely
+                        try:
+                            metrics[f"weights-information/{base_path}/std"] = float(np.asarray(jax.device_get(histogram.std)).reshape(()))
+                        except Exception:
+                            try:
+                                metrics[f"weights-information/{base_path}/std"] = float(histogram.std)
+                            except Exception:
+                                pass
+                        try:
+                            metrics[f"weights-information/{base_path}/min"] = float(np.asarray(jax.device_get(histogram.min)).reshape(()))
+                        except Exception:
+                            try:
+                                metrics[f"weights-information/{base_path}/min"] = float(histogram.min)
+                            except Exception:
+                                pass
+                        try:
+                            metrics[f"weights-information/{base_path}/max"] = float(np.asarray(jax.device_get(histogram.max)).reshape(()))
+                        except Exception:
+                            try:
+                                metrics[f"weights-information/{base_path}/max"] = float(histogram.max)
+                            except Exception:
+                                pass
                     else:
                         path = key.replace("/", ".")
                         metrics[f"weights-information/{path}"] = histogram

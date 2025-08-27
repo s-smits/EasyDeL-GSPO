@@ -77,6 +77,8 @@ from .data_managers import (
 )
 from .helpers import Timer, Timers, capture_time, check_bool_flag, get_cache_dir, get_logger
 from .lazy_import import LazyModule, is_package_available
+from . import jax_safety
+from .jax_safety import safe_to_float
 
 __all__ = (
     "DataClassArgumentParser",
@@ -103,6 +105,9 @@ __all__ = (
     "load_compiled_fn",
     "save_compiled_fn",
     "traversals",
+    # safety helpers
+    "jax_safety",
+    "safe_to_float",
     # Back-compat exports
     "EasyPath",
     "EasyPathLike",

@@ -29,10 +29,19 @@ from ._jit_utils import compile_step_pair
 
 from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
 from ..trainer.trainer import Trainer
-from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
+from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics, TrainerOutput
 from ..training_configurations import MetricsType
 from ._fn import get_per_token_logps, grpo_step
 from .grpo_config import GRPOConfig
+try:
+    from easydel.utils import jax_safety as _jax_safety  # type: ignore
+    safe_to_float = _jax_safety.safe_to_float  # type: ignore[attr-defined]
+except Exception:  # Fallback for environments where submodule import resolution is limited
+    def safe_to_float(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return float(default)
 
 try:
     import wandb  # type:ignore
@@ -1764,20 +1773,20 @@ class GRPOTrainer(Trainer):
             "generation_time": generation_time,
             "preprocessing_time": preprocessing_time,
         }
-        # Convert metrics to plain floats early so we can safely log to WandB below
+        # Convert metrics to plain floats for logging, but only on host 0 to avoid
+        # multi-host divergence and cross-host reads. Use local-shard fallbacks.
         processed_metrics_dict = {}
         for key, value in metrics_dict.items():
-            if hasattr(value, 'item'):
-                try:
-                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' via .item()")
-                    processed_metrics_dict[key] = float(value.item())
-                except Exception as e:
+            try:
+                if jax.process_index() == 0:
+                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' for host0 logging")
+                    processed_metrics_dict[key] = safe_to_float(value, default=0.0)
+                else:
+                    processed_metrics_dict[key] = value
+            except Exception as e:
+                if jax.process_index() == 0:
                     logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")
-                    processed_metrics_dict[key] = 0.0
-            elif isinstance(value, (int, float)):
-                processed_metrics_dict[key] = float(value)
-            else:
-                processed_metrics_dict[key] = value
+                processed_metrics_dict[key] = 0.0 if jax.process_index() == 0 else value
 
         # Per-reward metrics (local)
         for i, reward_func in enumerate(self.reward_funcs):
