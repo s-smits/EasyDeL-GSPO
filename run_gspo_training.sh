@@ -61,8 +61,8 @@ if [ "$SYNC_MODE" = "barriers" ]; then
   --ref_model_sync_steps 64 \
   --sync_ref_model_on_step_start false \
   --ref_sync_copy_graphother false \
-  --logprob_alignment_check_on_sync false \
-  --logprob_analysis_enable false"
+  --logprob_alignment_check_on_sync true \
+  --logprob_analysis_enable true"
 else
   # Reference sync mode with safe defaults; explicitly disable multihost barriers
   SYNC_FLAGS="\

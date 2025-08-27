@@ -2386,8 +2386,9 @@ class GRPOTrainer(Trainer):
                 # Refresh reference first
                 self._sync_reference_state(state)
 
-                # Optional immediate alignment check - only on single host to avoid device divergence
-                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)) and jax.process_count() == 1:
+                # Immediate alignment check. On multi-host with barriers enabled, aggregate MAD across hosts
+                # to make a unified decision and avoid control-flow divergence.
+                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)):
                     diag = getattr(self, "_last_logprob_diag", None)
                     if isinstance(diag, dict):
                         try:
@@ -2407,15 +2408,27 @@ class GRPOTrainer(Trainer):
                                 delta = (pol - ref) * completion_mask
                                 valid = jnp.maximum(jnp.sum(completion_mask.astype(jnp.float32)), 1.0)
                                 mad = jnp.sum(jnp.abs(delta).astype(jnp.float32)) / valid
+
+                                # Aggregate across hosts if running multi-host with barriers enabled
+                                use_global = (jax.process_count() > 1) and bool(getattr(self.arguments, "sync_multihost_phases", True))
+                                try:
+                                    if use_global:
+                                        gathered = jax.experimental.multihost_utils.process_allgather(mad.astype(jnp.float32))
+                                        mad_value = float(jax.device_get(jnp.max(gathered)))
+                                    else:
+                                        mad_value = float(jax.device_get(mad))
+                                except Exception:
+                                    mad_value = float(jax.device_get(mad))
+
                                 tol = float(getattr(self.arguments, "ref_policy_logprob_tolerance", 1e-4))
-                                if float(jax.device_get(mad)) > tol:
+                                if mad_value > tol:
                                     try:
                                         logger.warning(
-                                            f"Ref-policy logprob |Δ| mean {float(jax.device_get(mad)):.2e} exceeds tol {tol:.2e}; forcing hard copy."
+                                            f"Ref-policy logprob |Δ| mean {mad_value:.2e} exceeds tol {tol:.2e}; forcing hard copy."
                                         )
                                     except Exception:
                                         ...
-                                    # Force hard copy to recover
+                                    # Force hard copy to recover — apply identically on all hosts
                                     self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
                                     if bool(getattr(self.arguments, "ref_sync_copy_graphother", True)):
                                         try:
@@ -2424,7 +2437,7 @@ class GRPOTrainer(Trainer):
                                             ...
                                 try:
                                     logger.debug(
-                                        f"[GRPOTrainer:on_step_start] align-check MAD={float(jax.device_get(mad)):.3e} tol={tol:.3e}"
+                                        f"[GRPOTrainer:on_step_start] align-check MAD={mad_value:.3e} tol={tol:.3e} (global={use_global})"
                                     )
                                 except Exception:
                                     pass

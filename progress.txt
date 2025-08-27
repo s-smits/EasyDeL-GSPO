@@ -250,3 +250,7 @@ Reference Trainer Streamlining
 - logprob_analysis_enable: both=false ✅ (reduces memory overhead)
 Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to barriers mode for completeness.
 [] Run: add explicit --ref_model_sync_steps=64 to barriers mode for clarity; functional behavior unchanged.
+[] Barriers-mode diagnostics revamp
+- Added multi-host-safe alignment check in GRPOTrainer:on_step_start: aggregates MAD across hosts when barriers enabled and takes unified decision.
+- In run script, barriers mode now sets: --logprob_analysis_enable true, --logprob_alignment_check_on_sync true.
+- Ref mode stays with diagnostics disabled to save memory.
