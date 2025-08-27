@@ -225,3 +225,10 @@ Reference Trainer Streamlining
   - 
   - 
 - Purpose: prevent ModuleNotFoundError in environments lacking the utility module, while retaining safety semantics.
+
+[2025-08-27T23:02:52Z] Explanation: logprob_analysis vs ref sync and multihost barriers
+-  disables caching/diagnostics and post-update analysis only; it does not affect reference sync.
+- Reference–policy syncing is driven by , , and  in .
+- Multi-worker barriers (, default True) wrap  and preprocess phases to keep controllers in lockstep; required regardless of logprob analysis.
+-  disables the optional single-host alignment check; it’s independent and skipped on multi-host anyway.
+[] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).

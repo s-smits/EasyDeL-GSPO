@@ -1018,8 +1018,10 @@ class GRPOTrainer(Trainer):
                         _ = jax.block_until_ready(jnp.asarray(0, dtype=jnp.int32))
 
                 # Cross-host barrier so all workers enter the real loop in sync
+                # Now gated by sync_multihost_phases for full opt-out when desired
                 try:
-                    jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
+                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                        jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
                 except Exception:
                     pass
         except Exception as e:

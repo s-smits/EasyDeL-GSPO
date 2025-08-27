@@ -80,6 +80,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --sync_ref_model_on_step_start true \
   --ref_sync_copy_graphother true \
   --logprob_alignment_check_on_sync false \
+  --sync_multihost_phases false \
   --cap_rollout_chunk_to_tp true \
   --verbose true \
   --debug_enable true \

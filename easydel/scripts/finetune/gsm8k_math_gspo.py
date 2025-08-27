@@ -552,10 +552,10 @@ def main():
                 # Only adjust mini_batch_size to accommodate small levels.
                 args.mini_batch_size = mini_batch_size_override
 
-            # In multi-host runs, synchronize before creating the second trainer to avoid
+            # In multi-host runs, optionally synchronize before creating the second trainer to avoid
             # launch-group divergence if hosts arrive here at slightly different times.
             try:
-                if jax.process_count() > 1:
+                if jax.process_count() > 1 and getattr(args, "sync_multihost_phases", True):
                     from jax.experimental.multihost_utils import sync_global_devices as _sync
                     _sync("pre_curriculum_trainer_init")
             except Exception:
@@ -573,9 +573,9 @@ def main():
             )
             out = new_tr.train()
 
-            # Synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
+            # Optionally synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
             try:
-                if jax.process_count() > 1:
+                if jax.process_count() > 1 and getattr(args, "sync_multihost_phases", True):
                     from jax.experimental.multihost_utils import sync_global_devices as _sync
                     _sync("post_curriculum_trainer_train")
             except Exception:
