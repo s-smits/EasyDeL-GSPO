@@ -35,13 +35,11 @@ if _check_bool_flag("EASYDEL_AUTO", True):
     # Tell jax xla bridge to stay quiet and only yied warnings or errors.
     _getlogger("jax._src.xla_bridge").setLevel(30)
     _getlogger("jax._src.mesh_utils").setLevel(30)
-    _getlogger("jax._src.distributed").setLevel(30)
     _getlogger("datasets").setLevel(30)
 
     _os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
     _os.environ["KMP_AFFINITY"] = "noverbose"
-    # Use symbolic level to avoid grpc "Unknown log verbosity: 3"
-    _os.environ["GRPC_VERBOSITY"] = "ERROR"
+    _os.environ["GRPC_VERBOSITY"] = "3"
     _os.environ["GLOG_minloglevel"] = "3"
     _os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
     _os.environ["CACHE_TRITON_KERNELS"] = "1"
@@ -118,6 +116,7 @@ _import_structure = {
         "ePathLike",
         "TextDatasetInform",
         "VisualDatasetInform",
+        "DataClassArgumentParser",
     ],
     "inference": [
         "EngineRequest",
@@ -962,6 +961,7 @@ if _tp.TYPE_CHECKING:
         ePath,
         ePathLike,
         traversals,
+        DataClassArgumentParser,
     )
     from .utils.parameters_transformation import (
         ModelConverter,
