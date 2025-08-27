@@ -751,6 +751,14 @@ class GRPOTrainer(Trainer):
             self._train_shared_fn_static_args,
             self._eval_shared_fn_static_args,
         )
+        # Debug: report partition specs used for the step
+        try:
+            _pi = jax.process_index()
+            logger.debug(
+                f"[GRPOTrainer:compile] p{_pi} step_partition_spec={self.arguments.step_partition_spec} state_shardings={getattr(self, 'state_shardings', None)}"
+            )
+        except Exception:
+            pass
 
         # Unified per-token log-probs compute (works for both policy and reference states)
         def _compute_model_logps(graphtree, graphother, ids, mask, graphdef):
@@ -773,6 +781,14 @@ class GRPOTrainer(Trainer):
             ),
             out_shardings=empty_sharding,
         )
+        try:
+            _pi = jax.process_index()
+            logger.debug(
+                f"[GRPOTrainer:compile] p{_pi} compute_logps in_shardings=(graphstate, graphother, ids, mask) -> ("
+                f"{self.model_state.shardings.graphstate}, {self.model_state.shardings.graphother}, None, None)"
+            )
+        except Exception:
+            pass
 
         self.arguments.ensure_checkpoint_path()
         checkpoint_manager = self.arguments.get_streaming_checkpointer()
@@ -1033,6 +1049,14 @@ class GRPOTrainer(Trainer):
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
 
                 # Accumulate
+                try:
+                    if chunk_idx == 0 and getattr(self.arguments, "verbose", True):
+                        _pi = jax.process_index()
+                        logger.debug(
+                            f"[GRPOTrainer:preprocess] p{_pi} chunk0 cur_nrs={cur_nrs} seq_chunk.shape={getattr(prompt_completion_ids_chunk,'shape',None)} ref_logps.shape={getattr(ref_logps_chunk,'shape',None)}"
+                        )
+                except Exception:
+                    pass
                 sequences_chunks.append(prompt_completion_ids_chunk)
                 completion_ids_chunks.append(completion_ids_chunk)
                 completion_mask_chunks.append(completion_mask_chunk)

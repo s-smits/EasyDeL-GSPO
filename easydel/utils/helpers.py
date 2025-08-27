@@ -125,6 +125,26 @@ def set_loggers_level(level: int = logging.WARNING):
 logger = get_logger(__name__)
 
 
+def set_module_log_levels(levels: dict[str, int]) -> None:
+    """Set logging levels for specific modules without changing root.
+
+    Example:
+        set_module_log_levels({
+            'jax': logging.WARNING,
+            'jax._src': logging.WARNING,
+            'jax._src.cache_key': logging.ERROR,
+            'absl': logging.INFO,
+            'easydel': logging.DEBUG,
+        })
+    """
+    for name, lvl in (levels or {}).items():
+        try:
+            logging.getLogger(name).setLevel(lvl)
+        except Exception:
+            # Best-effort; skip unknown loggers
+            pass
+
+
 @contextlib.contextmanager
 def capture_time():
     """Context manager that measures elapsed time.

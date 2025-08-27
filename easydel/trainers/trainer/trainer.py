@@ -610,6 +610,16 @@ class Trainer(BaseTrainer):
                 is_train=True,
             )
 
+            # Debug: print training batch shapes/dtypes before entering the sharded step
+            try:
+                _pi = jax.process_index()
+                _shapes = {k: getattr(v, 'shape', None) for k, v in (batch.items() if hasattr(batch, 'items') else [])}
+                _dtypes = {k: getattr(v, 'dtype', None) for k, v in (batch.items() if hasattr(batch, 'items') else [])}
+                logger.debug(f"[Trainer] p{_pi} train-step batch shapes={_shapes}")
+                logger.debug(f"[Trainer] p{_pi} train-step batch dtypes={_dtypes}")
+            except Exception:
+                pass
+
             # Optional: dump key batch shapes/dtypes for debugging
             try:
                 if getattr(self.arguments, "debug_enable", False) and getattr(self.arguments, "debug_dump_batch_shapes", True) and jax.process_index() == 0:

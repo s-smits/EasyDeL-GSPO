@@ -16,6 +16,8 @@ echo "Setting up environment..."
 # Set environment variables for TPU
 export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off
+# Show DEBUG logs from EasyDeL when debug flags are enabled (safe to always enable during debugging)
+export EASYDEL_LOG_LEVEL=DEBUG
 
 # Navigate to project directory and pull latest changes (non-fatal)
 cd /home/air/EasyDeL-GSPO || exit 1
@@ -80,6 +82,10 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --ref_sync_copy_graphother true \
   --logprob_alignment_check_on_sync false \
   --cap_rollout_chunk_to_tp true \
-  --verbose true
+  --verbose true \
+  --debug_enable true \
+  --debug_jit_print_every_n 1 \
+  --debug_rank0_only true \
+  --debug_dump_batch_shapes true
 
 echo "Training completed!"

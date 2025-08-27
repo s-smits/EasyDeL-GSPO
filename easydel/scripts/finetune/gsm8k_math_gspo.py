@@ -8,6 +8,8 @@ from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from transformers import AutoConfig, AutoTokenizer
 from easydel.utils.safe_ops import safe_call
+from easydel.utils.helpers import set_module_log_levels
+import logging
 
 import easydel as ed
 from easydel.infra.factory import registry
@@ -53,6 +55,20 @@ class RunTimeConfig:
 def main():
     parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
     gspo_config, runtime = parser.parse_args_into_dataclasses()
+
+    # Reduce third-party noise (JAX/absl) while keeping EasyDeL debug visible
+    # Root remains at the global level configured by EASYDEL_LOG_LEVEL; we down-tune noisy modules.
+    set_module_log_levels({
+        "jax": logging.WARNING,
+        "jax._src": logging.WARNING,
+        "jax._src.cache_key": logging.ERROR,
+        "jaxlib": logging.WARNING,
+        "absl": logging.INFO,
+    })
+    # Keep EasyDeL debug messages flowing even if root is higher
+    set_module_log_levels({
+        "easydel": logging.DEBUG,
+    })
 
     if jax.process_index() == 0:
         print("Training Arguments\n----------------------")

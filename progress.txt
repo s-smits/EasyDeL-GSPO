@@ -112,3 +112,11 @@ Config toggles:
 - debug_enable (bool), debug_jit_print_every_n (int), debug_rank0_only (bool), debug_dump_batch_shapes (bool).
 How to use:
 - Set debug_enable=True; pick debug_jit_print_every_n (e.g., 64); keep debug_rank0_only=True for stability.
+[2025-08-27T15:39:50Z] Added targeted debug logging for multi-host sync, reference sync, alignment checks, generation chunking, and training batch shapes in trainer and GRPO trainer.
+Updated run_gspo_training.sh to enable maximal safe debugging output:
+- Added GSPO/GRPO debug flags: --debug_enable true, --debug_jit_print_every_n 1, --debug_rank0_only true, --debug_dump_batch_shapes true
+- Keeps multi‑host safety: alignment check off; barriers remain on; cap_rollout_chunk_to_tp true
+Use this script to get rich per‑step host and JIT logs without destabilizing multi‑host runs.
+[2025-08-27T15:43:48Z] Enabled EASYDEL_LOG_LEVEL=DEBUG and added --debug_* flags to run_gspo_training.sh so debug data is actually shown when flag is set.
+[2025-08-27T15:49:18Z] Silenced JAX/absl DEBUG logs via per-module log levels in gsm8k_math_gspo.py; kept EasyDeL at DEBUG.
+[2025-08-27T15:49:56Z] Preparing commit: enable debug flags, add JIT/host logs, quiet JAX noise, and update run script.
