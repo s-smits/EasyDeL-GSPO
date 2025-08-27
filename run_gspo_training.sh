@@ -62,7 +62,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 5120 \
+  --max_completion_length 4096 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
@@ -73,16 +73,18 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --save_steps 100 \
   --do_eval false \
   --weight_decay 0.01 \
-  --gradient_accumulation_steps 16 \
+  --gradient_accumulation_steps 8 \
   --beta 0.04 \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --logprob_analysis_enable false \
+  --sync_multihost_phases true \
   --sync_ref_model true \
+  --ref_model_sync_steps 4 \
   --sync_ref_model_on_step_start true \
-  --ref_model_sync_steps 8 \
+  --ref_sync_copy_graphother true \
   --logprob_alignment_check_on_sync false \
   --cap_rollout_chunk_to_tp true \
   --verbose true

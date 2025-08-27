@@ -694,6 +694,19 @@ class GRPOTrainer(Trainer):
                     prng_key = jax.random.fold_in(base_key, int(jnp.bitwise_xor.reduce(ph.astype(jnp.uint32))))
                 except Exception:
                     prng_key = base_key
+                # Add safe per-replica randomness without host/process dependency by
+                # folding in mesh axis indices (dp/fsdp/ep/tp/sp) deterministically.
+                try:
+                    rep_mix = 0
+                    for _name, _mul in (("dp", 1), ("fsdp", 97), ("ep", 31), ("tp", 197), ("sp", 389)):
+                        try:
+                            _idx = jax.lax.axis_index(_name)
+                        except Exception:
+                            _idx = 0
+                        rep_mix = (rep_mix * 1315423911 + int(_idx) * _mul) & 0x7FFFFFFF
+                    prng_key = jax.random.fold_in(prng_key, int(rep_mix))
+                except Exception:
+                    pass
 
                 sequences = module.generate(
                     input_ids=input_ids,
