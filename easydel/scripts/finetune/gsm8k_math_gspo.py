@@ -1,6 +1,8 @@
 import re
 from dataclasses import field
 import os
+import io
+import datetime as _dt
 
 import jax
 from datasets import load_dataset, Dataset, concatenate_datasets
@@ -44,6 +46,7 @@ class RunTimeConfig:
     attn_dtype: jnp.dtype = field(default=jnp.bfloat16)
     attn_softmax_dtype: jnp.dtype = field(default=jnp.float32)
     test_flight: bool = field(default=False, metadata={"help": "Enable extra sanity sample and preflight verification"})
+    log_dir: str = field(default="logs", metadata={"help": "Directory to store per-run console logs."})
 
     def __post_init__(self):
         if self.processor_repo_id is None:
@@ -55,6 +58,53 @@ class RunTimeConfig:
 def main():
     parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
     gspo_config, runtime = parser.parse_args_into_dataclasses()
+
+    # Create per-run log directory and tee stdout/stderr to a file (captures prints + jax.debug.print)
+    try:
+        ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        host = os.uname().nodename if hasattr(os, "uname") else "host"
+        pidx = int(jax.process_index())
+        run_dir = os.path.join(runtime.log_dir, f"gspo_{ts}")
+        os.makedirs(run_dir, exist_ok=True)
+        log_path = os.path.join(run_dir, f"gspo_{ts}_{host}_p{pidx}.log")
+
+        class _Tee(io.TextIOBase):
+            def __init__(self, a, b):
+                self.a = a
+                self.b = b
+            def write(self, x):
+                try:
+                    self.a.write(x)
+                except Exception:
+                    ...
+                try:
+                    self.b.write(x)
+                except Exception:
+                    ...
+                return len(x)
+            def flush(self):
+                try:
+                    self.a.flush()
+                except Exception:
+                    ...
+                try:
+                    self.b.flush()
+                except Exception:
+                    ...
+
+        _orig_out, _orig_err = sys.stdout, sys.stderr  # type: ignore[name-defined]
+        _log_f = open(log_path, "a", buffering=1, encoding="utf-8")
+        sys.stdout = _Tee(_orig_out, _log_f)  # type: ignore[name-defined]
+        sys.stderr = _Tee(_orig_err, _log_f)  # type: ignore[name-defined]
+        if jax.process_index() == 0:
+            print(f"DEBUG: Logging stdout/stderr to {log_path}")
+    except Exception as _e:
+        # Best-effort; continue without file tee on failure
+        try:
+            if jax.process_index() == 0:
+                print(f"WARNING: Failed to setup run log file: {_e}")
+        except Exception:
+            ...
 
     # Reduce third-party noise (JAX/absl) while keeping EasyDeL debug visible
     # Root remains at the global level configured by EASYDEL_LOG_LEVEL; we down-tune noisy modules.
