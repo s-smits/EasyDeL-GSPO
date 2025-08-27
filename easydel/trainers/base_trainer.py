@@ -826,6 +826,13 @@ class BaseTrainer(BaseTrainerProtocol):
             # 4) Grain drops remainder, so use floor.
             #    Use the base per-shard length for a uniform step count across all workers.
             steps_per_epoch = per_shard_len_base // batch_size
+            # Assertion: ensure at least one train step is possible per epoch on every worker
+            if is_train:
+                assert steps_per_epoch > 0, (
+                    "Training batch size exceeds the smallest per-worker shard. "
+                    f"batch_size={batch_size}, per_shard_len_base={per_shard_len_base}. "
+                    "Reduce --total_batch_size or increase dataset size to avoid idle workers."
+                )
             num_epochs = self.arguments.num_train_epochs if is_train else 1
             num_steps = steps_per_epoch * num_epochs
 

@@ -191,6 +191,15 @@ class GFPOConfig(GRPOConfig):
             print(f"DEBUG: GFPOConfig post_init - gfpo_group_size={self.gfpo_group_size}, gfpo_retain_count={self.gfpo_retain_count}")
             super().__post_init__()
             enforce_gfpo_constraints(self)
+            # Assert relationships explicitly for clarity
+            assert int(self.num_return_sequences) == int(self.gfpo_group_size), (
+                "GFPO requires num_return_sequences == gfpo_group_size. "
+                f"Got num_return_sequences={self.num_return_sequences}, gfpo_group_size={self.gfpo_group_size}."
+            )
+            assert int(self.gfpo_retain_count) < int(self.gfpo_group_size), (
+                "gfpo_retain_count must be < gfpo_group_size for meaningful filtering. "
+                f"Got retain={self.gfpo_retain_count}, group={self.gfpo_group_size}."
+            )
             # Validate adaptive fields
             if not isinstance(self.gfpo_adaptive_warmup_steps, int) or self.gfpo_adaptive_warmup_steps < 0:
                 raise ValueError("gfpo_adaptive_warmup_steps must be a non-negative integer")
@@ -220,4 +229,3 @@ class GFPOConfig(GRPOConfig):
             raise
 
     __hash__ = hash_fn
-

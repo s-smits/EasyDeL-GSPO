@@ -52,7 +52,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
-  --total_batch_size 1 \
+  --total_batch_size 2 \
   --num_return_sequences 8 \
   --rollout_chunk_size 1 \
   --num_train_epochs 2 \
@@ -75,9 +75,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --logprob_analysis_enable false \
-  --sync_multihost_phases true \
   --sync_ref_model true \
-  --ref_model_sync_steps 4 \
+  --ref_model_sync_steps 16 \
   --sync_ref_model_on_step_start true \
   --ref_sync_copy_graphother true \
   --logprob_alignment_check_on_sync false \

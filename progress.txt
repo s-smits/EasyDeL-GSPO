@@ -165,3 +165,9 @@ Cleanup: Simplify warmup + sync logic
 
 - GRPO warmup: Simplified PL/CL derivation to `max(1, int(self.arguments.max_prompt_length))` and `max(1, int(self.arguments.max_completion_length))`.
 - Reference sync: Confirmed removal of obsolete `ref_model_skip_first_sync`; `on_step_start` uses only interval-based logic.
+---
+Fail-Fast Assertions
+
+- GRPOConfig: Added environment checks for DP/TP vs device_count and multi-host divisibility (DP % process_count == 0 and total_batch_size % dp_per_host == 0) to catch misconfigurations early.
+- GFPOConfig: Explicit asserts to ensure `num_return_sequences == gfpo_group_size` and `gfpo_retain_count < gfpo_group_size`.
+- BaseTrainer.calculate_steps: Assert at least one training step per epoch per worker (batch_size <= per_shard_len_base) to prevent idle/hanging workers.

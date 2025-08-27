@@ -329,4 +329,38 @@ class GRPOConfig(TrainingArguments):
             # Best-effort; keep defaults if clamping fails
             ...
 
+        # Early environment and divisibility assertions to fail fast on misconfiguration.
+        try:
+            import jax as _jax
+            dp = int(self.force_data_parallel or 1)
+            tp = int(self.force_tensor_parallel or 1)
+            num_devices = int(_jax.device_count())
+
+            # Mesh size must fit available devices exactly when explicit DP/TP are forced
+            if self.force_data_parallel is not None or self.force_tensor_parallel is not None:
+                assert dp * tp == num_devices, (
+                    "Mesh dimensions are incompatible with the hardware: "
+                    f"dp({dp})*tp({tp})={dp * tp}, but device_count={num_devices}. "
+                    "Adjust --force_data_parallel/--force_tensor_parallel or device allocation."
+                )
+
+            # On multi-host: per-host DP must be integral and batch divisible by per-host DP
+            pc = int(_jax.process_count())
+            if pc > 1 and dp > 0:
+                assert dp % pc == 0, (
+                    f"Data parallelism ({dp}) must be divisible by process_count ({pc}) for a balanced mesh."
+                )
+                dp_per_host = dp // pc
+                # Use configured per-process batch (total_batch_size) as physical batch per host
+                assert int(self.total_batch_size) % max(1, dp_per_host) == 0, (
+                    "The per-host physical batch size (total_batch_size) must be divisible by DP per host: "
+                    f"batch={int(self.total_batch_size)} dp_per_host={dp_per_host}."
+                )
+        except Exception as e:
+            # Do not crash config creation in minimal environments; surface as debug
+            try:
+                print(f"DEBUG: JAX environment checks in GRPOConfig failed/skipped: {e}")
+            except Exception:
+                pass
+
     __hash__ = hash_fn
