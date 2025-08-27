@@ -16,6 +16,7 @@ import typing as tp
 import jax
 import jax.experimental
 import jax.lib
+from jax import numpy as jnp
 from eformer.escale import with_sharding_constraint
 from jax.sharding import NamedSharding, PartitionSpec
 
@@ -349,8 +350,6 @@ class Trainer(BaseTrainer):
 
             # Allgather a tiny scalar to check if any host ran out of data
             try:
-                import jax
-                import jax.numpy as jnp
                 gathered = jax.experimental.multihost_utils.process_allgather(jnp.array(has_batch_local, dtype=jnp.int32))
                 any_missing = int(jnp.sum(gathered == 0)) > 0
             except Exception:

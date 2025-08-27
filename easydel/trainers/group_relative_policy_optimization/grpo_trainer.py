@@ -731,39 +731,18 @@ class GRPOTrainer(Trainer):
             static_argnums=static_argnames,
         )
 
-        def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
+        # Unified per-token log-probs compute (works for both policy and reference states)
+        def _compute_model_logps(graphtree, graphother, ids, mask, graphdef):
             apply = flax.nnx.merge(graphdef, graphtree, graphother)
             with apply.mesh:
-                # Ensure token arrays conform to the step partitioning spec before compute
                 ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
 
         # Allow input sharding of token ids and masks to pass through (we re-constrain inside the fn)
         # This avoids mismatches like: pjit expects replicated but arg is sharded as ('dp','tp')
-
-        self.compute_refmodel_logps = ejit(
-            partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
-            static_argnames=("graphdef",),
-            in_shardings=(
-                self.model_state.shardings.graphstate,
-                self.model_state.shardings.graphother,
-                None,
-                None,
-            ),
-            out_shardings=empty_sharding,
-        )
-
-        # Compute per-token log-probs for the POLICY model (used by post-update diagnostics)
-        def _compute_policymodel_logps(graphtree, graphother, ids, mask, graphdef):
-            apply = flax.nnx.merge(graphdef, graphtree, graphother)
-            with apply.mesh:
-                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
-                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
-                return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
-
-        self.compute_policymodel_logps = ejit(
-            partial(_compute_policymodel_logps, graphdef=self.model_state.graphdef),
+        self.compute_logps = ejit(
+            partial(_compute_model_logps, graphdef=self.model_state.graphdef),
             static_argnames=("graphdef",),
             in_shardings=(
                 self.model_state.shardings.graphstate,
@@ -1004,7 +983,7 @@ class GRPOTrainer(Trainer):
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
-                    ref_logps_chunk = self.compute_refmodel_logps(
+                    ref_logps_chunk = self.compute_logps(
                         self.ref_state.graphstate,
                         self.ref_state.graphother,
                         prompt_completion_ids_chunk,
@@ -1846,7 +1825,7 @@ class GRPOTrainer(Trainer):
                 ref_logps = tp.cast(jax.Array, ref_logps)
 
                 # Compute policy per-token log-probs with UPDATED state (post-update)
-                pol_logps = self.compute_policymodel_logps(
+                pol_logps = self.compute_logps(
                     state.graphstate,
                     state.graphother,
                     ids,
