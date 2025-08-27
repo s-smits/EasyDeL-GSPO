@@ -152,3 +152,4 @@ IterableDataset True Sharding
 - Change: Pre-shard HF `IterableDataset` in `base_trainer._configure_grain_dataloader` using `dataset.shard(num_shards=shard_count, index=shard_index)` before wrapping in `HFDataSource`.
 - Why: Ensures each worker processes a unique stream (true DP) instead of duplicated prompts, preventing redundant work and silent OOMs that led to `FAILED_PRECONDITION` when a peer died.
 - Notes: Keeps deterministic seeding across workers; sharding occurs at dataset-level so `HFDataSource`/Grain sampler index handling no longer causes duplicate reads.
+ - Additionally: Enforce positive seed for IterableDataset path (`seed = max(1, seed)` when training) to satisfy Grain requirements when `shuffle_seed_train` may be 0/None.

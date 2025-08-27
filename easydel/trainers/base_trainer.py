@@ -665,6 +665,8 @@ class BaseTrainer(BaseTrainerProtocol):
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
                 # Use a consistent shuffle seed across processes to ensure identical shuffling
                 seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
+                # Ensure positive seed for Grain when training
+                seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
