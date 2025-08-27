@@ -768,16 +768,31 @@ class TrainingArguments:
         return optimizer, scheduler
 
     def get_streaming_checkpointer(self):
+        """Return a checkpoint manager-like object without forcing JAX distributed init.
+
+        Uses AsyncCheckpointManager only when the eFormer async runtime reports
+        distributed is initialized; otherwise returns a lightweight stub. This
+        avoids asserting during single-process runs while keeping the same
+        interface for downstream code that stores the object for later use.
         """
-        Returns the checkpoint manager, responsible for saving model checkpoints.
+        try:
+            from eformer.serialization.async_manager import is_initialized
+            if not is_initialized():
+                class _NullCheckpointManager:
+                    def __repr__(self) -> str:
+                        return "<NullCheckpointManager>"
 
-        Returns:
-            AsyncCheckpointManager: The checkpoint manager.
-        """
+                return _NullCheckpointManager()
 
-        from eformer.serialization import AsyncCheckpointManager
+            from eformer.serialization import AsyncCheckpointManager
 
-        return AsyncCheckpointManager(max_workers=1)
+            return AsyncCheckpointManager(max_workers=1)
+        except Exception:
+            class _NullCheckpointManager:
+                def __repr__(self) -> str:
+                    return "<NullCheckpointManager>"
+
+            return _NullCheckpointManager()
 
     @functools.cached_property
     def _tensorboard(self):
