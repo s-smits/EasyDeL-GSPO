@@ -232,3 +232,4 @@ Reference Trainer Streamlining
 - Multi-worker barriers (, default True) wrap  and preprocess phases to keep controllers in lockstep; required regardless of logprob analysis.
 -  disables the optional single-host alignment check; it’s independent and skipped on multi-host anyway.
 [] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).
+[] Run script: added SYNC_MODE (ref|barriers) to select either reference sync or multihost barriers; flags are mutually exclusive and inferred automatically.

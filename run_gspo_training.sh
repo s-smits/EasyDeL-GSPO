@@ -1,11 +1,13 @@
 #!/bin/bash
 # GSPO Training Script with TPU Optimizations (8-worker metrics support)
 #
-# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
+# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH] [SYNC_MODE]
 # 
 # Arguments:
 #   DATASET        - Dataset to use: 'math-ds' or 'gsm8k-ds' (default: math-ds)
 #   CURRICULUM_MATH - Enable curriculum learning: 'true' or 'false' (default: false)
+#   SYNC_MODE      - 'ref' (default): enable reference sync, disable barriers
+#                    'barriers': enable multihost barriers, omit ref-sync flags
 #
 # Examples:
 #   ./run_gspo_training.sh math-ds true    # Enable curriculum learning on math dataset
@@ -32,6 +34,7 @@ echo "Starting GSPO training with optimized configuration..."
 # Parse command line arguments
 DATASET="${1:-math-ds}"
 CURRICULUM_MATH="${2:-false}"
+SYNC_MODE="${3:-ref}"
 
 # If DATASET is math-ds, enable curriculum learning (mirrors GFSPO script behavior)
 if [ "$DATASET" = "math-ds" ]; then
@@ -40,6 +43,7 @@ fi
 
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
+echo "Sync mode: ${SYNC_MODE}"
 
 # Metrics and logging: ensure correct aggregation for 8 workers
 # Set log_global to true for correct global logging aggregation
@@ -47,6 +51,13 @@ LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
 echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
 
 #!/usr/bin/env bash
+
+# Compute sync flags based on SYNC_MODE (mutually exclusive)
+if [ "$SYNC_MODE" = "barriers" ]; then
+  SYNC_FLAGS="--sync_multihost_phases true"
+else
+  SYNC_FLAGS="--sync_ref_model true --ref_model_sync_steps 16 --sync_ref_model_on_step_start true --ref_sync_copy_graphother true --logprob_alignment_check_on_sync false --sync_multihost_phases false"
+fi
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
@@ -75,12 +86,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --logprob_analysis_enable false \
-  --sync_ref_model true \
-  --ref_model_sync_steps 16 \
-  --sync_ref_model_on_step_start true \
-  --ref_sync_copy_graphother true \
-  --logprob_alignment_check_on_sync false \
-  --sync_multihost_phases false \
+  ${SYNC_FLAGS} \
   --cap_rollout_chunk_to_tp true \
   --verbose true \
   --debug_enable true \
