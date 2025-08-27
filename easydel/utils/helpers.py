@@ -60,7 +60,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from functools import wraps
 
-from eformer.loggings import get_logger
+# Note: Avoid importing from easydel.utils here to prevent circular imports.
+# Define a stub name for 'jax' to satisfy static analyzers without importing at runtime.
+jax = tp.cast(tp.Any, None)
 
 if tp.TYPE_CHECKING:
     from flax.metrics.tensorboard import SummaryWriter
@@ -188,7 +190,9 @@ class LazyLogger:
                 pass
         else:
             try:
-                if jax.process_index() > 0:
+                import importlib
+                _jax = importlib.import_module("jax")
+                if getattr(_jax, "process_index", lambda: 0)() > 0:
                     self._level = logging.WARNING
             except Exception:
                 # Avoid initializing JAX backends in processes where TPU is unavailable

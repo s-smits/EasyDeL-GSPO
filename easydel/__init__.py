@@ -95,14 +95,28 @@ if _check_bool_flag("EASYDEL_AUTO", True):
     if _os.getenv("JAX_TRACEBACK_FILTERING", None) is None:
         _os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
-if _check_bool_flag("AUTO_INIT_JAX", True):
+if _check_bool_flag("AUTO_INIT_JAX", False):
     import jax
 
     try:
-        jax.distributed.initialize()
+        _env = _os.environ
+        _dist_signals = any(
+            _env.get(k) not in (None, "", "0")
+            for k in (
+                "JAX_COORDINATOR_ADDRESS",
+                "JAX_PROCESS_COUNT",
+                "TPU_WORKER_ID",
+                "TPU_CHIPS_PER_PROCESS_BOUNDS",
+                "TPU_NAME",
+            )
+        )
+        if _dist_signals:
+            jax.distributed.initialize()
     except RuntimeError:
-        _logger.warn("Failed to initialize jax-dist if you have initialized that manually you can ignore this warning")
-    except Exception:  # maybe it's a single process
+        _logger.warn(
+            "Failed to initialize jax-dist; if initialized manually, you can ignore this warning"
+        )
+    except Exception:
         ...
 _import_structure = {
     "utils": [

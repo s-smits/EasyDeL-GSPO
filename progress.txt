@@ -71,3 +71,20 @@
 --cap_rollout_chunk_to_tp true     # Cap chunks for TP stability
 --rollout_chunk_size 1              # Small chunks for testing
 ```
+[air] 2025-08-27T14:24:36Z
+Fix GSPO training import error: resolved circular import in utils/helpers causing 'cannot import name EasyPath' from easydel.utils.
+- Removed circular import in easydel/utils/helpers.py (no longer imports get_logger from easydel.utils).
+- Exported get_logger from easydel/utils/__init__.py and added to __all__.
+- Verified imports: easydel.utils, easydel.trainers, and easydel.scripts.finetune.gsm8k_math_gspo import cleanly.
+- Note: GLOG/GRPC 'Unknown log verbosity: 3' warning is unrelated and benign.
+
+[air] 2025-08-27T14:27:35Z
+Advised on EasyPath aliasing: short-term keep local aliasing 'from easydel.utils import ePath as EasyPath, ePathLike as EasyPathLike' to avoid relying on package back-compat exports; long-term migrate call sites to use ePath/ePathLike directly and drop EasyPath names.
+
+[air] 2025-08-27T14:43:47Z
+Further fixes: prevented import-time JAX distributed auto-init from causing hangs by gating on AUTO_INIT_JAX (default off) and presence of distributed env signals.
+Validated small-scope imports and functions across utils and trainers without triggering JAX connect.
+
+[air] 2025-08-27T14:49:52Z
+Addressed basedpyright 'jax is not defined' in helpers.py by defining a stub 'jax' name (no runtime import) and switching to dynamic import when needed; should clear reportUndefinedVariable.
+

@@ -25,13 +25,6 @@ git pull origin gfspo-wshrink 2>/dev/null || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
-# Activate virtual environment if present (prefer global ~/.venv)
-if [ -f /home/air/.venv/bin/activate ]; then
-  source /home/air/.venv/bin/activate
-elif [ -f .venv/bin/activate ]; then
-  source .venv/bin/activate
-fi
-
 echo "Starting GSPO training with optimized configuration..."
 
 # Parse command line arguments

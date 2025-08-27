@@ -17,8 +17,10 @@ import os
 import re
 import threading
 import typing as tp
+import tempfile
 
-from easydel.utils import EasyPath, EasyPathLike
+# Avoid relying on back-compat names; import canonical names and alias locally
+from easydel.utils import ePath as EasyPath, ePathLike as EasyPathLike
 
 
 def get_hf_token(env_name: str = "HF_TOKEN") -> str | None:
@@ -212,7 +214,7 @@ def download_latest_checkpoint(
     except Exception:
         return None
     api = HfApi()
-    root = EasyPath(local_root or EasyPath.mktempdir(prefix="easydel-hf-"))
+    root = EasyPath(local_root or tempfile.mkdtemp(prefix="easydel-hf-"))
     target = root / latest_dirname
     target.mkdir(parents=True, exist_ok=True)
     try:

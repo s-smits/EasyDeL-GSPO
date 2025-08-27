@@ -61,6 +61,10 @@ Note:
 from eformer.aparser import DataClassArgumentParser
 from eformer.paths import ePath, ePathLike
 
+# Backward-compatibility aliases
+EasyPath = ePath
+EasyPathLike = ePathLike
+
 from . import analyze_memory, compiling_utils, traversals
 from .compiling_utils import ejit, load_cached_functions, load_compiled_fn, save_compiled_fn
 from .data_managers import (
@@ -71,7 +75,7 @@ from .data_managers import (
     TextDatasetInform,
     VisualDatasetInform,
 )
-from .helpers import Timer, Timers, capture_time, check_bool_flag, get_cache_dir
+from .helpers import Timer, Timers, capture_time, check_bool_flag, get_cache_dir, get_logger
 from .lazy_import import LazyModule, is_package_available
 
 __all__ = (
@@ -89,6 +93,7 @@ __all__ = (
     "capture_time",
     "check_bool_flag",
     "compiling_utils",
+    "get_logger",
     "ePath",
     "ePathLike",
     "ejit",
@@ -98,4 +103,7 @@ __all__ = (
     "load_compiled_fn",
     "save_compiled_fn",
     "traversals",
+    # Back-compat exports
+    "EasyPath",
+    "EasyPathLike",
 )
