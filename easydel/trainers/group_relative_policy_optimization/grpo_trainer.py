@@ -2122,15 +2122,15 @@ class GRPOTrainer(Trainer):
                                             self.ref_state = self.ref_state.replace(graphother=deepcopy_model(state.graphother))
                                         except Exception:
                                             ...
+                        except Exception:
+                            # Never crash on diagnostics
+                            ...
                         finally:
                             try:
                                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
                                     jax.experimental.multihost_utils.sync_global_devices("after_alignment_check")
                             except Exception:
                                 ...
-                        except Exception:
-                            # Never crash on diagnostics
-                            ...
         except Exception:
             # Best-effort: never block training on ref sync
             ...
