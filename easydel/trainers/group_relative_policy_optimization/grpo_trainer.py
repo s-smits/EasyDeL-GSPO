@@ -948,11 +948,9 @@ class GRPOTrainer(Trainer):
             if jax.process_count() > 1:
                 B = int(self.training_batch_size)
                 G = int(self.num_generations)
-                # Lengths: prefer explicit prompt/completion limits, fall back conservatively
-                PL = int(getattr(self.arguments, "max_prompt_length", 64) or 64)
-                CL = int(getattr(self.arguments, "max_completion_length", 64) or 64)
-                PL = max(1, PL)
-                CL = max(1, CL)
+                # Lengths from config with minimal guards
+                PL = max(1, int(self.arguments.max_prompt_length))
+                CL = max(1, int(self.arguments.max_completion_length))
 
                 pad_id = int(self.pad_token_id)
 
@@ -1006,6 +1004,15 @@ class GRPOTrainer(Trainer):
         batch: dict[str, jax.Array],
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+        # Entry log for preprocessing path with basic batch keys and step
+        try:
+            _step = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+            logger.debug(
+                f"[GRPOTrainer:_preprocess_batch_input] p{jax.process_index()} step={_step} "
+                f"entry: batch_keys={list(batch.keys())}"
+            )
+        except Exception:
+            pass
         with capture_time() as preprocessing_time_fn:
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
 
@@ -1016,6 +1023,15 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
+
+            # Hash a small slice of inputs to verify cross-worker consistency deterministically
+            try:
+                import hashlib
+                id_slice = np.asarray(prompt_ids[:2, :16])
+                hasher = hashlib.md5(id_slice.tobytes())
+                logger.info(f"[GRPOTrainer:DataCheck] p{jax.process_index()} batch_hash={hasher.hexdigest()}")
+            except Exception as e:
+                logger.warning(f"[GRPOTrainer:DataCheck] p{jax.process_index()} hashing failed: {e!s}")
 
 
             # Ensure unique prompts if enabled
@@ -1753,6 +1769,7 @@ class GRPOTrainer(Trainer):
         for key, value in metrics_dict.items():
             if hasattr(value, 'item'):
                 try:
+                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' via .item()")
                     processed_metrics_dict[key] = float(value.item())
                 except Exception as e:
                     logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")

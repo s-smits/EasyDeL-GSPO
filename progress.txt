@@ -153,3 +153,15 @@ IterableDataset True Sharding
 - Why: Ensures each worker processes a unique stream (true DP) instead of duplicated prompts, preventing redundant work and silent OOMs that led to `FAILED_PRECONDITION` when a peer died.
 - Notes: Keeps deterministic seeding across workers; sharding occurs at dataset-level so `HFDataSource`/Grain sampler index handling no longer causes duplicate reads.
  - Additionally: Enforce positive seed for IterableDataset path (`seed = max(1, seed)` when training) to satisfy Grain requirements when `shuffle_seed_train` may be 0/None.
+---
+Verbose Instrumentation
+
+- Added entry + data hash logs in `GRPOTrainer._preprocess_batch_input` to verify cross-worker data consistency (prints batch keys, step, and md5 hash of a small input slice).
+- Added metric conversion debug logs before calling `.item()` to pinpoint potential device-to-host hangs.
+- Logged data loader config per worker in `BaseTrainer._configure_grain_dataloader` (seed, shard index/count, shuffle, epochs) for both Iterable and MapDataset paths.
+- Confirmed obsolete `ref_model_skip_first_sync` is not used; sync logic now relies solely on interval + flags.
+---
+Cleanup: Simplify warmup + sync logic
+
+- GRPO warmup: Simplified PL/CL derivation to `max(1, int(self.arguments.max_prompt_length))` and `max(1, int(self.arguments.max_completion_length))`.
+- Reference sync: Confirmed removal of obsolete `ref_model_skip_first_sync`; `on_step_start` uses only interval-based logic.

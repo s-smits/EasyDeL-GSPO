@@ -674,6 +674,17 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
+                # Verbose logging of data loading configuration per worker
+                try:
+                    if jax.process_count() > 1:
+                        msg = (
+                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} "
+                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                        )
+                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
+                            logger.info(msg)
+                except Exception:
+                    pass
             else:
                 data_source = grain.MapDataset.source(dataset)
                 base_seed = self.arguments.shuffle_seed_train or 0
@@ -688,6 +699,16 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
+                try:
+                    if jax.process_count() > 1:
+                        msg = (
+                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} "
+                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                        )
+                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
+                            logger.info(msg)
+                except Exception:
+                    pass
             # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
             try:
                 num_records = int(len(data_source))
