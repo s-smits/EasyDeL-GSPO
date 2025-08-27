@@ -54,11 +54,24 @@ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
 
 # Compute sync flags based on SYNC_MODE (mutually exclusive)
 if [ "$SYNC_MODE" = "barriers" ]; then
-  # Multi-host barriers only; explicitly disable reference sync
-  SYNC_FLAGS="--sync_multihost_phases true --sync_ref_model false"
+  # Multi-host barriers only; explicitly disable all ref-sync toggles
+  SYNC_FLAGS="\
+  --sync_multihost_phases true \
+  --sync_ref_model false \
+  --sync_ref_model_on_step_start false \
+  --ref_sync_copy_graphother false \
+  --logprob_alignment_check_on_sync false \
+  --logprob_analysis_enable false"
 else
-  # Reference sync mode with safe defaults; disable multi-host barriers
-  SYNC_FLAGS="--sync_ref_model true --ref_model_sync_steps 16 --sync_ref_model_on_step_start true --ref_sync_copy_graphother true --logprob_alignment_check_on_sync false --sync_multihost_phases false"
+  # Reference sync mode with safe defaults; explicitly disable multihost barriers
+  SYNC_FLAGS="\
+  --sync_multihost_phases false \
+  --sync_ref_model true \
+  --ref_model_sync_steps 16 \
+  --sync_ref_model_on_step_start true \
+  --ref_sync_copy_graphother true \
+  --logprob_alignment_check_on_sync false \
+  --logprob_analysis_enable false"
 fi
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
@@ -74,7 +87,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 2 \
+  --force_data_parallel 4 \
   --report_steps 1 \
   --log_global ${LOG_GLOBAL_VAL} \
   --log_steps 1 \
@@ -87,7 +100,6 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --logprob_analysis_enable false \
   ${SYNC_FLAGS} \
   --cap_rollout_chunk_to_tp true \
   --verbose true \

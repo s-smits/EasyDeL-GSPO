@@ -234,3 +234,9 @@ Reference Trainer Streamlining
 [] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).
 [] Run script: added SYNC_MODE (ref|barriers) to select either reference sync or multihost barriers; flags are mutually exclusive and inferred automatically.
 [] Fix SYNC_MODE one-of semantics in run script: barriers -> only --sync_multihost_phases true (and disable ref sync); ref -> ref-sync flags + --sync_multihost_phases false.
+[] Critical assessment of SYNC_MODE and current run
+- Mesh config mismatch: force_data_parallel=2, force_tensor_parallel=4 on 16 devices → dp*tp=8 != 16 and dp % process_count(4) != 0. Expect instability; recommend dp=4 (so dp*tp=16 and divisible by pc) or remove force_* and let adaptive mesh decide.
+- Barriers off (SYNC_MODE=ref) with multi-host=4: acceptable for debugging but can cause host phase drift around on_step_start/train_step; expect occasional divergence warnings/skips.
+- SYNC_FLAGS: one-of semantics OK. But logprob_analysis_enable is disabled only in ref mode now; if you want it off in both modes, move the flag outside SYNC_FLAGS.
+- Logging tee warning (‘os’ UnboundLocalError): non-fatal; fix by ensuring no local shadowing and importing sys earlier.
+[] Run script: make SYNC_FLAGS explicit in both modes (barriers-only vs ref-sync-only), remove contradictions, include ref_model_sync_steps only in ref mode.
