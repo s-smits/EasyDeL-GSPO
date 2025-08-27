@@ -254,3 +254,4 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
 - Added multi-host-safe alignment check in GRPOTrainer:on_step_start: aggregates MAD across hosts when barriers enabled and takes unified decision.
 - In run script, barriers mode now sets: --logprob_analysis_enable true, --logprob_alignment_check_on_sync true.
 - Ref mode stays with diagnostics disabled to save memory.
+[] Streamlined barriers SYNC_FLAGS: removed redundant ref-sync flags (steps/on_start/copy_graphother) when sync_ref_model=false.

@@ -54,13 +54,10 @@ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
 
 # Compute sync flags based on SYNC_MODE (mutually exclusive)
 if [ "$SYNC_MODE" = "barriers" ]; then
-  # Multi-host barriers only; explicitly disable all ref-sync toggles
+  # Multi-host barriers only; ref-sync disabled, diagnostics enabled
   SYNC_FLAGS="\
   --sync_multihost_phases true \
   --sync_ref_model false \
-  --ref_model_sync_steps 64 \
-  --sync_ref_model_on_step_start false \
-  --ref_sync_copy_graphother false \
   --logprob_alignment_check_on_sync true \
   --logprob_analysis_enable true"
 else
