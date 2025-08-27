@@ -240,3 +240,13 @@ Reference Trainer Streamlining
 - SYNC_FLAGS: one-of semantics OK. But logprob_analysis_enable is disabled only in ref mode now; if you want it off in both modes, move the flag outside SYNC_FLAGS.
 - Logging tee warning (‘os’ UnboundLocalError): non-fatal; fix by ensuring no local shadowing and importing sys earlier.
 [] Run script: make SYNC_FLAGS explicit in both modes (barriers-only vs ref-sync-only), remove contradictions, include ref_model_sync_steps only in ref mode.
+[] FLAG_ANALYSIS: Comprehensive review of SYNC_FLAGS
+- sync_multihost_phases: barriers=true, ref=false ✅ (controls 11 barrier locations)
+- sync_ref_model: barriers=false, ref=true ✅ (master toggle for ref sync)
+- ref_model_sync_steps: barriers=omitted (falls back to 64), ref=16 ⚠️ (harmless since sync_ref_model=false in barriers)
+- sync_ref_model_on_step_start: barriers=false, ref=true ✅ (timing control)
+- ref_sync_copy_graphother: barriers=false, ref=true ✅ (RNG state copy)
+- logprob_alignment_check_on_sync: both=false ✅ (single-host only anyway)
+- logprob_analysis_enable: both=false ✅ (reduces memory overhead)
+Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to barriers mode for completeness.
+[] Run: add explicit --ref_model_sync_steps=64 to barriers mode for clarity; functional behavior unchanged.

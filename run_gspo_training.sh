@@ -58,6 +58,7 @@ if [ "$SYNC_MODE" = "barriers" ]; then
   SYNC_FLAGS="\
   --sync_multihost_phases true \
   --sync_ref_model false \
+  --ref_model_sync_steps 64 \
   --sync_ref_model_on_step_start false \
   --ref_sync_copy_graphother false \
   --logprob_alignment_check_on_sync false \
