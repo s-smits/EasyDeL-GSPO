@@ -140,3 +140,9 @@ GRPO Warmup Compilation
 - What: Builds a shape-correct synthetic batch (based on `training_batch_size`, `num_return_sequences`, `max_prompt_length`, `max_completion_length`), compiles the eval step, blocks until ready, then performs a cross-host barrier via `jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")`.
 - Why: Hardens multi-host startup by ensuring all workers complete initial compilation before the real loop, avoiding first-step race conditions; complementary to deterministic dataloader seeding.
 - Notes: Uses eval-path compilation to avoid donating/updating the real training state; no functional change to training loop afterward.
+---
+Fix: Import MetricsTracker/StepMetrics for GRPO warmup
+
+- Issue: NameError in `GRPOTrainer.train()` due to missing imports for `MetricsTracker` and `StepMetrics`.
+- Change: Added `from ..trainer_protocol import MetricsTracker, StepMetrics` to `grpo_trainer.py`.
+- Result: Warmup path initializes metrics trackers correctly; training can start without NameError.
