@@ -974,10 +974,10 @@ class GRPOTrainer(Trainer):
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
-                                    # Deterministic seed across all hosts (no process_index dependency)
-                # Use step and chunk index only for reproducibility
-                per_chunk_seed = int((cur_step_int * 131071 + chunk_idx * 65537 + 12345) % (2**31 - 1))
-                per_chunk_seed = max(1, per_chunk_seed)
+                    # Deterministic seed across all hosts (no process_index dependency)
+                    # Use step and chunk index only for reproducibility
+                    per_chunk_seed = int((cur_step_int * 131071 + chunk_idx * 65537 + 12345) % (2**31 - 1))
+                    per_chunk_seed = max(1, per_chunk_seed)
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
                     )
@@ -1464,9 +1464,7 @@ class GRPOTrainer(Trainer):
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
                 try:
-                    print(f"DEBUG: Starting global aggregation - process_count={jax.process_count()}")
                     if jax.process_count() > 1:
-                        print("DEBUG: Multi-process global aggregation")
                         _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
                         _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
                         _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
@@ -1477,12 +1475,10 @@ class GRPOTrainer(Trainer):
                         num_prompts_global = jnp.sum(_np)
                         success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
                         pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                        print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
                     else:
-                        print("DEBUG: Single-process fallback for global metrics")
                         # Global variables already initialized above with local values
+                        pass
                 except Exception as e:
-                    print(f"DEBUG: Global aggregation failed: {e}")
                     if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                         logger.debug(f"global aggregation: failed {e}")
                     # Global variables already initialized above with fallback values

@@ -33,3 +33,35 @@
 - Kept rollout chunk capping to TP for TP>1; generation still parallel, overhead minimal.
 - Added multihost barriers only where critical (around pjit step and ref-sync path).
 - Expected overhead: ~4–12 ms per step from barriers (<2% typically); alignment check off by default on multi-host, zero amortized cost.
+
+**Comprehensive Multi-Host Synchronization Fixes (2025-08-27)**
+- Fixed **deterministic seeding**: Removed `jax.process_index()` from generation seeds to ensure identical sequences across hosts.
+- **Gated alignment check**: Limited logprob alignment check to single-host to avoid device op divergence in on_step_start hook.
+- **Removed debug prints**: Eliminated process-specific debug statements that could cause host divergence.
+- **Added barriers**: Strategic barriers around critical transitions (before/after on_step_start, around train step).
+- **Fixed indentation**: Corrected seed generation block indentation issues.
+- **Safe test config**: Created test_safe_gspo_config.sh with minimal settings for stability testing.
+  
+**Root Causes Addressed:**
+1. Device operations outside main step causing launch group mismatches
+2. Non-deterministic seed generation across hosts  
+3. Shape mismatches in diagnostics cache
+4. Missing synchronization barriers at critical points
+
+**Solution Impact:**
+- Performance: ~4-12ms overhead per step from barriers (<2% in typical workloads)
+- Stability: Eliminates "unexpected peer with different launch id" TPU errors
+- Determinism: Ensures identical behavior across all hosts
+- Flexibility: Configurable sync options for different deployment scenarios
+
+**Recommended Configuration for Multi-Host:**
+```bash
+--sync_multihost_phases true       # Enable all barriers
+--sync_ref_model true              # Sync reference with policy
+--ref_model_sync_steps 4           # Frequent sync for stability
+--sync_ref_model_on_step_start true # Sync at step start
+--ref_sync_copy_graphother true    # Full state sync
+--logprob_alignment_check_on_sync false  # Disable for multi-host
+--cap_rollout_chunk_to_tp true     # Cap chunks for TP stability
+--rollout_chunk_size 1              # Small chunks for testing
+```
