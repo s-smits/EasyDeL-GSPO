@@ -11,6 +11,7 @@ from easydel.utils.helpers import get_logger
 
 from ..trainer_protocol import TrainerConfigureFunctionOutput
 from ._gspo_fn import gspo_step
+from ._jit_utils import compile_step_pair
 from .gspo_config import GSPOConfig
 from .grpo_trainer import GRPOTrainer, RewardFunc
 
@@ -74,7 +75,6 @@ class GSPOTrainer(GRPOTrainer):
         parent_result = super().configure_functions()
         
         # Now override just the training and evaluation functions to use gspo_step instead of grpo_step
-        from easydel.utils.compiling_utils import ejit
         from jax.sharding import NamedSharding, PartitionSpec
         
         mesh = self.model.mesh
@@ -97,21 +97,6 @@ class GSPOTrainer(GRPOTrainer):
             True,  # is_train
         )
 
-        # Compute static arg indices robustly, capped by function arity
-        import inspect as _inspect
-        _sig = _inspect.signature(gspo_step)
-        _max_pos_index = len(_sig.parameters) - 1  # zero-based last positional index
-        _end = min(2 + len(self._train_shared_fn_static_args), _max_pos_index + 1)
-        static_argnames = tuple(range(2, _end))
-
-        sharded_training_step_function = ejit(
-            gspo_step,
-            in_shardings=(self.state_shardings, None),
-            out_shardings=(self.state_shardings, empty_sharding),
-            donate_argnums=(0,),
-            static_argnums=static_argnames,
-        )
-
         # GSPO-specific evaluation step static arguments
         self._eval_shared_fn_static_args = (
             self.num_generations,
@@ -128,15 +113,14 @@ class GSPOTrainer(GRPOTrainer):
             False,  # is_train
         )
 
-        sharded_evaluation_step_function = ejit(
+        # Recompile evaluation step with correct eval static args (train/eval may share shape but differ flag)
+        sharded_training_step_function, sharded_evaluation_step_function = compile_step_pair(
             gspo_step,
-            in_shardings=(self.state_shardings, None),
-            out_shardings=empty_sharding,
-            static_argnums=static_argnames,
+            self.state_shardings,
+            empty_sharding,
+            self._train_shared_fn_static_args,
+            self._eval_shared_fn_static_args,
         )
-
-        sharded_training_step_function.static_argnums_ = static_argnames
-        sharded_evaluation_step_function.static_argnums_ = static_argnames
 
         # Return the same structure but with GSPO-specific step functions
         return TrainerConfigureFunctionOutput(

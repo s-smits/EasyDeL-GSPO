@@ -80,6 +80,11 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --logprob_analysis_enable false \
+  --sync_ref_model true \
+  --sync_ref_model_on_step_start true \
+  --ref_model_sync_steps 8 \
+  --logprob_alignment_check_on_sync false \
+  --cap_rollout_chunk_to_tp true \
   --verbose true
 
 echo "Training completed!"

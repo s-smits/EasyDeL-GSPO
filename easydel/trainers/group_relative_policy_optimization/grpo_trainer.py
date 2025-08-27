@@ -25,6 +25,7 @@ from easydel.infra.utils import ProcessingClassType
 from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
 from easydel.utils.traversals import deepcopy_model
+from ._jit_utils import compile_step_pair
 
 from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
 from ..trainer.trainer import Trainer
@@ -717,21 +718,7 @@ class GRPOTrainer(Trainer):
             True,  # is_train
         )
 
-        # Derive static arg indices robustly based on grpo_step signature
-        import inspect as _inspect
-        _sig = _inspect.signature(grpo_step)
-        _max_pos_index = len(_sig.parameters) - 1  # zero-based last positional index
-        _end = min(2 + len(self._train_shared_fn_static_args), _max_pos_index + 1)
-        static_argnames = tuple(range(2, _end))
-        
-        sharded_training_step_function = ejit(
-            grpo_step,
-            in_shardings=(self.state_shardings, None),
-            out_shardings=(self.state_shardings, empty_sharding),
-            donate_argnums=(0,),
-            static_argnums=static_argnames,
-        )
-
+        # Eval shared args mirror training except final flag
         self._eval_shared_fn_static_args = (
             self.num_generations,
             self.arguments.beta,
@@ -742,11 +729,13 @@ class GRPOTrainer(Trainer):
             False,  # is_train
         )
 
-        sharded_evaluation_step_function = ejit(
+        # Compile paired step functions via shared helper
+        sharded_training_step_function, sharded_evaluation_step_function = compile_step_pair(
             grpo_step,
-            in_shardings=(self.state_shardings, None),
-            out_shardings=empty_sharding,
-            static_argnums=static_argnames,
+            self.state_shardings,
+            empty_sharding,
+            self._train_shared_fn_static_args,
+            self._eval_shared_fn_static_args,
         )
 
         # Unified per-token log-probs compute (works for both policy and reference states)
@@ -770,9 +759,6 @@ class GRPOTrainer(Trainer):
             ),
             out_shardings=empty_sharding,
         )
-
-        sharded_training_step_function.static_argnums_ = static_argnames
-        sharded_evaluation_step_function.static_argnums_ = static_argnames
 
         self.arguments.ensure_checkpoint_path()
         checkpoint_manager = self.arguments.get_streaming_checkpointer()
@@ -988,10 +974,10 @@ class GRPOTrainer(Trainer):
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
-                    # Use a simple per-chunk seed; avoids JIT recompiles and ensures diversity across chunks
-                    # Ensure seed is always positive and within 32-bit range
-                    per_chunk_seed = int((cur_step_int * 131071 + 4099 * abs(jax.process_index()) + chunk_idx) % (2**31 - 1))
-                    per_chunk_seed = max(1, per_chunk_seed)
+                                    # Deterministic seed across all hosts (no process_index dependency)
+                # Use step and chunk index only for reproducibility
+                per_chunk_seed = int((cur_step_int * 131071 + chunk_idx * 65537 + 12345) % (2**31 - 1))
+                per_chunk_seed = max(1, per_chunk_seed)
                     seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
                     )
@@ -1033,6 +1019,8 @@ class GRPOTrainer(Trainer):
             # before proceeding to downstream aggregation and optimization.
             try:
                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                    # Block until all arrays are ready to ensure identical state
+                    jax.block_until_ready((sequences_chunks, ref_logps_chunks))
                     jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
             except Exception:
                 # Best-effort; do not crash if barrier is unavailable
@@ -2087,14 +2075,8 @@ class GRPOTrainer(Trainer):
                 # Refresh reference first
                 self._sync_reference_state(state)
 
-                # Optional immediate alignment check on a fixed small sample
-                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)):
-                    # On multi-host, wrap with barriers to avoid mismatched launches
-                    try:
-                        if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                            jax.experimental.multihost_utils.sync_global_devices("before_alignment_check")
-                    except Exception:
-                        ...
+                # Optional immediate alignment check - only on single host to avoid device divergence
+                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)) and jax.process_count() == 1:
                     diag = getattr(self, "_last_logprob_diag", None)
                     if isinstance(diag, dict):
                         try:
@@ -2125,12 +2107,6 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             # Never crash on diagnostics
                             ...
-                        finally:
-                            try:
-                                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                                    jax.experimental.multihost_utils.sync_global_devices("after_alignment_check")
-                            except Exception:
-                                ...
         except Exception:
             # Best-effort: never block training on ref sync
             ...

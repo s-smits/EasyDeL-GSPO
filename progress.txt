@@ -1,0 +1,35 @@
+**Streamlining Review**
+- Consolidated ejit step compilation into a shared helper.
+- Updated `GRPOTrainer` and `GSPOTrainer` to use `compile_step_pair`.
+- Kept behavior unchanged; reduced duplication and drift risk.
+- Configs (`grpo_config.py`, `gspo_config.py`) look correct; left as-is.
+- `SPOTrainer` builds on GSPO; no functional changes needed.
+- Opportunity: factor small helpers for repeated DP/TP size extraction and rollout accounting.
+- Opportunity: centralize termination/EOS utilities if used elsewhere to trim lines.
+**Branch Audit: math-only-improved (HEAD, -2, -4, -6, -8)**
+- Core arrays: `completion_mask` (2D), `ref_per_token_logps` (2D over prompt+completion), `advantages` (1D, flattened B×K) built in trainer; GSPO/GRPO steps consume them consistently.
+- Masking: `completion_mask` from EOS-first index; `full_mask = prompt_mask.repeat(K,0) ⊕ completion_mask` for ref logps; chunked generation reordered to prompt-major before use.
+- Shapes/sharding: 2D for ids/masks/logps, 1D for `advantages`; `get_batch_shardings` maps 1D to batch-only, 2D to batch×seq; identical across commits.
+- GSPO step: `log_ratio = per_token_logps - ref_per_token_logps`; sequence-level ratio via masked mean; PPO-style clipping; per-token KL for regularization.
+- GRPO step: per-token loss with broadcasted `advantages[:,None]`; per-token KL; final masked mean by completion length.
+- Absent across snapshots: runtime `epsilon_scale`, `beta_scale`, `selection_weights` in step I/O; GFPO weights only apply in GFPO variants, not GSPO/GRPO base.
+
+**Best Combination (stability + simplicity)**
+- Keep batch payload minimal: `completion_mask`, `ref_per_token_logps`, `advantages` only; pass GFPO `selection_weights` optionally when configured.
+- Maintain chunking + reorder: keep prompt-major reorder across generation chunks; `cap_rollout_chunk_to_tp=True` for TP>1 to avoid launch mismatches.
+- Barriers: keep only around the pjit train call (`before_train_step`/`after_train_step`); drop extra barriers in hooks unless debugging multi-host issues.
+- Alignment check: default off for multi-host (`logprob_alignment_check_on_sync=False`); run on demand to avoid pre-step device program divergence.
+- Compile plumbing: use shared `compile_step_pair` helper; keep `get_batch_shardings` mapping as-is; avoid adding static args beyond config.
+- Logging: reduce heavy per-step debug prints; keep termination/eos stats; guard global allgathers behind flags.
+
+**Why**
+- Matches array structures proven consistent across -2/-4/-6/-8, minimizing JIT churn and launch-group surprises.
+- Keeps GSPO’s variance-stable sequence ratios and GRPO’s KL regularization; avoids unused dynamic scales in base trainers.
+- Limits multi-host divergence vectors to the pjit step, improving TPU stability with negligible perf impact.
+
+**Stability + Perf combo (2025-08-27)**
+- Enabled ref sync at step start and copying `graphother`; kept EMA option.
+- Disabled pre-step logprob alignment check on multi-host to avoid extra device programs.
+- Kept rollout chunk capping to TP for TP>1; generation still parallel, overhead minimal.
+- Added multihost barriers only where critical (around pjit step and ref-sync path).
+- Expected overhead: ~4–12 ms per step from barriers (<2% typically); alignment check off by default on multi-host, zero amortized cost.

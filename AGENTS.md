@@ -1,1 +1,1 @@
-Make sure to append the summary you provide at the end to a progress.txt file in the same indentation.
+Make sure to append - don't overwrite - the summary you provide at the end to a progress.txt file in the main folder.
