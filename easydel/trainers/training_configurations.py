@@ -714,10 +714,6 @@ class TrainingArguments:
             else:
                 return tp.cast(EasyPathLike, EasyPath("/dev/null"))
         return tp.cast(EasyPathLike, EasyPath(self.save_directory) / (self.model_name or "model"))
-                return ePath(self.save_directory) / self.model_name
-            else:
-                return ePath("/dev/null")
-        return ePath(self.save_directory) / self.model_name
 
     def ensure_checkpoint_path(self):
         """
@@ -1089,7 +1085,6 @@ class TrainingArguments:
         ePath(json_file_path).write_text(self.to_json_string())
 
     def _get_save_directory(self, create: bool = True) -> EasyPathLike | None:
-    def _get_save_directory(self, create: bool = True) -> ePathLike:
         if self.process_zero_is_admin and not self.is_process_zero:
             return None
         if create:
@@ -1101,7 +1096,6 @@ class TrainingArguments:
         savedir = self._get_save_directory(create=create)
         if savedir is None:
             return tp.cast(EasyPathLike, EasyPath("/dev/null"))
-            return ePath("/dev/null")
         save_directory = savedir / directory_name
         if create:
             save_directory.mkdir(exist_ok=True, parents=True)
