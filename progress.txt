@@ -255,3 +255,50 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
 - In run script, barriers mode now sets: --logprob_analysis_enable true, --logprob_alignment_check_on_sync true.
 - Ref mode stays with diagnostics disabled to save memory.
 [] Streamlined barriers SYNC_FLAGS: removed redundant ref-sync flags (steps/on_start/copy_graphother) when sync_ref_model=false.
+[] Proposed streamlining (no code changes): remove duplicate shebang mid-file; inline LOG_GLOBAL into CLI; combine uv pip installs into one command; optional: drop nonessential echo lines.
+
+### CRITICAL ISSUE ANALYSIS (20-50 commits back investigation)
+
+**Problem:** Training fails even with barriers disabled; investigating commits where multi-host barriers were first introduced.
+
+**Methodology:** 
+- Analyzed git history around commits 8eb9e60f, 7070a074, 40bf5de9 where barriers were added
+- Compared working baseline (commit 39a09813 "Elegant randomness solution") with current HEAD
+- Focused on non-barrier changes that could cause failures
+
+**ROOT CAUSE IDENTIFIED:**
+
+1. **Missing `sys` import in training script (CRITICAL BUG)**:
+   - File: `easydel/scripts/finetune/gsm8k_math_gspo.py`
+   - Lines 95, 97-98: Code uses `sys.stdout`, `sys.stderr` but `sys` was never imported
+   - **Result:** Immediate `NameError: name 'sys' is not defined` crash
+   - **Fix:** Added `import sys` to imports
+   - **Status:** FIXED
+
+2. **New strict device/mesh assertions in GRPOConfig (SECONDARY CAUSE)**:
+   - File: `easydel/trainers/group_relative_policy_optimization/grpo_config.py`
+   - Lines 332-364: Added aggressive fail-fast assertions in `__post_init__`
+   - **Problematic assertions:**
+     ```python
+     assert dp * tp == num_devices  # Line 341
+     assert dp % pc == 0  # Line 350  
+     assert int(self.total_batch_size) % max(1, dp_per_host) == 0  # Line 355
+     ```
+   - **Current config:** `--force_tensor_parallel 4 --force_data_parallel 4` expects exactly 16 devices
+   - **Result:** If hardware doesn't match exactly (device count, process distribution, batch divisibility), training crashes immediately
+   - **Status:** Identified but not yet fixed
+
+3. **JAX distributed initialization changes**:
+   - File: `easydel/__init__.py`
+   - Changed from always calling `jax.distributed.initialize()` to only when environment signals present
+   - May affect multi-host setups differently than before
+   - **Status:** Identified, likely secondary
+
+**IMMEDIATE FIXES APPLIED:**
+- Fixed missing `sys` import in training script
+- This resolves the immediate crash that occurs before any barrier logic is even reached
+
+**NEXT STEPS:**
+- Test with sys import fix to see if this was the primary blocker
+- Consider relaxing the device/mesh assertions or making them warnings instead of hard failures
+- Validate hardware configuration matches the strict new requirements
