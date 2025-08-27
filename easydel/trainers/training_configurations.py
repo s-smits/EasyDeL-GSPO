@@ -710,10 +710,10 @@ class TrainingArguments:
         """
         if self.process_zero_is_admin:
             if self.is_process_zero:
-                return ePath(self.save_directory) / (self.model_name or "model")
+                return tp.cast(ePathLike, ePath(self.save_directory) / (self.model_name or "model"))
             else:
-                return ePath("/dev/null")
-        return ePath(self.save_directory) / (self.model_name or "model")
+                return tp.cast(ePathLike, ePath("/dev/null"))
+        return tp.cast(ePathLike, ePath(self.save_directory) / (self.model_name or "model"))
 
     def ensure_checkpoint_path(self):
         """
@@ -1095,7 +1095,7 @@ class TrainingArguments:
         directory_name = f"run-{step}"
         savedir = self._get_save_directory(create=create)
         if savedir is None:
-            return ePath("/dev/null")
+            return tp.cast(ePathLike, ePath("/dev/null"))
         save_directory = savedir / directory_name
         if create:
             save_directory.mkdir(exist_ok=True, parents=True)
