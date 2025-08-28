@@ -133,6 +133,26 @@ class GRPOTrainer(Trainer):
             except Exception as e:
                 print(f"DEBUG: Failed to log mesh configuration: {e}")
                 logger.warning(f"Failed to log mesh configuration: {e}")
+        # Print core arguments for quick diagnosis
+        try:
+            if jax.process_index() == 0:
+                print(
+                    "DEBUG: GRPO __init__ args:",
+                    {
+                        "total_batch_size": int(arguments.total_batch_size),
+                        "num_return_sequences": int(arguments.num_return_sequences),
+                        "rollout_chunk_size": int(getattr(arguments, "rollout_chunk_size", -1) or -1),
+                        "cap_rollout_chunk_to_tp": bool(getattr(arguments, "cap_rollout_chunk_to_tp", True)),
+                        "max_prompt_length": int(arguments.max_prompt_length),
+                        "max_completion_length": int(arguments.max_completion_length),
+                        "sync_multihost_phases": bool(getattr(arguments, "sync_multihost_phases", True)),
+                        "log_global": bool(getattr(arguments, "log_global", False)),
+                        "force_tp": int(getattr(arguments, "force_tensor_parallel", 0) or 0),
+                        "force_dp": int(getattr(arguments, "force_data_parallel", 0) or 0),
+                    },
+                )
+        except Exception:
+            ...
         
         self.arguments = arguments
         self.truncation_mode = arguments.truncation_mode
@@ -755,6 +775,11 @@ class GRPOTrainer(Trainer):
                     generation_config=generation_config,
                     prng_key=prng_key,
                 ).sequences
+                try:
+                    if jax.process_index() == 0:
+                        print("DEBUG: generate out:", {"sequences": getattr(sequences, "shape", None)})
+                except Exception:
+                    ...
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)

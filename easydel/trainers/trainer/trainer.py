@@ -662,6 +662,13 @@ class Trainer(BaseTrainer):
                 except Exception:
                     # Best-effort; do not crash if barrier is unavailable
                     pass
+            else:
+                try:
+                    _pi = jax.process_index()
+                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                    print(f"DEBUG: [Trainer] p{_pi} step={_st} SYNC OFF: skipping before_train_step barrier")
+                except Exception:
+                    ...
 
             state, metrics = jax.block_until_ready(
                 self.sharded_training_step_function(
@@ -686,6 +693,13 @@ class Trainer(BaseTrainer):
                 except Exception:
                     # Best-effort; do not crash if barrier is unavailable
                     pass
+            else:
+                try:
+                    _pi = jax.process_index()
+                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+                    print(f"DEBUG: [Trainer] p{_pi} step={_st} SYNC OFF: skipping after_train_step barrier")
+                except Exception:
+                    ...
 
             if len(informations) != 0:
                 if metrics.other_metrics is not None:
