@@ -65,12 +65,12 @@ else:
     Array, Tensor = [tp.Any] * 2
 
 
-MetricsType = dict[str, tp.Union[float, list] | tp.Union[tuple, np.ndarray] | tp.Union[Array, Tensor]]
+MetricsType = dict[str, tp.Union[float, list, tuple, np.ndarray, Array, Tensor]]
 logger = get_logger(__name__)
 
 
 def get_safe_arr(xs):
-    if isinstance(xs, np.tp.Union[generic, jax.Array]):
+    if isinstance(xs, (np.generic, jax.Array)):
         if xs.size == 1:  # Only try .item() on size-1 arrays
             return xs.item()
         return xs
@@ -933,7 +933,7 @@ class TrainingArguments:
 
                         wandb_metrics[key] = (
                             self._create_wandb_histogram(value)
-                            if isinstance(value, tp.Union[float, int] | tp.Union[list, tuple] | np.tp.Union[generic, jax.Array])
+                            if isinstance(value, (float, int, list, tuple, np.generic, jax.Array))
                             else value
                         )
 
@@ -980,7 +980,7 @@ class TrainingArguments:
 
                             if values:
                                 summary_writer.histogram(key, np.array(values), step)
-                    elif isinstance(value, tp.Union[list, np.ndarray] | jnp.ndarray):
+                    elif isinstance(value, (list, np.ndarray, jnp.ndarray)):
                         summary_writer.histogram(key, np.array(value), step)
                 except Exception as e:
                     warnings.warn(f"Failed to log metric {key} to TensorBoard: {e}", stacklevel=1)
@@ -1050,7 +1050,7 @@ class TrainingArguments:
             assert cls is not None, "We couldn't clearify the trainer config class from provided json."
         return cls(**config_dict)
 
-    def save_arguments(self, json_file_path: tp.Union[str, os.PathLike] | ePathLike):
+    def save_arguments(self, json_file_path: tp.Union[str, os.PathLike, ePathLike]):
         """
         Save this instance to a JSON file.
 
