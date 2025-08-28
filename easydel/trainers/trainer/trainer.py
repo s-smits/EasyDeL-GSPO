@@ -27,9 +27,8 @@ from easydel.utils.compiling_utils import ejit
 from easydel.utils.helpers import capture_time, get_logger
 
 from ..base_trainer import BaseTrainer, TrainerConfigureFunctionOutput
-from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics
+from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics, TrainerOutput
 from ._fn import evaluation_step, training_step
-from .modeling_output import TrainerOutput
 
 logger = get_logger(__name__)
 
@@ -374,19 +373,22 @@ class Trainer(BaseTrainer):
                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_start")
             except Exception:
                 pass
-            try:
-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                    jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
-            except Exception:
-                pass
+            # Optional barrier disabled when sync_multihost_phases is False
+            if getattr(self.arguments, "sync_multihost_phases", True):
+                try:
+                    if jax.process_count() > 1:
+                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
+                except Exception:
+                    pass
 
             state = self.on_step_start(state=state, step=current_step)
 
-            try:
-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                    jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
-            except Exception:
-                pass
+            if getattr(self.arguments, "sync_multihost_phases", True):
+                try:
+                    if jax.process_count() > 1:
+                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
+                except Exception:
+                    pass
             try:
                 _pi = jax.process_index()
                 _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
@@ -430,11 +432,12 @@ class Trainer(BaseTrainer):
                     logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_end")
                 except Exception:
                     pass
-                try:
-                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
-                except Exception:
-                    pass
+                if getattr(self.arguments, "sync_multihost_phases", True):
+                    try:
+                        if jax.process_count() > 1:
+                            jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
+                    except Exception:
+                        pass
 
                 state, metrics = self.on_step_end(
                     state=state,
@@ -442,11 +445,12 @@ class Trainer(BaseTrainer):
                     step=current_step,
                 )
 
-                try:
-                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
-                except Exception:
-                    pass
+                if getattr(self.arguments, "sync_multihost_phases", True):
+                    try:
+                        if jax.process_count() > 1:
+                            jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
+                    except Exception:
+                        pass
                 try:
                     _pi = jax.process_index()
                     _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
@@ -651,12 +655,13 @@ class Trainer(BaseTrainer):
                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_train_step")
             except Exception:
                 pass
-            try:
-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                    jax.experimental.multihost_utils.sync_global_devices("before_train_step")
-            except Exception:
-                # Best-effort; do not crash if barrier is unavailable
-                pass
+            if getattr(self.arguments, "sync_multihost_phases", True):
+                try:
+                    if jax.process_count() > 1:
+                        jax.experimental.multihost_utils.sync_global_devices("before_train_step")
+                except Exception:
+                    # Best-effort; do not crash if barrier is unavailable
+                    pass
 
             state, metrics = jax.block_until_ready(
                 self.sharded_training_step_function(
@@ -674,12 +679,13 @@ class Trainer(BaseTrainer):
                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: after_train_step")
             except Exception:
                 pass
-            try:
-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                    jax.experimental.multihost_utils.sync_global_devices("after_train_step")
-            except Exception:
-                # Best-effort; do not crash if barrier is unavailable
-                pass
+            if getattr(self.arguments, "sync_multihost_phases", True):
+                try:
+                    if jax.process_count() > 1:
+                        jax.experimental.multihost_utils.sync_global_devices("after_train_step")
+                except Exception:
+                    # Best-effort; do not crash if barrier is unavailable
+                    pass
 
             if len(informations) != 0:
                 if metrics.other_metrics is not None:
@@ -694,14 +700,16 @@ class Trainer(BaseTrainer):
                         state.opt_state,
                     )
                 )
-            return state, metrics, None
+            # Explicitly type the third return as Exception | None; framework expects Exception
+            return state, metrics, None  # type: ignore[return-value]
         except (
             KeyboardInterrupt,
             EasyDeLTimerError,
             EasyDeLBreakRequest,
             TypeError,
         ) as run_exception:
-            return state, metrics, run_exception
+            # All caught exceptions are subclasses of BaseException; cast to Exception for type checkers
+            return state, metrics, run_exception  # type: ignore[return-value]
 
     def _finalize_training(self, output, run_exception):
         """

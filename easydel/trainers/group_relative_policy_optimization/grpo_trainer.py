@@ -68,8 +68,7 @@ from ._jit_utils import compile_step_pair
 
 from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
 from ..trainer.trainer import Trainer
-from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
-from ..trainer.modeling_output import TrainerOutput
+from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics, TrainerOutput
 from ..training_configurations import MetricsType
 from ._fn import get_per_token_logps, grpo_step
 from .grpo_config import GRPOConfig
@@ -1198,14 +1197,15 @@ class GRPOTrainer(Trainer):
 
             # In multi-host runs, ensure all hosts finish generation and ref-logps
             # before proceeding to downstream aggregation and optimization.
-            try:
-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
-                    # Block until all arrays are ready to ensure identical state
-                    jax.block_until_ready((sequences_chunks, ref_logps_chunks))
-                    jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
-            except Exception:
-                # Best-effort; do not crash if barrier is unavailable
-                pass
+            if getattr(self.arguments, "sync_multihost_phases", True):
+                try:
+                    if jax.process_count() > 1:
+                        # Block until all arrays are ready to ensure identical state
+                        jax.block_until_ready((sequences_chunks, ref_logps_chunks))
+                        jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
+                except Exception:
+                    # Best-effort; do not crash if barrier is unavailable
+                    pass
 
             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
             if len(sequences_chunks) == 1:
@@ -1653,25 +1653,25 @@ class GRPOTrainer(Trainer):
                 # Safe global scalar aggregation (proc-local fallbacks on failure)
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
-                try:
-                    if jax.process_count() > 1:
-                        _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
-                        _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
-                        _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
-                        _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
-                        success_count_comp_global = jnp.sum(_sc)
-                        total_comp_global = jnp.sum(_tc)
-                        pass_prompt_count_global = jnp.sum(_pp)
-                        num_prompts_global = jnp.sum(_np)
-                        success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
-                        pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                    else:
-                        # Global variables already initialized above with local values
-                        pass
-                except Exception as e:
-                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                        logger.debug(f"global aggregation: failed {e}")
-                    # Global variables already initialized above with fallback values
+                if getattr(self.arguments, "sync_multihost_phases", True):
+                    try:
+                        if jax.process_count() > 1:
+                            _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
+                            _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
+                            _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
+                            _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
+                            success_count_comp_global = jnp.sum(_sc)
+                            total_comp_global = jnp.sum(_tc)
+                            pass_prompt_count_global = jnp.sum(_pp)
+                            num_prompts_global = jnp.sum(_np)
+                            success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
+                            pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                        else:
+                            pass
+                    except Exception as e:
+                        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                            logger.debug(f"global aggregation: failed {e}")
+                        # Keep local fallbacks
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: end")
             except Exception as e:
@@ -2173,10 +2173,14 @@ class GRPOTrainer(Trainer):
                 seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
                 seq_mean = seq_sum / seq_valid
 
-                try:
-                    seq_sum_all = jax.experimental.multihost_utils.process_allgather(seq_sum.astype(jnp.float32))
-                    seq_mean_all = jax.experimental.multihost_utils.process_allgather(seq_mean.astype(jnp.float32))
-                except Exception:
+                if getattr(self.arguments, "sync_multihost_phases", True):
+                    try:
+                        seq_sum_all = jax.experimental.multihost_utils.process_allgather(seq_sum.astype(jnp.float32))
+                        seq_mean_all = jax.experimental.multihost_utils.process_allgather(seq_mean.astype(jnp.float32))
+                    except Exception:
+                        seq_sum_all = seq_sum
+                        seq_mean_all = seq_mean
+                else:
                     seq_sum_all = seq_sum
                     seq_mean_all = seq_mean
 
@@ -2210,9 +2214,12 @@ class GRPOTrainer(Trainer):
                         sample_local = vals[idx].astype(_np.float32, copy=False)
 
                     sample_local_j = jax.device_put(sample_local)
-                    try:
-                        sample_all = jax.experimental.multihost_utils.process_allgather(sample_local_j)
-                    except Exception:
+                    if getattr(self.arguments, "sync_multihost_phases", True):
+                        try:
+                            sample_all = jax.experimental.multihost_utils.process_allgather(sample_local_j)
+                        except Exception:
+                            sample_all = sample_local_j
+                    else:
                         sample_all = sample_local_j
 
                     if jax.process_index() == 0:

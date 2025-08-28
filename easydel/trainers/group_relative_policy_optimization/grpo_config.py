@@ -1,6 +1,7 @@
 # grpo_config.py
 
 import typing as tp
+import os
 from dataclasses import field
 
 from eformer.pytree import auto_pytree
@@ -362,5 +363,27 @@ class GRPOConfig(TrainingArguments):
                 print(f"DEBUG: JAX environment checks in GRPOConfig failed/skipped: {e}")
             except Exception:
                 pass
+
+        # Environment override for synchronization mode (barriers/allgathers)
+        try:
+            sm = os.getenv("SYNC_MODE") or os.getenv("EASYDEL_SYNC_MODE")
+            if sm is not None:
+                sm_l = sm.strip().lower()
+                disable = sm_l in {"off", "false", "0", "none", "local"}
+                self.sync_multihost_phases = not disable
+                # Also keep global logging off when barriers are disabled
+                if disable:
+                    try:
+                        self.log_global = False  # type: ignore[attr-defined]
+                    except Exception:
+                        ...
+                try:
+                    import jax as _jax
+                    if getattr(_jax, "process_index", lambda: 0)() == 0:
+                        print(f"Sync mode: {sm} -> sync_multihost_phases={self.sync_multihost_phases}")
+                except Exception:
+                    print(f"Sync mode: {sm} -> sync_multihost_phases={self.sync_multihost_phases}")
+        except Exception:
+            ...
 
     __hash__ = hash_fn
