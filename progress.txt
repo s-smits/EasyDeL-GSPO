@@ -310,3 +310,4 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
 - Implemented GRPO collate functions for Grain and TFDS; added create_collect_function dispatch in grpo_trainer; lint clean; committed and pushed.
 - Reverted Grain dataloader and step logic in base_trainer to upstream; fixed typing and None guards; committed and pushed.
 - Fixed decode-time causal mask slicing: added shape guard and clamp in TransformerCacheView to avoid out-of-range when kv_len < max; committed and pushed.
+- Normalize causal mask: both cond branches now output [B,H,q,max_kv]; guard q/kv via trim+pad; fixed batch_dims; committed and pushed.
