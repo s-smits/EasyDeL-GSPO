@@ -749,59 +749,7 @@ class TrainingArguments:
             AsyncCheckpointManager: The checkpoint manager.
         """
         from eformer.serialization import AsyncCheckpointManager
-        try:
-            from jax.distributed import is_initialized as _dist_initialized
-        except Exception:
-            def _dist_initialized() -> bool:  # type: ignore
-                return False
-
-        try:
-            proc_cnt = jax.process_count()
-        except Exception:
-            proc_cnt = 1
-
-        # If running single-process or distributed is initialized, use async manager.
-        if proc_cnt <= 1 or _dist_initialized():
-            return AsyncCheckpointManager(max_workers=1)
-
-        # Fallback: avoid triggering AsyncCheckpointManager assertion before dist init.
-        try:
-            return AsyncCheckpointManager(max_workers=1)
-        except AssertionError:
-            from eformer.serialization.base_manager import CheckpointManager as _BaseCM
-
-            class _SimpleCheckpointManager:
-                def __init__(self):
-                    self.max_workers = 1
-
-                # Match AsyncCheckpointManager save signature as closely as possible
-                def save(self, tree, path, mesh, gather_fns=None, float_dtype=None, metadata=None, callback=None, prefix=None, do_all_gather=False, cpu_offload=False):  # noqa: E501
-                    return _BaseCM.save_checkpoint(
-                        tree=tree,
-                        path=path,
-                        mesh=mesh,
-                        gather_fns=gather_fns,
-                        float_dtype=float_dtype,
-                        metadata=metadata,
-                        verbose=False,
-                        mismatch_allowed=True,
-                    )
-
-                def load(self, path, mesh, shardings=None, mismatch_allowed=True, callback=None, partition_rules=None, dtype=None, validate=None, prefix=None, use_async=True):  # noqa: E501
-                    tree, meta = _BaseCM.load_checkpoint(
-                        path=path,
-                        shard_fns=shardings,
-                        verbose=False,
-                        mismatch_allowed=mismatch_allowed,
-                        callback=callback,
-                        dtype=dtype,
-                    )
-                    return tree, meta
-
-                async def wait_for_pending_saves(self):
-                    return None
-
-            return _SimpleCheckpointManager()
+        return AsyncCheckpointManager(max_workers=1)
 
     @functools.cached_property
     def _tensorboard(self):
