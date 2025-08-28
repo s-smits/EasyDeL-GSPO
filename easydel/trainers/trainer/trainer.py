@@ -653,6 +653,16 @@ class Trainer(BaseTrainer):
                 _pi = jax.process_index()
                 _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_train_step")
+                if _pi == 0:
+                    try:
+                        # Peek current batch shapes if available in closure
+                        if 'batch' in locals():
+                            print(
+                                "DEBUG: [Trainer] before_train_step batch:",
+                                {k: getattr(v, 'shape', None) for k, v in (batch.items() if isinstance(batch, dict) else [])}
+                            )
+                    except Exception:
+                        ...
             except Exception:
                 pass
             if getattr(self.arguments, "sync_multihost_phases", True):
@@ -678,6 +688,18 @@ class Trainer(BaseTrainer):
                     *self._train_shared_fn_static_args,
                 )
             )
+            try:
+                _pi = jax.process_index()
+                if _pi == 0:
+                    print(
+                        "DEBUG: [Trainer] train_step done:",
+                        {
+                            "loss": float(metrics.loss) if hasattr(metrics, 'loss') else None,
+                            "other_keys": list(metrics.other_metrics.keys()) if getattr(metrics, 'other_metrics', None) else [],
+                        },
+                    )
+            except Exception:
+                ...
 
             # Optional cross-host barrier to keep all controllers in lockstep
             try:

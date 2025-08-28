@@ -844,16 +844,21 @@ class GRPOTrainer(Trainer):
                 None,
                 None,
             ),
-            out_shardings=empty_sharding,
+            out_shardings=None,
         )
         try:
-            _pi = jax.process_index()
-            logger.debug(
-                f"[GRPOTrainer:compile] p{_pi} compute_logps in_shardings=(graphstate, graphother, ids, mask) -> ("
-                f"{self.model_state.shardings.graphstate}, {self.model_state.shardings.graphother}, None, None)"
-            )
+            if jax.process_index() == 0:
+                print(
+                    "DEBUG: compute_logps shardings:",
+                    {
+                        "graphstate": str(self.model_state.shardings.graphstate),
+                        "graphother": str(self.model_state.shardings.graphother),
+                        "ids": None,
+                        "mask": None,
+                    },
+                )
         except Exception:
-            pass
+            ...
 
         self.arguments.ensure_checkpoint_path()
         checkpoint_manager = self.arguments.get_streaming_checkpointer()
@@ -1191,12 +1196,28 @@ class GRPOTrainer(Trainer):
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
+                    try:
+                        if jax.process_index() == 0:
+                            print(
+                                "DEBUG: compute_logps chunk in:",
+                                {
+                                    "ids": getattr(prompt_completion_ids_chunk, "shape", None),
+                                    "mask": getattr(full_mask_chunk, "shape", None),
+                                },
+                            )
+                    except Exception:
+                        ...
                     ref_logps_chunk = self.compute_logps(
                         self.ref_state.graphstate,
                         self.ref_state.graphother,
                         prompt_completion_ids_chunk,
                         full_mask_chunk,
                     )
+                    try:
+                        if jax.process_index() == 0:
+                            print("DEBUG: compute_logps chunk out:", {"ref_logps": getattr(ref_logps_chunk, "shape", None)})
+                    except Exception:
+                        ...
                 token_logps_time += float(token_logps_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
@@ -1612,6 +1633,20 @@ class GRPOTrainer(Trainer):
             
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
+                try:
+                    if jax.process_index() == 0:
+                        print(
+                            "DEBUG: rewards stats:",
+                            {
+                                "shape": getattr(rewards, "shape", None),
+                                "mean": float(jnp.mean(rewards)),
+                                "std": float(jnp.std(rewards)),
+                                "min": float(jnp.min(rewards)),
+                                "max": float(jnp.max(rewards)),
+                            },
+                        )
+                except Exception:
+                    ...
                 # Config-driven advantage normalization per prompt group
                 grouped_rewards = rewards.reshape(-1, self.num_generations)
                 group_means = jnp.mean(grouped_rewards, axis=-1, keepdims=True)
@@ -1640,6 +1675,19 @@ class GRPOTrainer(Trainer):
                     zero_mask = (group_stds < eps).astype(normalized.dtype)
                     normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
                     advantages = normalized.reshape(-1)
+                try:
+                    if jax.process_index() == 0:
+                        print(
+                            "DEBUG: advantages stats:",
+                            {
+                                "shape": getattr(advantages, "shape", None),
+                                "mean": float(jnp.mean(advantages)),
+                                "median_abs": float(jnp.median(jnp.abs(advantages))),
+                                "p95_abs": float(jnp.percentile(jnp.abs(advantages), 95)),
+                            },
+                        )
+                except Exception:
+                    ...
             grouped_comp_time = grouped_comp_time_fn()
             # Compute mean reward per completion locally (no cross-host ops)
             # Optionally compute safe global scalars via allgather of scalars only
