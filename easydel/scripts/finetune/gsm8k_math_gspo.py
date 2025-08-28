@@ -81,6 +81,8 @@ def main():
         default=AutoTokenizer.from_pretrained(runtime.repo_id),
     )
     tokenizer.padding_side = "left"
+    # Preserve assistant-start tail of chat prompts by truncating from the left.
+    # This avoids dropping the <assistant> start tokens added by chat templates.
     try:
         tokenizer.truncation_side = "left"
     except Exception:
@@ -128,7 +130,7 @@ def main():
             attn_dtype=runtime.attn_dtype,
             attn_softmax_dtype=runtime.attn_softmax_dtype,
             kv_cache_quantization_method=ed.EasyDeLQuantizationMethods.NONE,
-            attn_mechanism=ed.AttentionMechanisms.VANILLA,
+            attn_mechanism=ed.AttentionMechanisms.AUTO,
             gradient_checkpointing=ed.EasyDeLGradientCheckPointers.NOTHING_SAVEABLE,
             use_sliding_window=False,
             sliding_window=None,
@@ -279,7 +281,6 @@ def main():
                 max_length=gspo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
-                return_attention_mask=True,
             )
             # Normalize ground-truth numbers for robustness (strip $, %, commas)
             def _norm(x: str) -> str:
@@ -311,7 +312,6 @@ def main():
                 max_length=gspo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
-                return_attention_mask=True,
             )
             # Keep full solution text for Math-Verify
             sol = batch["solution"]
