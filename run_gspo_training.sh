@@ -38,8 +38,11 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
+# Prefer explicitly the known venv at /home/air/.venv if present
 PY_BIN="${PY_BIN:-${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}python3}" # prefer venv python, else python3
-if [ -x "$VIRTUAL_ENV/bin/python" ]; then
+if [ -x "/home/air/.venv/bin/python" ]; then
+  PY_BIN="/home/air/.venv/bin/python"
+elif [ -x "$VIRTUAL_ENV/bin/python" ]; then
   PY_BIN="$VIRTUAL_ENV/bin/python"
 elif command -v python3.11 >/dev/null 2>&1; then
   PY_BIN="$(command -v python3.11)"
