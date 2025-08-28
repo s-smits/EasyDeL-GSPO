@@ -15,10 +15,14 @@
 # Set environment variables for TPU
 export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
+export PYTHONUNBUFFERED=1
+export GRAIN_DISABLE_FORK=1
+export GRAIN_USE_SUBPROCESS=0
+export GRAIN_WORKER_COUNT=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin working || true
+git pull origin working
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -33,7 +37,7 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-python easydel/scripts/finetune/gsm8k_math_gspo.py \
+python -u easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
@@ -46,7 +50,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 2 \
+  --force_data_parallel 4 \
   --log_logprobs_metrics false \
   --log_global true \
   --log_steps 1 \
