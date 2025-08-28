@@ -58,7 +58,9 @@ Note:
     efficient development and deployment of EasyDeL models.
 """
 
+from eformer.aparser import DataClassArgumentParser
 from eformer.paths import ePath, ePathLike
+from eformer.paths import ePath as EasyPath, ePathLike as EasyPathLike
 
 from . import analyze_memory, compiling_utils, traversals
 from .compiling_utils import ejit, load_cached_functions, load_compiled_fn, save_compiled_fn
@@ -74,10 +76,13 @@ from .helpers import Timer, Timers, capture_time, check_bool_flag, get_cache_dir
 from .lazy_import import LazyModule, is_package_available
 
 __all__ = (
+    "DataClassArgumentParser",
     "DataManager",
     "DatasetLoadError",
     "DatasetMixture",
     "DatasetType",
+    "EasyPath",
+    "EasyPathLike",
     "LazyModule",
     "TextDatasetInform",
     "Timer",
