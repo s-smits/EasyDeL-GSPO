@@ -1,0 +1,81 @@
+commit f527eb1e8790fbc448c3ccc3e7bf6f2542fc3ce3
+Author: air <air@localhost>
+Date:   Thu Aug 28 00:54:08 2025 +0000
+
+    chore(debug): add extensive DEBUG prints in GRPO init/configure/generate and Trainer barriers; respect SYNC_MODE; no functional change
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 8379d0ba..4e783f6f 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -133,6 +133,26 @@ class GRPOTrainer(Trainer):
+             except Exception as e:
+                 print(f"DEBUG: Failed to log mesh configuration: {e}")
+                 logger.warning(f"Failed to log mesh configuration: {e}")
++        # Print core arguments for quick diagnosis
++        try:
++            if jax.process_index() == 0:
++                print(
++                    "DEBUG: GRPO __init__ args:",
++                    {
++                        "total_batch_size": int(arguments.total_batch_size),
++                        "num_return_sequences": int(arguments.num_return_sequences),
++                        "rollout_chunk_size": int(getattr(arguments, "rollout_chunk_size", -1) or -1),
++                        "cap_rollout_chunk_to_tp": bool(getattr(arguments, "cap_rollout_chunk_to_tp", True)),
++                        "max_prompt_length": int(arguments.max_prompt_length),
++                        "max_completion_length": int(arguments.max_completion_length),
++                        "sync_multihost_phases": bool(getattr(arguments, "sync_multihost_phases", True)),
++                        "log_global": bool(getattr(arguments, "log_global", False)),
++                        "force_tp": int(getattr(arguments, "force_tensor_parallel", 0) or 0),
++                        "force_dp": int(getattr(arguments, "force_data_parallel", 0) or 0),
++                    },
++                )
++        except Exception:
++            ...
+         
+         self.arguments = arguments
+         self.truncation_mode = arguments.truncation_mode
+@@ -755,6 +775,11 @@ class GRPOTrainer(Trainer):
+                     generation_config=generation_config,
+                     prng_key=prng_key,
+                 ).sequences
++                try:
++                    if jax.process_index() == 0:
++                        print("DEBUG: generate out:", {"sequences": getattr(sequences, "shape", None)})
++                except Exception:
++                    ...
+                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
+                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
+                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index fccc33f9..9e41ab79 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -662,6 +662,13 @@ class Trainer(BaseTrainer):
+                 except Exception:
+                     # Best-effort; do not crash if barrier is unavailable
+                     pass
++            else:
++                try:
++                    _pi = jax.process_index()
++                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
++                    print(f"DEBUG: [Trainer] p{_pi} step={_st} SYNC OFF: skipping before_train_step barrier")
++                except Exception:
++                    ...
+ 
+             state, metrics = jax.block_until_ready(
+                 self.sharded_training_step_function(
+@@ -686,6 +693,13 @@ class Trainer(BaseTrainer):
+                 except Exception:
+                     # Best-effort; do not crash if barrier is unavailable
+                     pass
++            else:
++                try:
++                    _pi = jax.process_index()
++                    _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
++                    print(f"DEBUG: [Trainer] p{_pi} step={_st} SYNC OFF: skipping after_train_step barrier")
++                except Exception:
++                    ...
+ 
+             if len(informations) != 0:
+                 if metrics.other_metrics is not None:

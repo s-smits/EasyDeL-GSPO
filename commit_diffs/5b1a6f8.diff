@@ -1,0 +1,50 @@
+commit 5b1a6f811588930ab315d7c0c2e9810485845c31
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 14:57:18 2025 +0000
+
+    try to fix init argument config stuff
+
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index 63f06848..2b4c9c08 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -358,7 +358,7 @@ class BaseTrainer(BaseTrainerProtocol):
+         if not self.arguments.performance_mode:
+             import easydel
+ 
+-            interval = 1.0 if self.arguments.track_memory is True else self.arguments.track_memory
++            interval = float(self.arguments.track_memory)
+             self.memory_monitor = easydel.utils.analyze_memory.SMPMemoryMonitor(interval)
+ 
+     def __repr__(self):
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index a1c3783e..61bdcaf8 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -425,9 +425,11 @@ class TrainingArguments:
+         default=None,
+         metadata={"help": "The dtype to use for the `tx.mu` variable."},
+     )
+-    track_memory: bool | float = field(
+-        default=False,
+-        metadata={"help": "Whether to track memory usage. If a float, it sets the memory tracking interval in seconds."},
++    track_memory: float = field(
++        default=0.0,
++        metadata={
++            "help": "Track memory usage at a fixed interval in seconds (0 to disable). Example: --track_memory 1.0",
++        },
+     )
+     use_data_collactor: bool = field(
+         default=True,
+diff --git a/progress.txt b/progress.txt
+index 257daad1..f8966fae 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -88,3 +88,7 @@ Validated small-scope imports and functions across utils and trainers without tr
+ [air] 2025-08-27T14:49:52Z
+ Addressed basedpyright 'jax is not defined' in helpers.py by defining a stub 'jax' name (no runtime import) and switching to dynamic import when needed; should clear reportUndefinedVariable.
+ 
++[air] 2025-08-27T14:52:59Z
++Committed and pushed: utils/init fixes for circular import, get_logger export, safe JAX init gating, and pyright jax stub.
++Branch: gfspo-wshrink, Commit: 90f4e313
++

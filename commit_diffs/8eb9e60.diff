@@ -1,0 +1,1314 @@
+commit 8eb9e60fd95eb4a70a4c442052246964d1dbeb03
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 11:41:49 2025 +0000
+
+    GRPO/Trainer: synchronize multi-host phases; barrier on step hooks; safer ref-policy sync\n\n- Trainer: add sync_global_devices before/after on_step_start/on_step_end to keep controllers in lockstep.\n- GRPOTrainer.on_step_start: add barriers before ref sync and around alignment check compute to avoid launch-id mismatches.\n- Ref-policy sync: move to step start; support hard/EMA; copy graphother; optional immediate logprob alignment check with tolerance.\n- Mesh: update reference mesh/sharding to match policy.\n- Rollouts: cap rollout_chunk_size to TP to reduce TPU instability under TP>1.\n- Config: add sync_ref_model_on_step_start, ref_model_sync_strategy, ref_sync_copy_graphother, logprob_alignment_check_on_sync, ref_policy_logprob_tolerance; add advantage_norm_mode options.\n- Loss: fix GRPO ratio to use ref_per_token_logps; keep per-token KL.\n- Logprobs: use unified compute_logps for policy and reference.\n
+
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 00000000..6ea98aa9
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1 @@
++Make sure to append the summary you provide at the end to a progress.txt file in the same indentation.
+\ No newline at end of file
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index b7cfb9c0..45d9acb8 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -184,7 +184,7 @@ def main():
+             print(f"DEBUG: GSM8K split strings -> train='{train_split}', test='{test_split}'")
+         ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=train_split)
+         ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=test_split, default=None)
+-
++        
+         def map_ex(x):
+             return {
+                 "prompt": [
+diff --git a/easydel/trainers/group_relative_policy_optimization/__init__.py b/easydel/trainers/group_relative_policy_optimization/__init__.py
+index 3f45f5e8..c70d0298 100644
+--- a/easydel/trainers/group_relative_policy_optimization/__init__.py
++++ b/easydel/trainers/group_relative_policy_optimization/__init__.py
+@@ -22,6 +22,7 @@ from .gspo_trainer import GSPOTrainer
+ from .gfspo_config import GFSPOConfig
+ from .gfspo_trainer import GFSPOTrainer
+ from .gfspo_stable_trainer import GFSPOStableTrainer, GFSPOWShrinkTrainer
++from .spo_trainer import SPOTrainer
+ 
+ __all__ = [
+     "GRPOConfig", 
+@@ -36,4 +37,5 @@ __all__ = [
+     "GFSPOTrainer",
+     "GFSPOWShrinkTrainer",
+     "GFSPOStableTrainer",
++    "SPOTrainer",
+ ]
+diff --git a/easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py b/easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py
+index 9ecc98ec..bbb3569d 100644
+--- a/easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py
++++ b/easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py
+@@ -152,11 +152,10 @@ def dr_grpo_step(
+         per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+ 
+         # Policy gradient loss with DR GRPO advantage computation
+-        # Note: advantages are already computed with DR GRPO corrections in preprocessing
+-        per_token_loss = jnp.exp(per_token_logps - jax.lax.stop_gradient(per_token_logps)) * jnp.expand_dims(
+-            advantages, 1
+-        )
+-        per_token_loss = -(per_token_loss - beta * per_token_kl)
++        # Use reference log-probs to form proper importance weights
++        log_ratio = per_token_logps - ref_per_token_logps
++        ratio = jnp.exp(log_ratio)
++        per_token_loss = -(ratio * jnp.expand_dims(advantages, 1) - beta * per_token_kl)
+         
+         if use_constant_normalization:
+             # DR GRPO: Use constant normalization instead of length-dependent normalization
+@@ -206,4 +205,4 @@ def dr_grpo_step(
+         return state, metrics
+     else:
+         _, metrics = loss_fn(tree=state.graphstate, minibatch=batch)
+-        return metrics  # type: ignore[return-value] 
+\ No newline at end of file
++        return metrics  # type: ignore[return-value] 
+diff --git a/easydel/trainers/group_relative_policy_optimization/_fn.py b/easydel/trainers/group_relative_policy_optimization/_fn.py
+index d01065ba..d3765f45 100644
+--- a/easydel/trainers/group_relative_policy_optimization/_fn.py
++++ b/easydel/trainers/group_relative_policy_optimization/_fn.py
+@@ -169,7 +169,24 @@ def grpo_step(
+         gradient_accumulation_steps=gradient_accumulation_steps,
+         batch_partition_spec=partition_spec,
+     )
+-    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
++    # Apply per-leaf sharding constraints: 2D spec for token-level arrays, 1D for vectors
++    try:
++        # Derive a 1D spec that lumps (dp, fsdp) onto the leading batch axis
++        bdim = partition_spec[0] if isinstance(partition_spec, PartitionSpec) else None
++        spec_1d = PartitionSpec(bdim) if bdim is not None else PartitionSpec()
++    except Exception:
++        spec_1d = PartitionSpec()
++
++    def _constrain_leaf(x):
++        try:
++            if hasattr(x, "ndim") and int(x.ndim) == 1:
++                return with_sharding_constraint(x, spec_1d)
++            else:
++                return with_sharding_constraint(x, partition_spec)
++        except Exception:
++            return with_sharding_constraint(x, partition_spec)
++
++    batch = jax.tree_util.tree_map(_constrain_leaf, batch)
+ 
+     def loss_fn(tree, minibatch):
+         module = flax.nnx.merge(state.graphdef, tree, state.graphother)
+@@ -206,10 +223,11 @@ def grpo_step(
+         ref_per_token_logps = minibatch["ref_per_token_logps"]
+         per_token_kl = jnp.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+ 
+-        per_token_loss = jnp.exp(per_token_logps - jax.lax.stop_gradient(per_token_logps)) * jnp.expand_dims(
+-            advantages, 1
+-        )
+-        per_token_loss = -(per_token_loss - beta * per_token_kl)
++        # Importance ratio: policy vs reference per-token log-probabilities
++        # Use ref_per_token_logps as the frozen "old" policy; do not stop-gradient the numerator
++        # to avoid collapsing the ratio to 1.0.
++        ratio = jnp.exp(per_token_logps - ref_per_token_logps)
++        per_token_loss = -(ratio * jnp.expand_dims(advantages, 1) - beta * per_token_kl)
+         comps = jnp.sum(completion_mask, axis=1)
+         loss = jnp.mean(jnp.sum(per_token_loss * completion_mask, axis=1) / comps)
+         mean_kl = jnp.mean(jnp.sum(per_token_kl * completion_mask, axis=1) / comps)
+diff --git a/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py b/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
+index 0d3e50b5..c4e29e95 100644
+--- a/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
++++ b/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
+@@ -74,7 +74,23 @@ def gspo_step(
+         gradient_accumulation_steps=gradient_accumulation_steps,
+         batch_partition_spec=partition_spec,
+     )
+-    batch = with_sharding_constraint(arr=batch, sharding=partition_spec)
++    # Apply per-leaf sharding constraints to avoid rank/spec mismatches across hosts
++    try:
++        bdim = partition_spec[0] if isinstance(partition_spec, PartitionSpec) else None
++        spec_1d = PartitionSpec(bdim) if bdim is not None else PartitionSpec()
++    except Exception:
++        spec_1d = PartitionSpec()
++
++    def _constrain_leaf(x):
++        try:
++            if hasattr(x, "ndim") and int(x.ndim) == 1:
++                return with_sharding_constraint(x, spec_1d)
++            else:
++                return with_sharding_constraint(x, partition_spec)
++        except Exception:
++            return with_sharding_constraint(x, partition_spec)
++
++    batch = jax.tree_util.tree_map(_constrain_leaf, batch)
+ 
+     def loss_fn(tree, minibatch):
+         module = flax.nnx.merge(state.graphdef, tree, state.graphother)
+diff --git a/easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py b/easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py
+index 7742c9f0..bf5e2d67 100644
+--- a/easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py
+@@ -1,203 +1,12 @@
+-# gfspo_stable_trainer.py
++"""GFSPO stable wrapper (deprecated), redirects to unified SPOTrainer."""
+ 
+ from __future__ import annotations
+ 
+-import typing as tp
++from .spo_trainer import SPOTrainer
+ 
+-import jax
+-import jax.numpy as jnp
+ 
+-from easydel.infra.base_module import EasyDeLBaseModule
+-from easydel.infra.base_state import EasyDeLState
+-from easydel.infra.utils import ProcessingClassType
+-from easydel.utils.helpers import get_logger
+-
+-from .gfspo_trainer import GFSPOTrainer
+-from .gspo_trainer import GSPOTrainer
+-from .gfpo_utils import GFPOFilterMixin
+-
+-logger = get_logger(__name__)
+-
+-
+-class GFSPOStableTrainer(GFSPOTrainer):
+-    """
+-    GFSPO variant that uses weighted, shrinkage-normalized advantages with
+-    sample-size-aware variance flooring and passes `selection_weights` for
+-    masking KL + PG in the step function.
+-
+-    Wraps the existing GFSPO pipeline and only overrides preprocessing.
+-    """
+-
+-    def __init__(
+-        self,
+-        arguments,
+-        model: EasyDeLBaseModule | EasyDeLState | None,
+-        reward_funcs,
+-        train_dataset=None,
+-        eval_dataset=None,
+-        processing_class: ProcessingClassType = None,
+-        reward_processing_classes: ProcessingClassType = None,
+-        data_tokenize_fn: tp.Callable | None = None,
+-    ):
+-        super().__init__(
+-            arguments=arguments,
+-            model=model,
+-            reward_funcs=reward_funcs,
+-            train_dataset=train_dataset,
+-            eval_dataset=eval_dataset,
+-            processing_class=processing_class,
+-            reward_processing_classes=reward_processing_classes,
+-            data_tokenize_fn=data_tokenize_fn,
+-        )
+-        # Initialization log (mirror other trainers)
+-        try:
+-            alpha = getattr(arguments, "gfpo_shrinkage_alpha", 0.5)
+-            c = getattr(arguments, "gfpo_sigma_floor_c", 0.25)
+-            soft = getattr(arguments, "gfpo_soft_mask", False)
+-            temp = getattr(arguments, "gfpo_soft_temperature", 0.5)
+-            iw_norm = getattr(arguments, "importance_weight_normalization", "mean")
+-            clip_log = getattr(arguments, "clip_in_log_space", True)
+-            log_eps = getattr(arguments, "log_clip_epsilon", arguments.epsilon)
+-
+-            print(
+-                "DEBUG: Initializing GFSPO stable trainer - "
+-                f"G={arguments.gfpo_group_size}, "
+-                f"k={arguments.gfpo_retain_count}, "
+-                f"alpha={alpha}, c={c}, soft_mask={soft}, temp={temp}, "
+-                f"iw_norm={iw_norm}, clip_log={clip_log}, log_eps={log_eps}, "
+-                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+-            )
+-            logger.info(
+-                "Initialized GFSPO stable trainer with "
+-                f"G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, "
+-                f"alpha={alpha}, sigma_floor_c={c}, soft_mask={soft}, temp={temp}, "
+-                f"iw_norm={iw_norm}, clip_in_log_space={clip_log}, log_clip_epsilon={log_eps}, "
+-                f"importance_sampling_level={arguments.importance_sampling_level}, "
+-                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+-            )
+-        except Exception as e:
+-            try:
+-                print(f"DEBUG: Failed to log GFSPO stable trainer initialization: {e}")
+-            except Exception:
+-                ...
+-            logger.warning(f"Failed to log GFSPO stable trainer initialization: {e}")
+-
+-    def _preprocess_batch_input(
+-        self,
+-        state: EasyDeLState,
+-        batch: dict[str, jax.Array],
+-        is_train: bool,
+-    ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+-        # Bypass GFSPO's override to preserve raw GRPO/GSPO preprocessing outputs
+-        grpo_batch, metrics = GSPOTrainer._preprocess_batch_input(self, state, batch, is_train)
+-
+-        # Shapes
+-        try:
+-            num_prompts = int(batch["input_ids"].shape[0])
+-        except Exception:
+-            num_prompts = 0
+-        G = int(self.arguments.gfpo_group_size)
+-
+-        # Recover grouped rewards or reconstruct from advantages
+-        eps = jnp.asarray(getattr(self.arguments, "advantage_epsilon", 1e-8), dtype=jnp.float32)
+-        rw = grpo_batch.get("rewards", None)
+-        if rw is not None:
+-            rewards_grouped = rw.reshape(num_prompts, G)
+-        else:
+-            try:
+-                adv = grpo_batch["advantages"].reshape(num_prompts, G)
+-                mu = jnp.mean(adv, axis=1, keepdims=True)
+-                sd = jnp.maximum(jnp.std(adv, axis=1, keepdims=True), eps)
+-                rewards_grouped = adv * sd + mu
+-            except Exception:
+-                rewards_grouped = jnp.zeros((num_prompts, G), dtype=jnp.float32)
+-
+-        # Grouped lengths (for metrics + possible metric-based filtering)
+-        try:
+-            lengths = jnp.sum(grpo_batch["completion_mask"], axis=-1)
+-            lengths_grouped = lengths.reshape(num_prompts, G)
+-        except Exception:
+-            lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
+-
+-        # Build selection weights (mask) on host; allow soft [0,1] but binary is fine
+-        try:
+-            mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)  # (B, G) float
+-        except Exception:
+-            mask = jnp.ones_like(rewards_grouped, dtype=jnp.float32)
+-
+-        # Weighted shrinkage stats
+-        sum_w = jnp.sum(mask, axis=1, keepdims=True)  # (B,1)
+-        sum_w2 = jnp.sum(mask * mask, axis=1, keepdims=True)
+-        n_eff = (sum_w * sum_w) / jnp.maximum(sum_w2, 1e-6)
+-
+-        mu_S = jnp.sum(mask * rewards_grouped, axis=1, keepdims=True) / jnp.maximum(sum_w, 1e-6)
+-        mu_G = jnp.mean(rewards_grouped, axis=1, keepdims=True)
+-
+-        var_S_num = jnp.sum(mask * (rewards_grouped - mu_S) ** 2, axis=1, keepdims=True)
+-        var_S = var_S_num / jnp.maximum(n_eff - 1.0, 1.0)
+-        var_G = jnp.var(rewards_grouped, axis=1, keepdims=True)
+-
+-        alpha = float(getattr(self.arguments, "gfpo_shrinkage_alpha", 0.5))
+-        lam = alpha * (1.0 - (self.arguments.gfpo_retain_count / self.arguments.gfpo_group_size))
+-        lam = jnp.clip(lam, 0.0, 1.0)
+-
+-        sigma2 = (1.0 - lam) * var_S + lam * var_G
+-        c = float(getattr(self.arguments, "gfpo_sigma_floor_c", 0.25))
+-        sigma2 = sigma2 + (c * c) / jnp.maximum(n_eff - 1.0, 1.0)
+-        sigma = jnp.sqrt(jnp.maximum(sigma2, jnp.asarray(1e-6, dtype=sigma2.dtype)))
+-
+-        center = (1.0 - lam) * mu_S + lam * mu_G
+-        # Weighted, shrunk advantages; do NOT multiply by mask here.
+-        # Downweighting is applied via selection_weights in the step function.
+-        A = (rewards_grouped - center) / sigma
+-
+-        grpo_batch["advantages"] = A.reshape(-1)
+-        grpo_batch["selection_weights"] = mask.reshape(-1)
+-
+-        # Provide epsilon_scale and beta_scale as runtime scalars (avoid recompiles)
+-        try:
+-            if bool(getattr(self.arguments, "use_ess_epsilon", False)) and getattr(self, "_epsilon_scale", None) is not None:
+-                grpo_batch["epsilon_scale"] = jnp.asarray(float(self._epsilon_scale), dtype=jnp.float32)
+-            else:
+-                k = float(self.arguments.gfpo_retain_count)
+-                g = float(self.arguments.gfpo_group_size)
+-                grpo_batch["epsilon_scale"] = jnp.asarray(k / max(g, 1.0), dtype=jnp.float32)
+-        except Exception:
+-            pass
+-
+-        try:
+-            grpo_batch["beta_scale"] = jnp.asarray(float(getattr(self, "_beta_scale", 1.0)), dtype=jnp.float32)
+-        except Exception:
+-            pass
+-
+-        # Optional metrics (host-only); skip if anything fails
+-        try:
+-            metrics.update(self._gfpo_compute_metrics_host(mask, lengths_grouped))
+-        except Exception:
+-            pass
+-
+-        # Keep batch lean: only pass arrays used by the step
+-
+-        return grpo_batch, metrics
+-
+-    def on_step_end(
+-        self,
+-        state: EasyDeLState,
+-        metrics,
+-        step: int,
+-    ):
+-        state, metrics = super().on_step_end(state, metrics, step)
+-        try:
+-            clipped = float(metrics.get("clipped_fraction", 0.0))
+-            tau_clip = float(getattr(self.arguments, "gfpo_metric_switch_clip", 0.35))
+-            cur = getattr(self.arguments, "gfpo_metric", "length")
+-            if clipped > tau_clip and cur != "length":
+-                self.arguments.gfpo_metric = "length"
+-            elif clipped < 0.20 and cur != "token_efficiency":
+-                self.arguments.gfpo_metric = "token_efficiency"
+-        except Exception:
+-            pass
+-        return state, metrics
++class GFSPOStableTrainer(SPOTrainer):
++    """Deprecated wrapper: use SPOTrainer. Kept for backward compatibility."""
+ 
+ 
+ def trainer(**kwargs) -> GFSPOStableTrainer:
+diff --git a/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py b/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
+index aaa3f0b1..1630d45b 100644
+--- a/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
+@@ -1,255 +1,16 @@
+-# gfspo_trainer.py
++"""GFSPO unified wrapper (deprecated), redirects to SPOTrainer implementation."""
+ 
+ from __future__ import annotations
+ 
+-import typing as tp
+-
+-import jax
+-import jax.numpy as jnp
+-
+-from easydel.infra.base_module import EasyDeLBaseModule
+-from easydel.infra.base_state import EasyDeLState
+-from easydel.infra.utils import ProcessingClassType
+-from easydel.utils.helpers import get_logger
+-from .gspo_trainer import GSPOTrainer
++from .spo_trainer import SPOTrainer
+ from .gfspo_config import GFSPOConfig
+-from .gfpo_utils import GFPOFilterMixin
+-
+-logger = get_logger(__name__)
+-
+-
+-class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
+-    """
+-    Combined trainer: applies GFPO filtering and per-subset advantage standardization
+-    within the GRPO preprocessing pipeline, then uses GSPO's sequence-level importance
+-    sampling in the step function (via gspo_step).
+ 
+-    Inherits GSPO generation and step plumbing from `GSPOTrainer` and overrides
+-    preprocessing similarly to `GFPOTrainer`.
+-    """
+ 
++class GFSPOTrainer(SPOTrainer):
++    """Deprecated wrapper: use SPOTrainer. Kept for backward compatibility."""
+     arguments: GFSPOConfig  # type hinting
+ 
+-    def __init__(
+-        self,
+-        arguments: GFSPOConfig,
+-        model: EasyDeLBaseModule | EasyDeLState | None,
+-        reward_funcs,  # same RewardFunc union
+-        train_dataset=None,
+-        eval_dataset=None,
+-        processing_class: ProcessingClassType = None,
+-        reward_processing_classes: ProcessingClassType = None,
+-        data_tokenize_fn: tp.Callable | None = None,
+-    ):
+-        assert isinstance(
+-            arguments, GFSPOConfig
+-        ), f"arguments type must be `GFSPOConfig` but got {type(arguments)}"
+-
+-        super().__init__(
+-            arguments=arguments,
+-            model=model,
+-            reward_funcs=reward_funcs,
+-            train_dataset=train_dataset,
+-            eval_dataset=eval_dataset,
+-            processing_class=processing_class,
+-            reward_processing_classes=reward_processing_classes,
+-            data_tokenize_fn=data_tokenize_fn,
+-        )
+-
+-        # Ensure local alias to config type
+-        self.arguments = arguments
+-
+-        # Runtime scalars (avoid recompiles): initialize defaults
+-        self._epsilon_scale: float | None = None
+-        self._beta_scale: float = 1.0
+-
+-        try:
+-            print(
+-                "DEBUG: Initializing GFSPO trainer - "
+-                f"G={arguments.gfpo_group_size}, "
+-                f"k={arguments.gfpo_retain_count}, "
+-                f"importance_sampling={arguments.importance_sampling_level}"
+-            )
+-            logger.info(
+-                f"Initialized GFSPO trainer: G={arguments.gfpo_group_size}, k={arguments.gfpo_retain_count}, metric={arguments.gfpo_metric}, "
+-                f"adaptive={arguments.gfpo_adaptive}, importance_sampling_level={arguments.importance_sampling_level}, "
+-                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
+-            )
+-        except Exception as e:
+-            print(f"DEBUG: Failed to log GFSPO trainer initialization: {e}")
+-            logger.warning(f"Failed to log GFSPO trainer initialization: {e}")
+-
+-    # Remove local copy; rely on GFPOFilterMixin via _gfpo_build_mask_host
+-
+-    def _preprocess_batch_input(
+-        self,
+-        state: EasyDeLState,
+-        batch: dict[str, jax.Array],
+-        is_train: bool,
+-    ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
+-        # First run the GRPO preprocessing implemented by the parent
+-        grpo_batch, metrics_dict = super()._preprocess_batch_input(state, batch, is_train)
+-
+-        # Apply GFPO filtering and recompute advantages over the retained subset
+-        try:
+-            num_prompts = int(batch["input_ids"].shape[0])
+-        except Exception:
+-            num_prompts = 0
+-        G = int(self.arguments.gfpo_group_size)
+-
+-        eps = jnp.float32(self.arguments.advantage_epsilon)
+-
+-        # Compute rewards_grouped with robust fallbacks
+-        try:
+-            if "rewards" in grpo_batch:
+-                rewards_arr = grpo_batch["rewards"]
+-                rewards_grouped = rewards_arr.reshape(num_prompts, G)
+-            else:
+-                advantages = grpo_batch["advantages"].reshape(num_prompts, G)
+-                mean_per_prompt = jnp.mean(advantages, axis=1, keepdims=True)
+-                std_per_prompt = jnp.std(advantages, axis=1, keepdims=True)
+-                std_per_prompt = jnp.maximum(std_per_prompt, eps)
+-                rewards_grouped = advantages * std_per_prompt + mean_per_prompt
+-        except Exception:
+-            # Last-resort fallback: reconstruct from advantages or use zeros
+-            try:
+-                advantages = grpo_batch["advantages"].reshape(num_prompts, G)
+-                mean_per_prompt = jnp.mean(advantages, axis=1, keepdims=True)
+-                std_per_prompt = jnp.std(advantages, axis=1, keepdims=True)
+-                std_per_prompt = jnp.maximum(std_per_prompt, eps)
+-                rewards_grouped = advantages * std_per_prompt + mean_per_prompt
+-            except Exception:
+-                rewards_grouped = jnp.zeros((num_prompts, G), dtype=jnp.float32)
+-
+-        # Compute lengths_grouped with fallback
+-        try:
+-            lengths = jnp.sum(grpo_batch["completion_mask"], axis=-1)
+-            lengths_grouped = lengths.reshape(num_prompts, G)
+-        except Exception:
+-            lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
+-
+-        # Use shared host-only GFPO filter (soft or hard depending on config)
+-        try:
+-            mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)
+-        except Exception as _e:
+-            mask = jnp.ones((num_prompts, G), dtype=jnp.float32)
+-
+-        # Weighted + shrinkage subset stats (stable for small k and soft masks)
+-        sum_w = jnp.sum(mask, axis=1, keepdims=True)
+-        sum_w2 = jnp.sum(mask * mask, axis=1, keepdims=True)
+-        n_eff = (sum_w * sum_w) / jnp.maximum(sum_w2, 1e-6)
+-
+-        mu_S = jnp.sum(rewards_grouped * mask, axis=1, keepdims=True) / jnp.maximum(sum_w, 1e-6)
+-        mu_G = jnp.mean(rewards_grouped, axis=1, keepdims=True)
+-
+-        var_S_num = jnp.sum(mask * (rewards_grouped - mu_S) ** 2, axis=1, keepdims=True)
+-        var_S = var_S_num / jnp.maximum(n_eff - 1.0, 1.0)
+-        var_G = jnp.var(rewards_grouped, axis=1, keepdims=True)
+-
+-        alpha = float(getattr(self.arguments, "gfpo_shrinkage_alpha", 0.5))
+-        lam = alpha * (1.0 - (self.arguments.gfpo_retain_count / self.arguments.gfpo_group_size))
+-        lam = jnp.clip(lam, 0.0, 1.0)
+-
+-        c = float(getattr(self.arguments, "gfpo_sigma_floor_c", 0.25))
+-        sigma2 = (1.0 - lam) * var_S + lam * var_G + (c * c) / jnp.maximum(n_eff - 1.0, 1.0)
+-        sigma = jnp.sqrt(jnp.maximum(sigma2, eps))
+-
+-        center = (1.0 - lam) * mu_S + lam * mu_G
+-        # Unmasked standardized advantages; selection_weights applied inside step
+-        advantages_gfpo = (rewards_grouped - center) / sigma
+-        grpo_batch["advantages"] = advantages_gfpo.reshape(-1)
+-        grpo_batch["selection_weights"] = mask.reshape(-1)
+-
+-        # Provide completion lengths for reuse in step (avoid recompute)
+-        try:
+-            if "completion_lengths" not in grpo_batch:
+-                grpo_batch["completion_lengths"] = jnp.sum(grpo_batch["completion_mask"], axis=-1)
+-        except Exception:
+-            pass
+-
+-        try:
+-            # Host-only metric compute for stability
+-            m = self._gfpo_compute_metrics_host(mask, lengths_grouped)
+-            metrics_dict["gfpo/retention_rate"] = float(m.get("gfpo/retention_rate", 0.0))
+-            metrics_dict["gfpo/avg_retained_length"] = float(m.get("gfpo/avg_retained_length", 0.0))
+-        except Exception:
+-            pass
+-
+-        # Runtime knobs to avoid recompiles in step
+-        # epsilon_scale: prefer dynamic ESS-based if enabled and available; else fallback to k/G
+-        try:
+-            # Broadcast runtime epsilon scale to vector matching batch (for minibatching reshape)
+-            if bool(getattr(self.arguments, "use_ess_epsilon", False)) and (self._epsilon_scale is not None):
+-                _scale = float(self._epsilon_scale)
+-            else:
+-                k = float(self.arguments.gfpo_retain_count)
+-                g = float(self.arguments.gfpo_group_size)
+-                _scale = k / max(g, 1.0)
+-            # Use completion_mask leading dim as canonical batch length
+-            _n = int(grpo_batch["completion_mask"].shape[0])
+-            grpo_batch["epsilon_scale"] = jnp.full((_n,), _scale, dtype=jnp.float32)
+-        except Exception:
+-            pass
+-
+-        # beta_scale: multiplicative controller on top of static beta
+-        try:
+-            _n = int(grpo_batch["completion_mask"].shape[0])
+-            grpo_batch["beta_scale"] = jnp.full((_n,), float(self._beta_scale), dtype=jnp.float32)
+-        except Exception:
+-            pass
+-
+-        # Keep batch lean: only pass arrays that are consumed by the step
+-
+-        return grpo_batch, metrics_dict
+-
+-    def on_step_end(
+-        self,
+-        state: EasyDeLState,
+-        metrics,
+-        step: int,
+-    ):
+-        state, metrics = super().on_step_end(state, metrics, step)
+-
+-        # Update epsilon_scale using previous-step ESS if enabled
+-        try:
+-            if bool(getattr(self.arguments, "use_ess_epsilon", False)):
+-                ess_mean_norm = metrics.get("ess/mean_norm", None)
+-                if ess_mean_norm is not None:
+-                    try:
+-                        ess_val = float(ess_mean_norm)
+-                    except Exception:
+-                        import jax
+-                        ess_val = float(jax.device_get(ess_mean_norm))
+-                    power = float(getattr(self.arguments, "epsilon_ess_power", 0.5))
+-                    scale = max(1e-6, ess_val) ** power
+-                    smin = float(getattr(self.arguments, "epsilon_min_scale", 0.1))
+-                    smax = float(getattr(self.arguments, "epsilon_max_scale", 1.0))
+-                    self._epsilon_scale = float(min(max(scale, smin), smax))
+-        except Exception:
+-            pass
+-
+-        # Update beta_scale via simple proportional controller to hit KL target
+-        try:
+-            kl_obs = metrics.get("kl/mean", None)
+-            if kl_obs is not None:
+-                try:
+-                    kl_val = float(kl_obs)
+-                except Exception:
+-                    import jax
+-                    kl_val = float(jax.device_get(kl_obs))
+-                kl_target = float(getattr(self.arguments, "kl_target", 0.02))
+-                eta = float(getattr(self.arguments, "beta_update_rate", 0.1))
+-                # multiplicative update on the scale
+-                new_scale = float(self._beta_scale) * float(jnp.exp(jnp.asarray(eta * (kl_val - kl_target))))
+-                smin = float(getattr(self.arguments, "beta_min_scale", 0.1))
+-                smax = float(getattr(self.arguments, "beta_max_scale", 10.0))
+-                self._beta_scale = float(min(max(new_scale, smin), smax))
+-        except Exception:
+-            pass
+-
+-        return state, metrics
+-
+ 
+ def trainer(**kwargs) -> GFSPOTrainer:
+-    """Convenience factory for building a GFSPOTrainer."""
+     return GFSPOTrainer(**kwargs)
++
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index f1faa112..12565d45 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -55,10 +55,31 @@ class GRPOConfig(TrainingArguments):
+         default=False,
+         metadata={"help": "Whether to periodically sync the reference model with the policy model."},
+     )
++    # Placement of reference sync: begin-of-step avoids intra-step drift
++    sync_ref_model_on_step_start: bool = field(
++        default=True,
++        metadata={
++            "help": "If True, refresh the reference model at the BEGINNING of a step whose index is divisible by ref_model_sync_steps."
++        },
++    )
++    # Strategy to update reference: 'hard' exact copy or 'ema' smoothing to reduce sudden logprob jumps
++    ref_model_sync_strategy: tp.Literal["hard", "ema"] = field(
++        default="hard",
++        metadata={
++            "help": "Reference update strategy: 'hard' copies policy weights exactly; 'ema' applies EMA with ref_model_mixup_alpha."
++        },
++    )
+     ref_model_mixup_alpha: float = field(
+         default=0.9,
+         metadata={"help": "The alpha parameter for mixing the reference model with the policy model."},
+     )
++    # Also copy 'graphother' (RNG/meta) to keep inference behavior identical post-sync
++    ref_sync_copy_graphother: bool = field(
++        default=True,
++        metadata={
++            "help": "Copy EasyDeLState.graphother into the reference at sync time to ensure identical non-parameter state (e.g., RNGs)."
++        },
++    )
+     ref_model_sync_steps: int = field(
+         default=64,
+         metadata={"help": "The number of steps between syncing the reference model."},
+@@ -176,6 +197,19 @@ class GRPOConfig(TrainingArguments):
+             "help": "Enable post-update analysis of policy vs reference per-token logprob differences and log to WandB.",
+         },
+     )
++    # Validate alignment immediately after ref sync using cached sample
++    logprob_alignment_check_on_sync: bool = field(
++        default=True,
++        metadata={
++            "help": "If True, after reference sync compute policy-vs-ref logprob deltas on a fixed small sample to verify alignment."
++        },
++    )
++    ref_policy_logprob_tolerance: float = field(
++        default=1e-4,
++        metadata={
++            "help": "Tolerance (abs mean delta) for policy vs reference per-token logprob immediately after sync; warn and force hard copy if exceeded."
++        },
++    )
+     # Fixed-size per-host subsample to ensure identical shapes across hosts
+     logprob_sequences_per_host: int = field(
+         default=4,
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 998b4ec3..97e568dd 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -242,6 +242,19 @@ class GRPOTrainer(Trainer):
+             except (AttributeError, TypeError):
+                 logger.debug("Could not update model_state config mesh, using new mesh for training only")
+ 
++    def _update_ref_mesh(self, mesh):
++        """Update reference state to use the same mesh as the policy state."""
++        try:
++            if hasattr(self.ref_state, 'model') and hasattr(self.ref_state.model, 'config'):
++                try:
++                    self.ref_state = self.ref_state.replace(
++                        model=self.ref_state.model.replace(config=self.ref_state.model.config.replace(mesh=mesh))
++                    )
++                except (AttributeError, TypeError):
++                    logger.debug("Could not update ref_state config mesh; proceeding with current mesh")
++        except Exception as e:
++            logger.debug(f"Failed to update ref mesh: {e}")
++
+     @cached_property
+     def pad_token_id(self):
+         if isinstance(self.processing_class, ProcessorMixin):
+@@ -556,6 +569,11 @@ class GRPOTrainer(Trainer):
+         # Get or create mesh with adaptive configuration
+         mesh = self._get_or_create_mesh()
+         self._update_model_mesh(mesh)
++        # Keep the reference state on the same mesh/sharding as the policy
++        try:
++            self._update_ref_mesh(mesh)
++        except Exception:
++            pass
+ 
+         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+         
+@@ -941,7 +959,14 @@ class GRPOTrainer(Trainer):
+                 rollout_chunk_size = int(self.num_generations)
+             # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
+             rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
+-            # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
++            # Cap rollout chunk to TP size if requested to reduce instability with TP>1
++            try:
++                mesh_shape = getattr(self.model.mesh, "shape", {})
++                tp_size = int(mesh_shape.get("tp", 1)) if hasattr(mesh_shape, "get") else 1
++            except Exception:
++                tp_size = 1
++            if bool(getattr(self.arguments, "cap_rollout_chunk_to_tp", True)) and tp_size > 1:
++                rollout_chunk_size = max(1, min(int(rollout_chunk_size), int(tp_size)))
+ 
+             sequences_chunks = []
+             completion_ids_chunks = []
+@@ -1083,8 +1108,7 @@ class GRPOTrainer(Trainer):
+ 
+             # Cache minimal inputs for post-update logprob diagnostics
+             try:
+-                # Multi-host safety: run diagnostics only in single-host mode
+-                if (jax.process_count() == 1) and bool(getattr(self.arguments, "logprob_analysis_enable", True)):
++                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
+                     try:
+                         # Build full mask: repeat prompt mask for each generation and concat with completion mask
+                         total_k = int(self.num_generations)
+@@ -1385,17 +1409,34 @@ class GRPOTrainer(Trainer):
+             
+             with capture_time() as grouped_comp_time_fn:
+                 rewards = rewards_per_func.sum(axis=1)
+-                # Robust, config-driven advantage normalization per prompt group
++                # Config-driven advantage normalization per prompt group
+                 grouped_rewards = rewards.reshape(-1, self.num_generations)
+                 group_means = jnp.mean(grouped_rewards, axis=-1, keepdims=True)
+-                group_stds = jnp.std(grouped_rewards, axis=-1, keepdims=True)
+-                eps = jnp.float32(getattr(self.arguments, "advantage_epsilon", 1e-6))
+-                # Zero-out groups with very low variance to avoid spurious gradients
+-                safe_stds = jnp.maximum(group_stds, eps)
+-                normalized = (grouped_rewards - group_means) / safe_stds
+-                zero_mask = (group_stds < eps).astype(normalized.dtype)
+-                normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
+-                advantages = normalized.reshape(-1)
++                raw_adv = grouped_rewards - group_means
++
++                mode = getattr(self.arguments, "advantage_norm_mode", "std")
++                if bool(getattr(self.arguments, "advantage_whitening", False)) or mode == "whiten":
++                    # Global whitening: zero mean, unit variance across all completions
++                    flat = raw_adv.reshape(-1)
++                    mean = jnp.mean(flat)
++                    std = jnp.std(flat)
++                    w_eps = jnp.float32(getattr(self.arguments, "advantage_whitening_epsilon", 1e-8))
++                    advantages = (flat - mean) / jnp.maximum(std, w_eps)
++                elif mode == "constant":
++                    const = jnp.float32(getattr(self.arguments, "advantage_constant_factor", 1.0))
++                    const = jnp.maximum(const, 1e-8)
++                    advantages = (raw_adv / const).reshape(-1)
++                elif mode == "none":
++                    advantages = raw_adv.reshape(-1)
++                else:
++                    # Default: per-group std scaling with epsilon floor and zeroing low-variance groups
++                    group_stds = jnp.std(grouped_rewards, axis=-1, keepdims=True)
++                    eps = jnp.float32(getattr(self.arguments, "advantage_epsilon", 1e-6))
++                    safe_stds = jnp.maximum(group_stds, eps)
++                    normalized = raw_adv / safe_stds
++                    zero_mask = (group_stds < eps).astype(normalized.dtype)
++                    normalized = jnp.where(zero_mask > 0, jnp.zeros_like(normalized), normalized)
++                    advantages = normalized.reshape(-1)
+             grouped_comp_time = grouped_comp_time_fn()
+             # Compute mean reward per completion locally (no cross-host ops)
+             # Optionally compute safe global scalars via allgather of scalars only
+@@ -1977,15 +2018,131 @@ class GRPOTrainer(Trainer):
+                 # Never crash on diagnostics
+                 pass
+ 
+-        # Periodic reference model sync
+-        if (
+-            self.arguments.sync_ref_model
+-            and self.ref_state is not None
+-            and (step % self.arguments.ref_model_sync_steps == 0)
+-        ):
+-            self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
++        # Periodic reference model sync moved to on_step_start for robustness
+         return state, metrics
+ 
++    def _sync_reference_state(self, state: EasyDeLState) -> None:
++        """Synchronize reference model with policy using the configured strategy.
++
++        - 'hard': exact copy of parameters (and optionally graphother)
++        - 'ema':  ref <- alpha*ref + (1-alpha)*policy (parameters only)
++        """
++        try:
++            strategy = getattr(self.arguments, "ref_model_sync_strategy", "hard")
++            alpha = float(getattr(self.arguments, "ref_model_mixup_alpha", 0.9))
++        except Exception:
++            strategy, alpha = "hard", 0.9
++
++        # Align graphdef for safety
++        try:
++            self.ref_state = self.ref_state.replace(graphdef=self.model_state.graphdef)
++        except Exception:
++            ...
++
++        def _is_array(x):
++            return isinstance(x, jax.Array)
++
++        if strategy == "ema":
++            def _ema(r, p):
++                if _is_array(r) and _is_array(p):
++                    return jnp.asarray(alpha, r.dtype) * r + jnp.asarray(1.0 - alpha, p.dtype) * p
++                return p
++            new_graphstate = jax.tree_util.tree_map(_ema, self.ref_state.graphstate, state.graphstate, is_leaf=_is_array)
++        else:
++            new_graphstate = deepcopy_model(state.graphstate)
++
++        if bool(getattr(self.arguments, "ref_sync_copy_graphother", True)):
++            try:
++                new_graphother = deepcopy_model(state.graphother)
++                self.ref_state = self.ref_state.replace(graphother=new_graphother)
++            except Exception:
++                ...
++
++        self.ref_state = self.ref_state.replace(graphstate=new_graphstate)
++
++    def on_step_start(
++        self,
++        state: EasyDeLState,
++        step: int,
++    ) -> EasyDeLState:
++        """At the beginning of a step, optionally realign the reference model to the policy.
++
++        Ensures that this step's rollouts/ratios are computed against a synchronized reference.
++        Also performs a lightweight logprob alignment check on a cached sample and, if needed,
++        forces a hard copy to eliminate drift.
++        """
++        try:
++            # Synchronize controllers before any device work in this hook
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("before_ref_sync_on_step_start")
++            except Exception:
++                ...
++            if (
++                getattr(self.arguments, "sync_ref_model", False)
++                and getattr(self.arguments, "sync_ref_model_on_step_start", True)
++                and self.ref_state is not None
++                and (step % int(getattr(self.arguments, "ref_model_sync_steps", 64)) == 0)
++            ):
++                # Refresh reference first
++                self._sync_reference_state(state)
++
++                # Optional immediate alignment check on a fixed small sample
++                if bool(getattr(self.arguments, "logprob_alignment_check_on_sync", True)):
++                    # On multi-host, wrap with barriers to avoid mismatched launches
++                    try:
++                        if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                            jax.experimental.multihost_utils.sync_global_devices("before_alignment_check")
++                    except Exception:
++                        ...
++                    diag = getattr(self, "_last_logprob_diag", None)
++                    if isinstance(diag, dict):
++                        try:
++                            ids = tp.cast(jax.Array, diag.get("ids"))
++                            full_mask = tp.cast(jax.Array, diag.get("full_mask"))
++                            completion_mask = tp.cast(jax.Array, diag.get("completion_mask"))
++                            if ids is not None and full_mask is not None and completion_mask is not None:
++                                pol = self.compute_logps(state.graphstate, state.graphother, ids, full_mask)
++                                ref = self.compute_logps(self.ref_state.graphstate, self.ref_state.graphother, ids, full_mask)
++                                delta = (pol - ref) * completion_mask
++                                valid = jnp.maximum(jnp.sum(completion_mask.astype(jnp.float32)), 1.0)
++                                mad = jnp.sum(jnp.abs(delta).astype(jnp.float32)) / valid
++                                tol = float(getattr(self.arguments, "ref_policy_logprob_tolerance", 1e-4))
++                                if float(jax.device_get(mad)) > tol:
++                                    try:
++                                        logger.warning(
++                                            f"Ref-policy logprob |Δ| mean {float(jax.device_get(mad)):.2e} exceeds tol {tol:.2e}; forcing hard copy."
++                                        )
++                                    except Exception:
++                                        ...
++                                    # Force hard copy to recover
++                                    self.ref_state = self.ref_state.replace(graphstate=deepcopy_model(state.graphstate))
++                                    if bool(getattr(self.arguments, "ref_sync_copy_graphother", True)):
++                                        try:
++                                            self.ref_state = self.ref_state.replace(graphother=deepcopy_model(state.graphother))
++                                        except Exception:
++                                            ...
++                        finally:
++                            try:
++                                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                                    jax.experimental.multihost_utils.sync_global_devices("after_alignment_check")
++                            except Exception:
++                                ...
++                        except Exception:
++                            # Never crash on diagnostics
++                            ...
++        except Exception:
++            # Best-effort: never block training on ref sync
++            ...
++        finally:
++            # Ensure all controllers exit this hook together
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("after_ref_sync_on_step_start")
++            except Exception:
++                ...
++        return state
++
+     def generate_final_verification_report(self, verification_details_list: list = None):
+         """Generate a comprehensive final verification report at the end of training.
+ 
+diff --git a/easydel/trainers/group_relative_policy_optimization/spo_trainer.py b/easydel/trainers/group_relative_policy_optimization/spo_trainer.py
+new file mode 100644
+index 00000000..231bfe2e
+--- /dev/null
++++ b/easydel/trainers/group_relative_policy_optimization/spo_trainer.py
+@@ -0,0 +1,277 @@
++# spo_trainer.py
++
++from __future__ import annotations
++
++import typing as tp
++
++import jax
++import jax.numpy as jnp
++
++from easydel.infra.base_module import EasyDeLBaseModule
++from easydel.infra.base_state import EasyDeLState
++from easydel.infra.utils import ProcessingClassType
++from easydel.utils.helpers import get_logger
++
++from ..trainer_protocol import TrainerConfigureFunctionOutput
++from .gspo_trainer import GSPOTrainer
++from .gfspo_config import GFSPOConfig
++from .gfpo_utils import GFPOFilterMixin
++
++logger = get_logger(__name__)
++
++
++class SPOTrainer(GFPOFilterMixin, GSPOTrainer):
++    """
++    Unified Sequence Policy Optimization trainer that merges:
++    - GSPO: sequence-level importance weighting and step plumbing.
++    - GFSPO (stable): GFPO filtering + shrinkage-normalized advantages with variance flooring.
++
++    Behavior is controlled by config. If GFPO fields are present (G, k, etc.),
++    stable GFPO preprocessing is applied; otherwise it behaves like plain GSPO.
++    """
++
++    # Accept both GSPOConfig and GFSPOConfig at call sites; we annotate with GFSPOConfig for full feature hints
++    arguments: GFSPOConfig  # type: ignore[assignment]
++
++    def __init__(
++        self,
++        arguments: GFSPOConfig,  # type: ignore[override]
++        model: EasyDeLBaseModule | EasyDeLState | None,
++        reward_funcs,  # same RewardFunc union
++        train_dataset=None,
++        eval_dataset=None,
++        processing_class: ProcessingClassType = None,
++        reward_processing_classes: ProcessingClassType = None,
++        data_tokenize_fn: tp.Callable | None = None,
++    ):
++        super().__init__(
++            arguments=arguments,
++            model=model,
++            reward_funcs=reward_funcs,
++            train_dataset=train_dataset,
++            eval_dataset=eval_dataset,
++            processing_class=processing_class,
++            reward_processing_classes=reward_processing_classes,
++            data_tokenize_fn=data_tokenize_fn,
++        )
++        # Use local alias to keep the richer GFSPOConfig available if passed
++        self.arguments = arguments
++
++        # Runtime scalars (avoid recompiles): initialize defaults
++        self._epsilon_scale: float | None = None
++        self._beta_scale: float = 1.0
++
++        try:
++            print(
++                "DEBUG: Initializing SPO trainer - "
++                f"importance_sampling={arguments.importance_sampling_level}, "
++                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
++            )
++            logger.info(
++                f"Initialized SPO trainer: importance_sampling_level={arguments.importance_sampling_level}, "
++                f"epsilon={arguments.epsilon}, beta={arguments.beta}"
++            )
++        except Exception as e:
++            try:
++                print(f"DEBUG: Failed to log SPO trainer initialization: {e}")
++            except Exception:
++                ...
++            logger.warning(f"Failed to log SPO trainer initialization: {e}")
++
++    def configure_functions(self) -> TrainerConfigureFunctionOutput:
++        """
++        Use GSPO's function setup (generation + GSPO step), unified across trainers.
++        """
++        return super().configure_functions()
++
++    def _preprocess_batch_input(
++        self,
++        state: EasyDeLState,
++        batch: dict[str, jax.Array],
++        is_train: bool,
++    ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
++        # First run GSPO/GRPO base preprocessing (generation, ref logps, base rewards/advantages)
++        base_batch, metrics = GSPOTrainer._preprocess_batch_input(self, state, batch, is_train)
++
++        # Detect if GFPO is effectively configured (presence of fields and sensible sizes)
++        has_gfpo = all(
++            hasattr(self.arguments, name)
++            for name in ("gfpo_group_size", "gfpo_retain_count")
++        )
++        if not has_gfpo:
++            return base_batch, metrics
++
++        try:
++            num_prompts = int(batch["input_ids"].shape[0])
++        except Exception:
++            num_prompts = 0
++
++        G = int(getattr(self.arguments, "gfpo_group_size", 0))
++        k = int(getattr(self.arguments, "gfpo_retain_count", 0))
++        if num_prompts <= 0 or G <= 1 or k < 1:
++            # Nothing to filter
++            return base_batch, metrics
++
++        eps = jnp.asarray(getattr(self.arguments, "advantage_epsilon", 1e-8), dtype=jnp.float32)
++
++        # Recover grouped rewards or reconstruct from base advantages
++        rw = base_batch.get("rewards", None)
++        if rw is not None:
++            rewards_grouped = rw.reshape(num_prompts, G)
++        else:
++            try:
++                adv = base_batch["advantages"].reshape(num_prompts, G)
++                mu = jnp.mean(adv, axis=1, keepdims=True)
++                sd = jnp.maximum(jnp.std(adv, axis=1, keepdims=True), eps)
++                rewards_grouped = adv * sd + mu
++            except Exception:
++                rewards_grouped = jnp.zeros((num_prompts, G), dtype=jnp.float32)
++
++        # Grouped lengths (for metrics + possible metric-based filtering)
++        try:
++            lengths = base_batch.get("completion_lengths")
++            if lengths is None:
++                lengths = jnp.sum(base_batch["completion_mask"], axis=-1)
++            lengths_grouped = lengths.reshape(num_prompts, G)
++        except Exception:
++            lengths_grouped = jnp.ones((num_prompts, G), dtype=jnp.float32)
++
++        # Build selection weights (mask) on host; allow soft [0,1] but binary is fine
++        try:
++            mask = self._gfpo_build_mask_host(rewards_grouped, lengths_grouped)  # (B, G) float
++        except Exception:
++            mask = jnp.ones_like(rewards_grouped, dtype=jnp.float32)
++
++        # Weighted shrinkage stats (stable variant)
++        sum_w = jnp.sum(mask, axis=1, keepdims=True)  # (B,1)
++        sum_w2 = jnp.sum(mask * mask, axis=1, keepdims=True)
++        n_eff = (sum_w * sum_w) / jnp.maximum(sum_w2, 1e-6)
++
++        mu_S = jnp.sum(mask * rewards_grouped, axis=1, keepdims=True) / jnp.maximum(sum_w, 1e-6)
++        mu_G = jnp.mean(rewards_grouped, axis=1, keepdims=True)
++
++        var_S_num = jnp.sum(mask * (rewards_grouped - mu_S) ** 2, axis=1, keepdims=True)
++        var_S = var_S_num / jnp.maximum(n_eff - 1.0, 1.0)
++        var_G = jnp.var(rewards_grouped, axis=1, keepdims=True)
++
++        alpha = float(getattr(self.arguments, "gfpo_shrinkage_alpha", 0.5))
++        lam = alpha * (1.0 - (k / max(float(G), 1.0)))
++        lam = jnp.clip(lam, 0.0, 1.0)
++
++        sigma2 = (1.0 - lam) * var_S + lam * var_G
++        c = float(getattr(self.arguments, "gfpo_sigma_floor_c", 0.25))
++        sigma2 = sigma2 + (c * c) / jnp.maximum(n_eff - 1.0, 1.0)
++        sigma = jnp.sqrt(jnp.maximum(sigma2, jnp.asarray(1e-6, dtype=sigma2.dtype)))
++
++        center = (1.0 - lam) * mu_S + lam * mu_G
++        # Weighted, shrunk advantages; do NOT multiply by mask here (mask applied in step via selection_weights)
++        A = (rewards_grouped - center) / sigma
++
++        # Write back unified outputs used by gspo_step
++        base_batch["advantages"] = A.reshape(-1)
++        base_batch["selection_weights"] = mask.reshape(-1)
++
++        # Provide epsilon_scale (ESS or k/G) and beta_scale as runtime scalars or vectors to avoid recompiles
++        try:
++            _n = int(base_batch["completion_mask"].shape[0])
++        except Exception:
++            _n = None
++
++        try:
++            if bool(getattr(self.arguments, "use_ess_epsilon", False)) and (self._epsilon_scale is not None):
++                scale = float(self._epsilon_scale)
++            else:
++                scale = float(k) / max(float(G), 1.0)
++            if _n is not None:
++                base_batch["epsilon_scale"] = jnp.full((_n,), scale, dtype=jnp.float32)
++            else:
++                base_batch["epsilon_scale"] = jnp.asarray(scale, dtype=jnp.float32)
++        except Exception:
++            pass
++
++        try:
++            bscale = float(getattr(self, "_beta_scale", 1.0))
++            if _n is not None:
++                base_batch["beta_scale"] = jnp.full((_n,), bscale, dtype=jnp.float32)
++            else:
++                base_batch["beta_scale"] = jnp.asarray(bscale, dtype=jnp.float32)
++        except Exception:
++            pass
++
++        # Provide completion lengths for reuse in step (avoid recompute)
++        try:
++            if "completion_lengths" not in base_batch:
++                base_batch["completion_lengths"] = jnp.sum(base_batch["completion_mask"], axis=-1)
++        except Exception:
++            pass
++
++        # Optional metrics (host-only); skip if anything fails
++        try:
++            metrics.update(self._gfpo_compute_metrics_host(mask, lengths_grouped))
++        except Exception:
++            pass
++
++        return base_batch, metrics
++
++    def on_step_end(
++        self,
++        state: EasyDeLState,
++        metrics,
++        step: int,
++    ):
++        state, metrics = super().on_step_end(state, metrics, step)
++
++        # Update epsilon_scale using previous-step ESS if enabled
++        try:
++            if bool(getattr(self.arguments, "use_ess_epsilon", False)):
++                ess_mean_norm = metrics.get("ess/mean_norm", None)
++                if ess_mean_norm is not None:
++                    try:
++                        ess_val = float(ess_mean_norm)
++                    except Exception:
++                        ess_val = float(jax.device_get(ess_mean_norm))
++                    power = float(getattr(self.arguments, "epsilon_ess_power", 0.5))
++                    scale = max(1e-6, ess_val) ** power
++                    smin = float(getattr(self.arguments, "epsilon_min_scale", 0.1))
++                    smax = float(getattr(self.arguments, "epsilon_max_scale", 1.0))
++                    self._epsilon_scale = float(min(max(scale, smin), smax))
++        except Exception:
++            pass
++
++        # Update beta_scale via simple proportional controller to hit KL target
++        try:
++            kl_obs = metrics.get("kl/mean", None)
++            if kl_obs is not None:
++                try:
++                    kl_val = float(kl_obs)
++                except Exception:
++                    kl_val = float(jax.device_get(kl_obs))
++                kl_target = float(getattr(self.arguments, "kl_target", 0.02))
++                eta = float(getattr(self.arguments, "beta_update_rate", 0.1))
++                # multiplicative update on the scale
++                new_scale = float(self._beta_scale) * float(jnp.exp(jnp.asarray(eta * (kl_val - kl_target))))
++                smin = float(getattr(self.arguments, "beta_min_scale", 0.1))
++                smax = float(getattr(self.arguments, "beta_max_scale", 10.0))
++                self._beta_scale = float(min(max(new_scale, smin), smax))
++        except Exception:
++            pass
++
++        # Optional: switch GFPO metric based on clipping fraction for stability
++        try:
++            clipped = float(metrics.get("clipped_fraction", 0.0))
++            tau_clip = float(getattr(self.arguments, "gfpo_metric_switch_clip", 0.35))
++            cur = getattr(self.arguments, "gfpo_metric", "length")
++            if clipped > tau_clip and cur != "length":
++                self.arguments.gfpo_metric = "length"
++            elif clipped < 0.20 and cur != "token_efficiency":
++                self.arguments.gfpo_metric = "token_efficiency"
++        except Exception:
++            pass
++
++        return state, metrics
++
++
++def trainer(**kwargs) -> SPOTrainer:
++    """Convenience factory for building an SPOTrainer."""
++    return SPOTrainer(**kwargs)
++
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index 2f38073b..aec04aca 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -367,8 +367,21 @@ class Trainer(BaseTrainer):
+                 pbar.update(1)
+                 continue
+             step_metrics.start_step()
++            # Keep all controllers in lockstep around on_step_start
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
++            except Exception:
++                pass
++
+             state = self.on_step_start(state=state, step=current_step)
+ 
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
++            except Exception:
++                pass
++
+             # Execute training step
+             with self.train_tracker.trace_compilation():
+                 with capture_time() as execution_time:
+@@ -398,11 +411,24 @@ class Trainer(BaseTrainer):
+                     mean_accuracy=mean_accuracy,
+                     mode="train",
+                 )
++                # Keep controllers synchronized around on_step_end as well
++                try:
++                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
++                except Exception:
++                    pass
++
+                 state, metrics = self.on_step_end(
+                     state=state,
+                     metrics=metrics,
+                     step=current_step,
+                 )
++
++                try:
++                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
++                except Exception:
++                    pass
+                 self.log_metrics(
+                     metrics=train_metrics,
+                     pbar=pbar,
+@@ -560,6 +586,14 @@ class Trainer(BaseTrainer):
+                 is_train=True,
+             )
+ 
++            # Optional cross-host barrier to keep all controllers in lockstep
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("before_train_step")
++            except Exception:
++                # Best-effort; do not crash if barrier is unavailable
++                pass
++
+             state, metrics = jax.block_until_ready(
+                 self.sharded_training_step_function(
+                     state,
+@@ -569,6 +603,14 @@ class Trainer(BaseTrainer):
+                 )
+             )
+ 
++            # Optional cross-host barrier to keep all controllers in lockstep
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("after_train_step")
++            except Exception:
++                # Best-effort; do not crash if barrier is unavailable
++                pass
++
+             if len(informations) != 0:
+                 if metrics.other_metrics is not None:
+                     informations.update(metrics.other_metrics)
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index f07d5b0c..354ee14c 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -57,9 +57,9 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --repo_id "Qwen/Qwen3-1.7B" \
+   --dataset ${DATASET} \
+   --curriculum_math ${CURRICULUM_MATH} \
+-  --total_batch_size 2 \
++  --total_batch_size 1 \
+   --num_return_sequences 8 \
+-  --rollout_chunk_size 2 \
++  --rollout_chunk_size 1 \
+   --num_train_epochs 2 \
+   --max_prompt_length 512 \
+   --max_completion_length 5120 \
+@@ -73,7 +73,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --save_steps 100 \
+   --do_eval false \
+   --weight_decay 0.01 \
+-  --gradient_accumulation_steps 8 \
++  --gradient_accumulation_steps 16 \
+   --beta 0.04 \
+   --temperature 0.7 \
+   --top_p 0.95 \

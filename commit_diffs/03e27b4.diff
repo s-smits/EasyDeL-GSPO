@@ -1,0 +1,93 @@
+commit 03e27b4879e986edeee2530dcce95bb9f894ed75
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 09:37:34 2025 +0000
+
+    GRPO: unify model logprob computation into single ejitted function compute_logps; use for both policy and reference to reduce duplication and surface area.
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 9f7abcab..998b4ec3 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -731,39 +731,18 @@ class GRPOTrainer(Trainer):
+             static_argnums=static_argnames,
+         )
+ 
+-        def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
++        # Unified per-token log-probs compute (works for both policy and reference states)
++        def _compute_model_logps(graphtree, graphother, ids, mask, graphdef):
+             apply = flax.nnx.merge(graphdef, graphtree, graphother)
+             with apply.mesh:
+-                # Ensure token arrays conform to the step partitioning spec before compute
+                 ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+                 mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+                 return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+ 
+         # Allow input sharding of token ids and masks to pass through (we re-constrain inside the fn)
+         # This avoids mismatches like: pjit expects replicated but arg is sharded as ('dp','tp')
+-
+-        self.compute_refmodel_logps = ejit(
+-            partial(_compute_refmodel_logps, graphdef=self.model_state.graphdef),
+-            static_argnames=("graphdef",),
+-            in_shardings=(
+-                self.model_state.shardings.graphstate,
+-                self.model_state.shardings.graphother,
+-                None,
+-                None,
+-            ),
+-            out_shardings=empty_sharding,
+-        )
+-
+-        # Compute per-token log-probs for the POLICY model (used by post-update diagnostics)
+-        def _compute_policymodel_logps(graphtree, graphother, ids, mask, graphdef):
+-            apply = flax.nnx.merge(graphdef, graphtree, graphother)
+-            with apply.mesh:
+-                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+-                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+-                return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+-
+-        self.compute_policymodel_logps = ejit(
+-            partial(_compute_policymodel_logps, graphdef=self.model_state.graphdef),
++        self.compute_logps = ejit(
++            partial(_compute_model_logps, graphdef=self.model_state.graphdef),
+             static_argnames=("graphdef",),
+             in_shardings=(
+                 self.model_state.shardings.graphstate,
+@@ -1004,7 +983,7 @@ class GRPOTrainer(Trainer):
+ 
+                 with capture_time() as token_logps_time_fn:
+                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
+-                    ref_logps_chunk = self.compute_refmodel_logps(
++                    ref_logps_chunk = self.compute_logps(
+                         self.ref_state.graphstate,
+                         self.ref_state.graphother,
+                         prompt_completion_ids_chunk,
+@@ -1846,7 +1825,7 @@ class GRPOTrainer(Trainer):
+                 ref_logps = tp.cast(jax.Array, ref_logps)
+ 
+                 # Compute policy per-token log-probs with UPDATED state (post-update)
+-                pol_logps = self.compute_policymodel_logps(
++                pol_logps = self.compute_logps(
+                     state.graphstate,
+                     state.graphother,
+                     ids,
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index 3cdd05c9..2f38073b 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -16,6 +16,7 @@ import typing as tp
+ import jax
+ import jax.experimental
+ import jax.lib
++from jax import numpy as jnp
+ from eformer.escale import with_sharding_constraint
+ from jax.sharding import NamedSharding, PartitionSpec
+ 
+@@ -349,8 +350,6 @@ class Trainer(BaseTrainer):
+ 
+             # Allgather a tiny scalar to check if any host ran out of data
+             try:
+-                import jax
+-                import jax.numpy as jnp
+                 gathered = jax.experimental.multihost_utils.process_allgather(jnp.array(has_batch_local, dtype=jnp.int32))
+                 any_missing = int(jnp.sum(gathered == 0)) > 0
+             except Exception:

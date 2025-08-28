@@ -1,0 +1,127 @@
+commit a9038535b13ca0be6782476d8acf8046bdbdac4c
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 00:48:28 2025 +0200
+
+    Import hardening: add local shard-aware fallback for safe_to_float to avoid ModuleNotFoundError; keep host-0 guarded logging
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index d0020c35..962daf40 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -24,7 +24,45 @@ from easydel.infra.base_state import EasyDeLState
+ from easydel.infra.utils import ProcessingClassType
+ from easydel.utils.compiling_utils import ejit
+ from easydel.utils.helpers import capture_time, get_logger
+-from easydel.utils.jax_safety import safe_to_float
++# Prefer centralized safety util, but provide local fallback if unavailable
++try:  # pragma: no cover - import guard
++    from easydel.utils.jax_safety import safe_to_float as _ed_safe_to_float  # type: ignore
++except Exception:  # pragma: no cover
++    _ed_safe_to_float = None  # type: ignore
++
++def safe_to_float(x, default: float = 0.0):
++    if _ed_safe_to_float is not None:
++        try:
++            return _ed_safe_to_float(x, default=default)  # type: ignore[misc]
++        except Exception:
++            ...
++    # Local fallback: shard-aware best-effort
++    try:
++        import numbers as _numbers
++        import numpy as _np
++        if isinstance(x, _numbers.Number):
++            return float(x)
++        if isinstance(x, _np.generic):
++            return float(x.item())
++        if isinstance(x, jax.Array):
++            try:
++                if getattr(x, "is_fully_addressable", False):
++                    hv = jax.device_get(x)
++                    if int(_np.size(hv)) == 1:
++                        return float(_np.asarray(hv).reshape(-1)[0])
++            except Exception:
++                ...
++            try:
++                shards = getattr(x, "addressable_shards", None)
++                if shards and len(shards) > 0:
++                    hv = jax.device_get(shards[0].data)
++                    if int(_np.size(hv)) == 1:
++                        return float(_np.asarray(hv).reshape(-1)[0])
++            except Exception:
++                ...
++    except Exception:
++        ...
++    return float(default)
+ from easydel.utils.traversals import deepcopy_model
+ from ._jit_utils import compile_step_pair
+ 
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index 7c20d839..04faa2a1 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -47,7 +47,45 @@ from easydel.infra.etils import (
+ )
+ from easydel.infra.loss_utils import LossConfig
+ from easydel.utils.compiling_utils import hash_fn
+-from easydel.utils.jax_safety import safe_to_float
++# Try to import centralized safety util; provide fallback if unavailable
++try:  # pragma: no cover - import guard
++    from easydel.utils.jax_safety import safe_to_float as _ed_safe_to_float  # type: ignore
++except Exception:  # pragma: no cover - import guard
++    _ed_safe_to_float = None  # type: ignore
++
++def safe_to_float(x, default: float = 0.0):
++    """Shard-aware safe float conversion with local fallback when util is unavailable."""
++    if _ed_safe_to_float is not None:
++        try:
++            return _ed_safe_to_float(x, default=default)  # type: ignore[misc]
++        except Exception:
++            ...
++    # Fallback implementation
++    try:
++        import numbers as _numbers
++        if isinstance(x, _numbers.Number):
++            return float(x)
++        if isinstance(x, np.generic):
++            return float(x.item())
++        if isinstance(x, jax.Array):
++            try:
++                if getattr(x, "is_fully_addressable", False):
++                    hv = jax.device_get(x)
++                    if int(np.size(hv)) == 1:
++                        return float(np.asarray(hv).reshape(-1)[0])
++            except Exception:
++                ...
++            try:
++                shards = getattr(x, "addressable_shards", None)
++                if shards and len(shards) > 0:
++                    hv = jax.device_get(shards[0].data)
++                    if int(np.size(hv)) == 1:
++                        return float(np.asarray(hv).reshape(-1)[0])
++            except Exception:
++                ...
++    except Exception:
++        ...
++    return float(default)
+ 
+ from .metrics import MetricsHistogram, compute_weight_stats
+ from .utils import JaxDistributedConfig
+diff --git a/progress.txt b/progress.txt
+index 1f41657e..a87efb8e 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -214,3 +214,14 @@ Reference Trainer Streamlining
+ - System rollout: Replaced unsafe scalarization in  and weight stats (.item() -> safe_to_float). GRPO metrics path patched. More sites (e.g., ) can be hardened on request.
+ - Debug visibility: Added pre/post conversion DEBUG logs (host 0; ) and opt-in  for shared path.
+ - Outcome: Removes hidden collectives from logging, prevents FAILED_PRECONDITION after peer failure, preserves symmetric control flow across workers.
++
++[2025-08-27T22:40:51Z] Branch and push confirmation
++- Branch: gfspo-wshrink
++- Remote: origin/gfspo-wshrink
++- Commit: 76dd607c
++
++[2025-08-27T22:47:54Z] Fix import error: local fallback for safe_to_float
++- Added guarded import of  with local shard-aware fallback in:
++  - 
++  - 
++- Purpose: prevent ModuleNotFoundError in environments lacking the utility module, while retaining safety semantics.

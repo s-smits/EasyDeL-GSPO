@@ -1,0 +1,26 @@
+commit a33a314a1175f3d4adb5932bc32128a48c612232
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 10:43:15 2025 +0000
+
+    fix attribute dep
+
+diff --git a/easydel/__init__.py b/easydel/__init__.py
+index b58e260b..d01157ff 100644
+--- a/easydel/__init__.py
++++ b/easydel/__init__.py
+@@ -506,6 +506,7 @@ _import_structure = {
+         "GSPOTrainer",
+         "GFSPOConfig",
+         "GFSPOTrainer",
++        "GFSPOWShrinkTrainer",
+         "JaxDistributedConfig",
+         "ORPOConfig",
+         "ORPOTrainer",
+@@ -924,6 +925,7 @@ if _tp.TYPE_CHECKING:
+         GSPOTrainer,
+         GFSPOConfig,
+         GFSPOTrainer,
++        GFSPOWShrinkTrainer,
+         JaxDistributedConfig,
+         ORPOConfig,
+         ORPOTrainer,

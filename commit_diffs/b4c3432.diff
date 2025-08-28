@@ -1,0 +1,2369 @@
+commit b4c3432c3f3a1ec6aceb07e5ce9f0bd457001828
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 15:29:14 2025 +0000
+
+    a lot of changes, didn't fully check
+
+diff --git a/.codex_tmp/ours.txt b/.codex_tmp/ours.txt
+new file mode 100644
+index 00000000..49b8ba3b
+--- /dev/null
++++ b/.codex_tmp/ours.txt
+@@ -0,0 +1,1028 @@
++.cursorignore
++.gitattributes
++.github/workflows/docker-image.yaml
++.github/workflows/lint.yaml
++.gitignore
++=2.19.0
++CHANGELOG.md
++README.md
++TPU_TROUBLESHOOTING.md
++combined_group_relative_policy_optimization.txt
++docs/api_docs/inference.rst
++docs/api_docs/inference_esurge.rst
++docs/api_docs/inference_esurge_engine.rst
++docs/api_docs/inference_esurge_esurge_engine.rst
++docs/api_docs/inference_esurge_runners.rst
++docs/api_docs/inference_esurge_runners_execution_manager.rst
++docs/api_docs/inference_function_calling.rst
++docs/api_docs/inference_function_calling_handler.rst
++docs/api_docs/inference_tools.rst
++docs/api_docs/inference_tools___init__.rst
++docs/api_docs/inference_tools_abstract_tool.rst
++docs/api_docs/inference_tools_parsers.rst
++docs/api_docs/inference_tools_parsers___init__.rst
++docs/api_docs/inference_tools_parsers_deepseekv3_tool_parser.rst
++docs/api_docs/inference_tools_parsers_glm4_moe_tool_parser.rst
++docs/api_docs/inference_tools_parsers_granite_20b_fc_tool_parser.rst
++docs/api_docs/inference_tools_parsers_granite_tool_parser.rst
++docs/api_docs/inference_tools_parsers_hermes_tool_parser.rst
++docs/api_docs/inference_tools_parsers_hunyuan_a13b_tool_parser.rst
++docs/api_docs/inference_tools_parsers_internlm2_tool_parser.rst
++docs/api_docs/inference_tools_parsers_jamba_tool_parser.rst
++docs/api_docs/inference_tools_parsers_kimi_k2_tool_parser.rst
++docs/api_docs/inference_tools_parsers_llama4_pythonic_tool_parser.rst
++docs/api_docs/inference_tools_parsers_llama_tool_parser.rst
++docs/api_docs/inference_tools_parsers_minimax_tool_parser.rst
++docs/api_docs/inference_tools_parsers_mistral_tool_parser.rst
++docs/api_docs/inference_tools_parsers_phi4mini_tool_parser.rst
++docs/api_docs/inference_tools_parsers_pythonic_tool_parser.rst
++docs/api_docs/inference_tools_parsers_qwen3coder_tool_parser.rst
++docs/api_docs/inference_tools_parsers_seed_oss_tool_parser.rst
++docs/api_docs/inference_tools_parsers_step3_tool_parser.rst
++docs/api_docs/inference_tools_tool_calling_mixin.rst
++docs/api_docs/inference_tools_utils.rst
++docs/api_docs/kernels_cpu_ops_ragged_paged_attention_jax.rst
++docs/api_docs/kernels_cpu_ops_ragged_paged_attention_jax__forward_jax_optimized.rst
++docs/api_docs/kernels_gpu_ops.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas___init__.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas__forward_pallas.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas__ragged_paged_attention.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton___init__.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton__forward_triton.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton__ragged_paged_attention.rst
++docs/api_docs/layers_attention_operator_modules.rst
++docs/api_docs/layers_attention_operator_modules_paged_attn.rst
++docs/api_docs/layers_attention_operator_modules_ragged_page_attn.rst
++docs/esurge.rst
++docs/esurge_examples.rst
++docs/vsurge_api_server_example.rst
++docs/vsurge_example.rst
++easydel/__init__.py
++easydel/inference/__init__.py
++easydel/inference/decoders.py
++easydel/inference/esurge/esurge_engine.py
++easydel/inference/esurge/page_table.py
++easydel/inference/esurge/runners/execution_manager.py
++easydel/inference/esurge/runners/model_runner.py
++easydel/inference/esurge/runners/sequence_buffer.py
++easydel/inference/esurge/server/api_server.py
++easydel/inference/esurge/utils.py
++easydel/inference/function_calling.py
++easydel/inference/function_calling_handler.py
++easydel/inference/inference_engine_interface.py
++easydel/inference/logits_process.py
++easydel/inference/oai_proxies.py
++easydel/inference/openai_api_modules.py
++easydel/inference/sampling_params.py
++easydel/inference/tools/__init__.py
++easydel/inference/tools/abstract_tool.py
++easydel/inference/tools/parsers/__init__.py
++easydel/inference/tools/parsers/deepseekv3_tool_parser.py
++easydel/inference/tools/parsers/glm4_moe_tool_parser.py
++easydel/inference/tools/parsers/granite_20b_fc_tool_parser.py
++easydel/inference/tools/parsers/granite_tool_parser.py
++easydel/inference/tools/parsers/hermes_tool_parser.py
++easydel/inference/tools/parsers/hunyuan_a13b_tool_parser.py
++easydel/inference/tools/parsers/internlm2_tool_parser.py
++easydel/inference/tools/parsers/jamba_tool_parser.py
++easydel/inference/tools/parsers/kimi_k2_tool_parser.py
++easydel/inference/tools/parsers/llama4_pythonic_tool_parser.py
++easydel/inference/tools/parsers/llama_tool_parser.py
++easydel/inference/tools/parsers/minimax_tool_parser.py
++easydel/inference/tools/parsers/mistral_tool_parser.py
++easydel/inference/tools/parsers/phi4mini_tool_parser.py
++easydel/inference/tools/parsers/pythonic_tool_parser.py
++easydel/inference/tools/parsers/qwen3coder_tool_parser.py
++easydel/inference/tools/parsers/seed_oss_tool_parser.py
++easydel/inference/tools/parsers/step3_tool_parser.py
++easydel/inference/tools/tool_calling_mixin.py
++easydel/inference/tools/utils.py
++easydel/inference/vinference/api_server.py
++easydel/inference/vsurge/core/engine.py
++easydel/inference/vsurge/server/api_server.py
++easydel/inference/vsurge/utils.py
++easydel/inference/vsurge/vsurge.py
++easydel/infra/base_config.py
++easydel/infra/base_module.py
++easydel/infra/base_state.py
++easydel/infra/mixins/bridge.py
++easydel/infra/mixins/generation.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_forward_jax.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_forward_jax_optimized.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_ragged_paged_attention.py
++easydel/kernels/gpu_ops/__init__.py
++easydel/kernels/gpu_ops/ragged_paged_attention_pallas/__init__.py
++easydel/kernels/gpu_ops/ragged_paged_attention_pallas/_forward_pallas.py
++easydel/kernels/gpu_ops/ragged_paged_attention_pallas/_ragged_paged_attention.py
++easydel/kernels/gpu_ops/ragged_paged_attention_triton/_forward_triton.py
++easydel/kernels/gpu_ops/ragged_paged_attention_triton/_ragged_paged_attention.py
++easydel/layers/attention.py
++easydel/layers/attention_operator/__init__.py
++easydel/layers/attention_operator/modules/__init__.py
++easydel/layers/attention_operator/modules/paged_attn.py
++easydel/modules/qwen2/modeling_qwen.py
++easydel/scripts/finetune/gsm8k_math_gfspo.py
++easydel/scripts/finetune/gsm8k_math_gspo.py
++easydel/scripts/finetune/numinamath_grpo.py
++easydel/scripts/finetune/numinamath_gspo.py
++easydel/scripts/monitor.py
++easydel/trainers/__init__.py
++easydel/trainers/base_trainer.py
++easydel/trainers/group_relative_policy_optimization/__init__.py
++easydel/trainers/group_relative_policy_optimization/_dapo_fn.py
++easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py
++easydel/trainers/group_relative_policy_optimization/_fn.py
++easydel/trainers/group_relative_policy_optimization/_gfpo_fn.py
++easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
++easydel/trainers/group_relative_policy_optimization/adaptive_mesh.py
++easydel/trainers/group_relative_policy_optimization/dapo_config.py
++easydel/trainers/group_relative_policy_optimization/dapo_trainer.py
++easydel/trainers/group_relative_policy_optimization/dr_grpo_config.py
++easydel/trainers/group_relative_policy_optimization/dr_grpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfpo_config.py
++easydel/trainers/group_relative_policy_optimization/gfpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfpo_utils.py
++easydel/trainers/group_relative_policy_optimization/gfspo_config.py
++easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
++easydel/trainers/group_relative_policy_optimization/grpo_config.py
++easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gspo_config.py
++easydel/trainers/group_relative_policy_optimization/gspo_trainer.py
++easydel/trainers/trainer/trainer.py
++easydel/trainers/training_configurations.py
++easydel/trainers/training_utils.py
++easydel/utils/checkpoint_managers/streamer.py
++easydel/utils/cli_helpers.py
++easydel/utils/helpers.py
++easydel/utils/hf_hub_utils.py
++easydel/utils/readme_generator.py
++easydel/utils/safe_ops.py
++easydel/verification/gsm8k_preprocess.py
++easydel/verification/gsm8k_reward.py
++easydel/verification/math_preprocess.py
++easydel/verification/math_reward.py
++easydel/verification/reward_utils.py
++examples/dapo_dr_grpo_trainer.md
++examples/esurge_simple_monitoring.py
++model_specific_diagnosis.py
++pyproject.toml
++run_gfspo_training.sh
++run_gspo_training.sh
++simple_diagnostic.py
++test_curriculum_fix.py
++test_math_pipeline.py
++test_mesh_fix.py
++tests/GRPO_IMPLEMENTATION_NOTES.md
++tests/adaptive_mesh_test.py
++tests/grpo_trainer_integration_test.py
++tests/test_grpo_implementation.py
++tests/trainers/causal_language_model_trainer.py
++tests/trainers/dpo_trainer.py
++tests/trainers/orpo_trainer.py
++tutorials/post-training/direct_preference_optimization/README.md
++tutorials/post-training/direct_preference_optimization/launch.py
++tutorials/post-training/easy_peft/launch.py
++tutorials/post-training/group_relative_policy_optimization/README.md
++tutorials/post-training/group_relative_policy_optimization/launch.py
++tutorials/post-training/odds_ratio_preference_optimization/README.md
++tutorials/post-training/odds_ratio_preference_optimization/launch.py
++tutorials/post-training/supervised-finetuning/README.md
++tutorials/post-training/supervised-finetuning/launch.py
++tutorials/pre-training/distillation/launch.py
++uv.lock
++verl_reference/.gitignore
++verl_reference/.pre-commit-config.yaml
++verl_reference/.readthedocs.yaml
++verl_reference/CONTRIBUTING.md
++verl_reference/LICENSE
++verl_reference/Notice.txt
++verl_reference/README.md
++verl_reference/docker/Apptainerfile.rocm
++verl_reference/docker/Dockerfile.extention.awsefa
++verl_reference/docker/Dockerfile.ngc.vllm
++verl_reference/docker/Dockerfile.ngc.vllm0.8
++verl_reference/docker/Dockerfile.ngc.vllm0.8.sagemaker
++verl_reference/docker/Dockerfile.rocm
++verl_reference/docker/Dockerfile.rocm_verl-0.3.0.post1
++verl_reference/docker/Dockerfile.rocm_verl-0.4.1
++verl_reference/docker/Dockerfile.sglang
++verl_reference/docker/Dockerfile.vemlp.vllm.te
++verl_reference/docker/Dockerfile.vllm.sglang.megatron.deepseek
++verl_reference/docker/README.md
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.12
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.12.deepep
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.13.preview
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.12
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.12.deepep
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.13.preview
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.base
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/README.md
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.8.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.9.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.9.post6.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.vllm.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.base.torch2.7.0
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.base.torch2.7.1
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/README.md
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.mcore0.13.preview
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.base
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/README.md
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.megatron
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/Dockerfile.base
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/README.md
++verl_reference/docs/Makefile
++verl_reference/docs/README.md
++verl_reference/docs/README_vllm0.7.md
++verl_reference/docs/README_vllm0.8.md
++verl_reference/docs/_static/custom.css
++verl_reference/docs/_static/js/resizable-sidebar.js
++verl_reference/docs/_static/js/runllm-widget.js
++verl_reference/docs/_static/logo.png
++verl_reference/docs/advance/agent_loop.rst
++verl_reference/docs/advance/checkpoint.rst
++verl_reference/docs/advance/dpo_extension.rst
++verl_reference/docs/advance/fsdp_extension.rst
++verl_reference/docs/advance/megatron_extension.rst
++verl_reference/docs/advance/one_step_off.md
++verl_reference/docs/advance/placement.rst
++verl_reference/docs/advance/ppo_lora.rst
++verl_reference/docs/advance/rollout_skip.rst
++verl_reference/docs/advance/rollout_trace.rst
++verl_reference/docs/advance/rope.rst
++verl_reference/docs/algo/baseline.md
++verl_reference/docs/algo/dapo.md
++verl_reference/docs/algo/entropy.md
++verl_reference/docs/algo/gpg.md
++verl_reference/docs/algo/grpo.md
++verl_reference/docs/algo/opo.md
++verl_reference/docs/algo/ppo.md
++verl_reference/docs/algo/spin.md
++verl_reference/docs/algo/sppo.md
++verl_reference/docs/amd_tutorial/amd_build_dockerfile_page.rst
++verl_reference/docs/amd_tutorial/amd_vllm_page.rst
++verl_reference/docs/api/data.rst
++verl_reference/docs/api/single_controller.rst
++verl_reference/docs/api/trainer.rst
++verl_reference/docs/api/utils.rst
++verl_reference/docs/ascend_tutorial/ascend_profiling_en.rst
++verl_reference/docs/ascend_tutorial/ascend_profiling_zh.rst
++verl_reference/docs/ascend_tutorial/ascend_quick_start.rst
++verl_reference/docs/conf.py
++verl_reference/docs/examples/config.rst
++verl_reference/docs/examples/gsm8k_example.rst
++verl_reference/docs/examples/multi_modal_example.rst
++verl_reference/docs/examples/ppo_code_architecture.rst
++verl_reference/docs/examples/sandbox_fusion_example.rst
++verl_reference/docs/faq/faq.rst
++verl_reference/docs/hybrid_flow.rst
++verl_reference/docs/index.rst
++verl_reference/docs/perf/device_tuning.rst
++verl_reference/docs/perf/dpsk.md
++verl_reference/docs/perf/nsight_profiling.md
++verl_reference/docs/perf/perf_tuning.rst
++verl_reference/docs/perf/verl_profiler_system.md
++verl_reference/docs/preparation/prepare_data.rst
++verl_reference/docs/preparation/reward_function.rst
++verl_reference/docs/requirements-docs.txt
++verl_reference/docs/sglang_multiturn/interaction_system.rst
++verl_reference/docs/sglang_multiturn/multiturn.rst
++verl_reference/docs/sglang_multiturn/sandbox_fusion.rst
++verl_reference/docs/sglang_multiturn/search_tool_example.rst
++verl_reference/docs/single_controller.rst
++verl_reference/docs/start/agentic_rl.rst
++verl_reference/docs/start/install.rst
++verl_reference/docs/start/more_resources.rst
++verl_reference/docs/start/multinode.rst
++verl_reference/docs/start/quickstart.rst
++verl_reference/docs/start/ray_debug_tutorial.rst
++verl_reference/docs/workers/fsdp_workers.rst
++verl_reference/docs/workers/megatron_workers.rst
++verl_reference/docs/workers/ray_trainer.rst
++verl_reference/docs/workers/sglang_worker.rst
++verl_reference/examples/data_preprocess/aime2024_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/dapo_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/full_hh_rlhf.py
++verl_reference/examples/data_preprocess/geo3k.py
++verl_reference/examples/data_preprocess/geo3k_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/gsm8k.py
++verl_reference/examples/data_preprocess/gsm8k_multiturn_w_interaction.py
++verl_reference/examples/data_preprocess/gsm8k_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/gsm8k_tool_agent_loop.py
++verl_reference/examples/data_preprocess/hellaswag.py
++verl_reference/examples/data_preprocess/math_dataset.py
++verl_reference/examples/data_preprocess/multiturn.py
++verl_reference/examples/data_preprocess/preprocess_search_r1_dataset.py
++verl_reference/examples/generation/run_deepseek7b_mutli_node.sh
++verl_reference/examples/generation/run_deepseek_v2_lite_math.sh
++verl_reference/examples/gmpo_trainer/README.md
++verl_reference/examples/gmpo_trainer/run_qwen2_5-7b_math.sh
++verl_reference/examples/gmpo_trainer/test_dapo_7b_math.sh
++verl_reference/examples/gmpo_trainer/test_dapo_qwen3_30b_math.sh
++verl_reference/examples/gpg_trainer/gpg.md
++verl_reference/examples/gpg_trainer/run_qwen2-7b_math.sh
++verl_reference/examples/gpg_trainer/run_qwen2-7b_math_megatron.sh
++verl_reference/examples/grpo_trainer/README.md
++verl_reference/examples/grpo_trainer/run_deepseek671b_math_megatron_80gb.sh
++verl_reference/examples/grpo_trainer/run_deepseek671b_math_megatron_96gb.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_math.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_minicpmo2_6.sh
++verl_reference/examples/grpo_trainer/run_moonlight16b_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_math.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_seq_balance_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_sgl_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5-3b_gsm8k_grpo_lora.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5-7b_math_megatron_diff_tp.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_32b_grpo_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_discrete_prof_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_e2e_prof_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b-megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b-sglang.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b_lora.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_32b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_3b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_7b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen3-235b_megatron_96gb.sh
++verl_reference/examples/grpo_trainer/run_qwen3-8b.sh
++verl_reference/examples/grpo_trainer/run_qwen3moe-30b_megatron_96gb.sh
++verl_reference/examples/ppo_trainer/README.md
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_modelscope.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_pfppo.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_sandbox_fusion.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_sp2.sh
++verl_reference/examples/ppo_trainer/run_deepseek_full_hh_rlhf.sh
++verl_reference/examples/ppo_trainer/run_deepseek_math_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_deepseek_math_gsm8k_megatron_nsys.sh
++verl_reference/examples/ppo_trainer/run_gemma.sh
++verl_reference/examples/ppo_trainer/run_moonlight16b_a3b_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen1.5_moe_a2.7b-gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_math_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance_fused_kernels.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance_nsys.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_sglang_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2.5-32b.sh
++verl_reference/examples/ray/tutorial.ipynb
++verl_reference/examples/reinforce_plus_plus_trainer/run_qwen2-7b_math_rf.sh
++verl_reference/examples/reinforce_plus_plus_trainer/run_qwen2-7b_math_rf_baseline.sh
++verl_reference/examples/remax_trainer/run_qwen2.5-3b_seq_balance.sh
++verl_reference/examples/remax_trainer/run_qwen2.5-7b_seq_balance.sh
++verl_reference/examples/rloo_trainer/run_qwen2-7b.sh
++verl_reference/examples/sft/gsm8k/run_deepseek_6b7.sh
++verl_reference/examples/sft/gsm8k/run_gemma_2b.sh
++verl_reference/examples/sft/gsm8k/run_gemma_7b.sh
++verl_reference/examples/sft/gsm8k/run_qwen3_8b_sft_peft_sp2_npu.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_peft.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_sp2.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_sp2_liger.sh
++verl_reference/examples/sft/multiturn/run_qwen_05_sp2.sh
++verl_reference/examples/sglang_multiturn/README.md
++verl_reference/examples/sglang_multiturn/config/geo3k_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/geo3k_multiturn_megatron_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_grpo_w_interaction.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_megatron_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/interaction_config/gsm8k_interaction_config.yaml
++verl_reference/examples/sglang_multiturn/config/retool_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/search_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/geo3k_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/mcp_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/sandbox_fusion_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/search_tool_config.yaml
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_geo3k_multiturn.sh
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_geo3k_multiturn_4xgpu.sh
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_megatron_geo3k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen0.5b_gsm8k_multiturn_curriculum.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-0.5b_gsm8k_multiturn_w_interaction.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_multiturn_4xgpu.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_tool_agent_mlflow.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_megatron_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen3-4b_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen3_4b_dapo_multiturn.sh
++verl_reference/examples/sglang_multiturn/search_r1_like/local_dense_retriever/download.py
++verl_reference/examples/sglang_multiturn/search_r1_like/local_dense_retriever/retrieval_server.py
++verl_reference/examples/sglang_multiturn/search_r1_like/run_qwen2.5-3b_instruct_search_multiturn.sh
++verl_reference/examples/split_placement/README.md
++verl_reference/examples/split_placement/config/ppo_trainer_split.yaml
++verl_reference/examples/split_placement/main_ppo_split.py
++verl_reference/examples/split_placement/run_deepseek7b_llm.sh
++verl_reference/examples/split_placement/split_monkey_patch.py
++verl_reference/examples/tuning/0.5b/qwen2-0.5b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/1.5b/qwen2-1.5b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/14b/qwen2-14b_grpo-lora_2_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/14b/qwen2_14b_grpo_4_h800_fsdp_vllm.sh
++verl_reference/examples/tuning/32b/qwen2-32b_grpo-lora_4_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/32b/qwen2_32B_grpo_8_h20_megatron_vllm.sh
++verl_reference/examples/tuning/3b/qwen2-3b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-70b_grpo_32_h20_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-70b_grpo_32_h800_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-72b_grpo-lora_8_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/7b/qwen2-7b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/7b/qwen2-7b_grpo_2_h800_fsdp_vllm.sh
++verl_reference/pyproject.toml
++verl_reference/recipe/README.md
++verl_reference/recipe/char_count/README.md
++verl_reference/recipe/char_count/create_dataset.py
++verl_reference/recipe/char_count/reward_function.py
++verl_reference/recipe/char_count/train_grpo.sh
++verl_reference/recipe/char_count/train_sft.sh
++verl_reference/recipe/dapo/README.md
++verl_reference/recipe/dapo/config/dapo_trainer.yaml
++verl_reference/recipe/dapo/dapo_ray_trainer.py
++verl_reference/recipe/dapo/main_dapo.py
++verl_reference/recipe/dapo/prepare_dapo_data.sh
++verl_reference/recipe/dapo/run_dapo_early_qwen2.5_32b.sh
++verl_reference/recipe/dapo/run_dapo_qwen2.5_32b.sh
++verl_reference/recipe/dapo/run_dapo_qwen2.5_32b_npu.sh
++verl_reference/recipe/dapo/run_dapo_qwen3_14b_base_npu.sh
++verl_reference/recipe/dapo/run_dapo_qwen3_8b_base_npu.sh
++verl_reference/recipe/dapo/run_dapo_wo_ds_qwen2.5_32b.sh
++verl_reference/recipe/dapo/runtime_env.yaml
++verl_reference/recipe/dapo/test_dapo_7b.sh
++verl_reference/recipe/dapo/test_dapo_7b_math.sh
++verl_reference/recipe/dapo/test_dapo_7b_math_lora.sh
++verl_reference/recipe/dapo/test_dapo_7b_math_megatron.sh
++verl_reference/recipe/dapo/test_dapo_dspk_671b_megatron_96gb.sh
++verl_reference/recipe/dapo/test_dapo_qwen3_30b_math.sh
++verl_reference/recipe/dapo/test_dapo_qwen3_30b_math_single_node.sh
++verl_reference/recipe/deepeyes/README.md
++verl_reference/recipe/deepeyes/configs/deepeyes_multiturn_grpo.yaml
++verl_reference/recipe/deepeyes/configs/image_zoom_in_tool_config.yaml
++verl_reference/recipe/deepeyes/deepeyes.py
++verl_reference/recipe/deepeyes/run_deepeyes_grpo.sh
++verl_reference/recipe/entropy/32b_clip_cov.sh
++verl_reference/recipe/entropy/32b_kl_cov.sh
++verl_reference/recipe/entropy/32b_kl_cov_mininbsz.sh
++verl_reference/recipe/entropy/7b_clip_cov.sh
++verl_reference/recipe/entropy/7b_kl_cov.sh
++verl_reference/recipe/entropy/README.md
++verl_reference/recipe/entropy/config/entropy_trainer.yaml
++verl_reference/recipe/entropy/entropy_ray_trainer.py
++verl_reference/recipe/entropy/main_entropy.py
++verl_reference/recipe/entropy/reward.py
++verl_reference/recipe/entropy/reward_score/__init__.py
++verl_reference/recipe/entropy/reward_score/entropy_math/__init__.py
++verl_reference/recipe/entropy/reward_score/entropy_math/grader.py
++verl_reference/recipe/entropy/reward_score/entropy_math/math_normalize.py
++verl_reference/recipe/genrm_remote/README.md
++verl_reference/recipe/genrm_remote/reward_function.py
++verl_reference/recipe/genrm_remote/run_genrm_remote.sh
++verl_reference/recipe/gspo/test_gspo_3b_math.sh
++verl_reference/recipe/gspo/test_gspo_3b_math_slurm.sh
++verl_reference/recipe/langgraph_agent/__init__.py
++verl_reference/recipe/langgraph_agent/chat_model.py
++verl_reference/recipe/langgraph_agent/example/README.md
++verl_reference/recipe/langgraph_agent/example/agent.yaml
++verl_reference/recipe/langgraph_agent/example/create_dataset.py
++verl_reference/recipe/langgraph_agent/example/math_expression.py
++verl_reference/recipe/langgraph_agent/example/run_qwen2.5_3b.sh
++verl_reference/recipe/langgraph_agent/react_agent_loop.py
++verl_reference/recipe/langgraph_agent/test_react_agent_loop.py
++verl_reference/recipe/minicpmo/rl_dataset.py
++verl_reference/recipe/one_step_off_policy/README.md
++verl_reference/recipe/one_step_off_policy/config/one_step_off_ppo_megatron_trainer.yaml
++verl_reference/recipe/one_step_off_policy/config/one_step_off_ppo_trainer.yaml
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_fsdp2_4_12.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_fsdp2_colocate.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_megatron_4_12.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_megatron_colocate.sh
++verl_reference/recipe/one_step_off_policy/fsdp_workers.py
++verl_reference/recipe/one_step_off_policy/grpo_0.6b_gsm8k_fsdp2_2_6.sh
++verl_reference/recipe/one_step_off_policy/grpo_3b_gsm8k_fsdp2_2_6.sh
++verl_reference/recipe/one_step_off_policy/main_ppo.py
++verl_reference/recipe/one_step_off_policy/megatron_workers.py
++verl_reference/recipe/one_step_off_policy/ray_trainer.py
++verl_reference/recipe/one_step_off_policy/vllm_sharding_manager.py
++verl_reference/recipe/prime/__init__.py
++verl_reference/recipe/prime/config/prime_trainer.yaml
++verl_reference/recipe/prime/main_prime.py
++verl_reference/recipe/prime/prime_core_algos.py
++verl_reference/recipe/prime/prime_dp_rm.py
++verl_reference/recipe/prime/prime_fsdp_workers.py
++verl_reference/recipe/prime/prime_ray_trainer.py
++verl_reference/recipe/prime/run_prime_qwen.sh
++verl_reference/recipe/prime/run_prime_qwen_code.sh
++verl_reference/recipe/r1/README.md
++verl_reference/recipe/r1/__init__.py
++verl_reference/recipe/r1/config/evaluation.yaml
++verl_reference/recipe/r1/data_process.py
++verl_reference/recipe/r1/main_eval.py
++verl_reference/recipe/r1/reward_score.py
++verl_reference/recipe/r1/run_r1_distill_qwen.sh
++verl_reference/recipe/r1/tasks/__init__.py
++verl_reference/recipe/r1/tasks/gpqa.py
++verl_reference/recipe/r1/tasks/livecodebench.py
++verl_reference/recipe/r1/tasks/math.py
++verl_reference/recipe/retool/README.md
++verl_reference/recipe/retool/retool.py
++verl_reference/recipe/retool/retool_sft_preprocess.py
++verl_reference/recipe/retool/run_qwen2-32b_dapo.sh
++verl_reference/recipe/retool/run_qwen2-32b_ppo.sh
++verl_reference/recipe/retool/run_qwen2-32b_sft.sh
++verl_reference/recipe/retool/run_qwen2_7b_dapo.sh
++verl_reference/recipe/retool/run_qwen2_7b_sft.sh
++verl_reference/recipe/retool/run_qwen2_7b_sft_npu.sh
++verl_reference/recipe/retool/sandbox_fusion_tool_config.yaml
++verl_reference/recipe/spin/README.md
++verl_reference/recipe/spin/config/spin_trainer.yaml
++verl_reference/recipe/spin/core_algos.py
++verl_reference/recipe/spin/dp_actor.py
++verl_reference/recipe/spin/fsdp_workers.py
++verl_reference/recipe/spin/main_spin.py
++verl_reference/recipe/spin/run_spin.sh
++verl_reference/recipe/spin/spin_trainer.py
++verl_reference/recipe/sppo/README.md
++verl_reference/recipe/sppo/__init__.py
++verl_reference/recipe/sppo/config.py
++verl_reference/recipe/sppo/config/sppo_trainer.yaml
++verl_reference/recipe/sppo/dp_actor.py
++verl_reference/recipe/sppo/main_sppo.py
++verl_reference/recipe/sppo/run_qwen2.5-7b_rm.sh
++verl_reference/recipe/sppo/sppo_ray_trainer.py
++verl_reference/recipe/sppo/sppo_worker.py
++verl_reference/requirements-npu.txt
++verl_reference/requirements.txt
++verl_reference/requirements_sglang.txt
++verl_reference/scripts/__init__.py
++verl_reference/scripts/converter_hf_to_mcore.py
++verl_reference/scripts/diagnose.py
++verl_reference/scripts/generate_trainer_config.sh
++verl_reference/scripts/init_random_model.py
++verl_reference/scripts/install_vllm_sglang_mcore.sh
++verl_reference/scripts/legacy_model_merger.py
++verl_reference/scripts/print_cfg.py
++verl_reference/scripts/rollout_viewer.py
++verl_reference/setup.py
++verl_reference/tests/README.md
++verl_reference/tests/__init__.py
++verl_reference/tests/experimental/agent_loop/agent_utils.py
++verl_reference/tests/experimental/agent_loop/qwen_vl_tool_chat_template.jinja2
++verl_reference/tests/experimental/agent_loop/test_agent_loop_reward.py
++verl_reference/tests/experimental/agent_loop/test_basic_agent_loop.py
++verl_reference/tests/experimental/agent_loop/test_multi_modal.py
++verl_reference/tests/interactions/__init__.py
++verl_reference/tests/interactions/test_gsm8k_interaction.py
++verl_reference/tests/interactions/test_interaction_registry.py
++verl_reference/tests/kill_github_tests.sh
++verl_reference/tests/models/test_transformer.py
++verl_reference/tests/models/test_transformers_ulysses.py
++verl_reference/tests/single_controller/__init__.py
++verl_reference/tests/single_controller/base/test_decorator.py
++verl_reference/tests/single_controller/check_worker_alive/main.py
++verl_reference/tests/single_controller/detached_worker/README.md
++verl_reference/tests/single_controller/detached_worker/client.py
++verl_reference/tests/single_controller/detached_worker/run.sh
++verl_reference/tests/single_controller/detached_worker/server.py
++verl_reference/tests/single_controller/test_auto_padding_on_cpu.py
++verl_reference/tests/single_controller/test_colocated_workers.py
++verl_reference/tests/single_controller/test_colocated_workers_fused.py
++verl_reference/tests/single_controller/test_data_transfer.py
++verl_reference/tests/single_controller/test_decorator_on_cpu.py
++verl_reference/tests/single_controller/test_device_mesh_register.py
++verl_reference/tests/single_controller/test_driverfunc_to_worker.py
++verl_reference/tests/single_controller/test_fused_workers_on_cpu.py
++verl_reference/tests/single_controller/test_high_level_scheduling_api.py
++verl_reference/tests/single_controller/test_nested_worker.py
++verl_reference/tests/single_controller/test_ray_collectives.py
++verl_reference/tests/single_controller/test_ray_local_envs_on_cpu.py
++verl_reference/tests/single_controller/test_ray_utils_on_cpu.py
++verl_reference/tests/single_controller/test_rvdz.py
++verl_reference/tests/single_controller/test_worker_group_basics.py
++verl_reference/tests/single_controller/test_worker_group_torch.py
++verl_reference/tests/special_distributed/README.md
++verl_reference/tests/special_distributed/run_all.sh
++verl_reference/tests/special_distributed/test_fsdp_ckpt.py
++verl_reference/tests/special_distributed/test_mcore_config_converter.py
++verl_reference/tests/special_distributed/test_tensor_dict.py
++verl_reference/tests/special_e2e/README.md
++verl_reference/tests/special_e2e/__init__.py
++verl_reference/tests/special_e2e/check_custom_rwd_fn.py
++verl_reference/tests/special_e2e/check_results.py
++verl_reference/tests/special_e2e/envs/__init__.py
++verl_reference/tests/special_e2e/envs/digit_completion/__init__.py
++verl_reference/tests/special_e2e/envs/digit_completion/task.py
++verl_reference/tests/special_e2e/envs/digit_completion/tokenizer.py
++verl_reference/tests/special_e2e/generation/run_gen_qwen05.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_function_reward.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_model_reward.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_single_gpu.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_single_gpu_with_engine.sh
++verl_reference/tests/special_e2e/run_dapo.sh
++verl_reference/tests/special_e2e/run_genrm_remote.sh
++verl_reference/tests/special_e2e/run_geo3k_fsdp_sgl_multiturn_w_tool.sh
++verl_reference/tests/special_e2e/run_grpo_lora_with_merge.sh
++verl_reference/tests/special_e2e/run_gsm8k_fsdp_sgl_multiturn_sf_tool.sh
++verl_reference/tests/special_e2e/run_gsm8k_fsdp_sgl_multiturn_w_tool.sh
++verl_reference/tests/special_e2e/run_one_step_off_policy.sh
++verl_reference/tests/special_e2e/run_ppo_trainer_megatron.sh
++verl_reference/tests/special_e2e/run_prime.sh
++verl_reference/tests/special_e2e/run_r1_distill_qwen_aime24_eval.sh
++verl_reference/tests/special_e2e/run_spin.sh
++verl_reference/tests/special_e2e/run_sppo.sh
++verl_reference/tests/special_e2e/run_test.sh
++verl_reference/tests/special_e2e/sft/run_sft.sh
++verl_reference/tests/special_e2e/sft/test_sp_loss_match.py
++verl_reference/tests/special_npu/run_qwen2_5_05b_dapo.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_grpo.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_grpo_mindspeed.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_sft_peft_sp2.sh
++verl_reference/tests/special_npu/run_qwen2_5_vl_3b_npu.sh
++verl_reference/tests/special_sanity/check_api_docs.py
++verl_reference/tests/special_sanity/check_device_api_usage.py
++verl_reference/tests/special_sanity/check_docs_time_info.py
++verl_reference/tests/special_sanity/check_docstrings.py
++verl_reference/tests/special_sanity/check_license.py
++verl_reference/tests/special_sanity/check_pr_description.py
++verl_reference/tests/special_sanity/check_pr_title.py
++verl_reference/tests/special_sanity/test_config_docs.py
++verl_reference/tests/special_sanity/test_import.py
++verl_reference/tests/special_sanity/type_coverage_check.py
++verl_reference/tests/special_sanity/validate_imported_docs.py
++verl_reference/tests/special_sanity/validate_structure.py
++verl_reference/tests/special_standalone/README.md
++verl_reference/tests/special_standalone/test_memory_buffers.py
++verl_reference/tests/test_base_config_on_cpu.py
++verl_reference/tests/test_protocol_on_cpu.py
++verl_reference/tests/trainer/__init__.py
++verl_reference/tests/trainer/config/__init__.py
++verl_reference/tests/trainer/config/legacy_ppo_megatron_trainer.yaml
++verl_reference/tests/trainer/config/legacy_ppo_trainer.yaml
++verl_reference/tests/trainer/config/test_algo_config_on_cpu.py
++verl_reference/tests/trainer/config/test_legacy_config_on_cpu.py
++verl_reference/tests/trainer/ppo/__init__.py
++verl_reference/tests/trainer/ppo/test_core_algos_on_cpu.py
++verl_reference/tests/trainer/ppo/test_metric_utils_on_cpu.py
++verl_reference/tests/utils/_test_module.py
++verl_reference/tests/utils/ckpt/test_esi_save_ckpt_on_cpu.py
++verl_reference/tests/utils/dataset/test_create_rl_sampler_on_cpu.py
++verl_reference/tests/utils/dataset/test_multiturn_sft_dataset_on_cpu.py
++verl_reference/tests/utils/dataset/test_rl_collate_fn_on_cpu.py
++verl_reference/tests/utils/dataset/test_rl_dataset_on_cpu.py
++verl_reference/tests/utils/dataset/test_sft_dataset_on_cpu.py
++verl_reference/tests/utils/debug/test_metrics.py
++verl_reference/tests/utils/megatron/test_pipeline_parallel.py
++verl_reference/tests/utils/reward_score/reward_score/test_sandbox_fusion_on_cpu.py
++verl_reference/tests/utils/reward_score/test_sandbox_on_cpu.py
++verl_reference/tests/utils/test_activation_offload.py
++verl_reference/tests/utils/test_config_on_cpu.py
++verl_reference/tests/utils/test_flops_counter.py
++verl_reference/tests/utils/test_fs_on_cpu.py
++verl_reference/tests/utils/test_import_utils_on_cpu.py
++verl_reference/tests/utils/test_linear_cross_entropy.py
++verl_reference/tests/utils/test_model_on_cpu.py
++verl_reference/tests/utils/test_nvtx_profile.py
++verl_reference/tests/utils/test_rollout_skip_on_cpu.py
++verl_reference/tests/utils/test_rollout_trace_on_cpu.py
++verl_reference/tests/utils/test_seqlen_balancing.py
++verl_reference/tests/utils/test_special_linear_cross_entropy_tp.py
++verl_reference/tests/utils/test_special_mstx_profile.py
++verl_reference/tests/utils/test_temp_env_on_cpu.py
++verl_reference/tests/utils/test_timeout_decorator_cpu.py
++verl_reference/tests/utils/test_torch_functional.py
++verl_reference/tests/workers/actor/test_special_dp_actor.py
++verl_reference/tests/workers/config/test_actor_config_on_cpu.py
++verl_reference/tests/workers/config/test_critic_config_on_cpu.py
++verl_reference/tests/workers/config/test_engine_config_on_cpu.py
++verl_reference/tests/workers/config/test_optim_config_on_cpu.py
++verl_reference/tests/workers/critic/test_special_dp_critic.py
++verl_reference/tests/workers/engine/test_special_fsdp_engine.py
++verl_reference/tests/workers/reward_manager/test_registry_on_cpu.py
++verl_reference/tests/workers/rollout/async_rollout_utils.py
++verl_reference/tests/workers/rollout/perf/vllm_async_rollout.py
++verl_reference/tests/workers/rollout/resource/tool_configs/mcp_tool_config
++verl_reference/tests/workers/rollout/resource/tool_configs/sandbox_fusion_tool_config
++verl_reference/tests/workers/rollout/resource/tool_configs/search_tool_config
++verl_reference/tests/workers/rollout/rollout_vllm/run_fsdp_vllm.py
++verl_reference/tests/workers/rollout/rollout_vllm/test_vllm_model_rope_scaling.py
++verl_reference/tests/workers/rollout/rollout_vllm/test_vllm_spmd.py
++verl_reference/tests/workers/rollout/test_async_sglang_server_on_cpu.py
++verl_reference/tests/workers/rollout/test_hf_rollout.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_mcp_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_multimodal_delta.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_search_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_sf_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_w_interaction.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_w_tools.py
++verl_reference/tests/workers/rollout/test_sglang_multi_interaction.py
++verl_reference/tests/workers/rollout/test_sglang_rollout_sharding_manager.py
++verl_reference/tests/workers/rollout/test_sglang_spmd.py
++verl_reference/tests/workers/rollout/utils_sglang.py
++verl_reference/tests/workers/test_fsdp_workers.py
++verl_reference/verl/__init__.py
++verl_reference/verl/base_config.py
++verl_reference/verl/experimental/__init__.py
++verl_reference/verl/experimental/agent_loop/__init__.py
++verl_reference/verl/experimental/agent_loop/agent_loop.py
++verl_reference/verl/experimental/agent_loop/single_turn_agent_loop.py
++verl_reference/verl/experimental/agent_loop/tool_agent_loop.py
++verl_reference/verl/experimental/agent_loop/tool_parser.py
++verl_reference/verl/experimental/dataset/__init__.py
++verl_reference/verl/experimental/dataset/sampler.py
++verl_reference/verl/experimental/dynamic_dataset/__init__.py
++verl_reference/verl/experimental/dynamic_dataset/dynamicgen_dataset.py
++verl_reference/verl/interactions/__init__.py
++verl_reference/verl/interactions/base.py
++verl_reference/verl/interactions/gsm8k_interaction.py
++verl_reference/verl/interactions/utils/__init__.py
++verl_reference/verl/interactions/utils/interaction_registry.py
++verl_reference/verl/model_merger/__init__.py
++verl_reference/verl/model_merger/__main__.py
++verl_reference/verl/model_merger/base_model_merger.py
++verl_reference/verl/model_merger/fsdp_model_merger.py
++verl_reference/verl/model_merger/megatron_model_merger.py
++verl_reference/verl/models/README.md
++verl_reference/verl/models/__init__.py
++verl_reference/verl/models/llama/__init__.py
++verl_reference/verl/models/llama/megatron/__init__.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/__init__.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_loader.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_loader_depracated.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_saver.py
++verl_reference/verl/models/llama/megatron/layers/__init__.py
++verl_reference/verl/models/llama/megatron/layers/parallel_attention.py
++verl_reference/verl/models/llama/megatron/layers/parallel_decoder.py
++verl_reference/verl/models/llama/megatron/layers/parallel_linear.py
++verl_reference/verl/models/llama/megatron/layers/parallel_mlp.py
++verl_reference/verl/models/llama/megatron/layers/parallel_rmsnorm.py
++verl_reference/verl/models/llama/megatron/modeling_llama_megatron.py
++verl_reference/verl/models/mcore/__init__.py
++verl_reference/verl/models/mcore/config_converter.py
++verl_reference/verl/models/mcore/loader.py
++verl_reference/verl/models/mcore/mbridge.py
++verl_reference/verl/models/mcore/model_forward.py
++verl_reference/verl/models/mcore/model_forward_fused.py
++verl_reference/verl/models/mcore/model_initializer.py
++verl_reference/verl/models/mcore/patch_v012.py
++verl_reference/verl/models/mcore/qwen2_5_vl/__init__.py
++verl_reference/verl/models/mcore/qwen2_5_vl/attention.py
++verl_reference/verl/models/mcore/qwen2_5_vl/model.py
++verl_reference/verl/models/mcore/qwen2_5_vl/rope_utils.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_config.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_model.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_transformer_block.py
++verl_reference/verl/models/mcore/readme.md
++verl_reference/verl/models/mcore/registry.py
++verl_reference/verl/models/mcore/saver.py
++verl_reference/verl/models/mcore/util.py
++verl_reference/verl/models/mcore/weight_converter.py
++verl_reference/verl/models/qwen2/__init__.py
++verl_reference/verl/models/qwen2/megatron/__init__.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/__init__.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_loader.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_loader_depracated.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_saver.py
++verl_reference/verl/models/qwen2/megatron/layers/__init__.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_attention.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_decoder.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_linear.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_mlp.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_rmsnorm.py
++verl_reference/verl/models/qwen2/megatron/modeling_qwen2_megatron.py
++verl_reference/verl/models/registry.py
++verl_reference/verl/models/transformers/__init__.py
++verl_reference/verl/models/transformers/dense_common.py
++verl_reference/verl/models/transformers/kimi_vl.py
++verl_reference/verl/models/transformers/llama.py
++verl_reference/verl/models/transformers/monkey_patch.py
++verl_reference/verl/models/transformers/npu_patch.py
++verl_reference/verl/models/transformers/qwen2.py
++verl_reference/verl/models/transformers/qwen2_5_vl.py
++verl_reference/verl/models/transformers/qwen2_vl.py
++verl_reference/verl/models/weight_loader_registry.py
++verl_reference/verl/protocol.py
++verl_reference/verl/py.typed
++verl_reference/verl/single_controller/__init__.py
++verl_reference/verl/single_controller/base/__init__.py
++verl_reference/verl/single_controller/base/decorator.py
++verl_reference/verl/single_controller/base/worker.py
++verl_reference/verl/single_controller/base/worker_group.py
++verl_reference/verl/single_controller/ray/__init__.py
++verl_reference/verl/single_controller/ray/base.py
++verl_reference/verl/third_party/__init__.py
++verl_reference/verl/third_party/sglang/__init__.py
++verl_reference/verl/third_party/sglang/parallel_state.py
++verl_reference/verl/third_party/torch/__init__.py
++verl_reference/verl/third_party/torch/distributed/__init__.py
++verl_reference/verl/third_party/torch/distributed/_state_dict_utils.py
++verl_reference/verl/third_party/torch/distributed/checkpoint/__init__.py
++verl_reference/verl/third_party/torch/distributed/checkpoint/state_dict.py
++verl_reference/verl/third_party/vllm/__init__.py
++verl_reference/verl/tools/__init__.py
++verl_reference/verl/tools/base_tool.py
++verl_reference/verl/tools/geo3k_tool.py
++verl_reference/verl/tools/gsm8k_tool.py
++verl_reference/verl/tools/image_zoom_in_tool.py
++verl_reference/verl/tools/mcp_base_tool.py
++verl_reference/verl/tools/mcp_search_tool.py
++verl_reference/verl/tools/sandbox_fusion_tools.py
++verl_reference/verl/tools/schemas.py
++verl_reference/verl/tools/search_tool.py
++verl_reference/verl/tools/utils/__init__.py
++verl_reference/verl/tools/utils/mcp_clients/McpClientManager.py
++verl_reference/verl/tools/utils/mcp_clients/utils.py
++verl_reference/verl/tools/utils/search_r1_like_utils.py
++verl_reference/verl/tools/utils/tool_registry.py
++verl_reference/verl/trainer/__init__.py
++verl_reference/verl/trainer/config/__init__.py
++verl_reference/verl/trainer/config/_generated_ppo_megatron_trainer.yaml
++verl_reference/verl/trainer/config/_generated_ppo_trainer.yaml
++verl_reference/verl/trainer/config/actor/actor.yaml
++verl_reference/verl/trainer/config/actor/dp_actor.yaml
++verl_reference/verl/trainer/config/actor/megatron_actor.yaml
++verl_reference/verl/trainer/config/algorithm.py
++verl_reference/verl/trainer/config/config.py
++verl_reference/verl/trainer/config/critic/critic.yaml
++verl_reference/verl/trainer/config/critic/dp_critic.yaml
++verl_reference/verl/trainer/config/critic/megatron_critic.yaml
++verl_reference/verl/trainer/config/data/legacy_data.yaml
++verl_reference/verl/trainer/config/evaluation.yaml
++verl_reference/verl/trainer/config/generation.yaml
++verl_reference/verl/trainer/config/npu_profile/npu_profile.yaml
++verl_reference/verl/trainer/config/ppo_megatron_trainer.yaml
++verl_reference/verl/trainer/config/ppo_trainer.yaml
++verl_reference/verl/trainer/config/ref/dp_ref.yaml
++verl_reference/verl/trainer/config/ref/megatron_ref.yaml
++verl_reference/verl/trainer/config/ref/ref.yaml
++verl_reference/verl/trainer/config/reward_model/dp_reward_model.yaml
++verl_reference/verl/trainer/config/reward_model/megatron_reward_model.yaml
++verl_reference/verl/trainer/config/reward_model/reward_model.yaml
++verl_reference/verl/trainer/config/rollout/rollout.yaml
++verl_reference/verl/trainer/config/sft_trainer.yaml
++verl_reference/verl/trainer/constants_ppo.py
++verl_reference/verl/trainer/fsdp_sft_trainer.py
++verl_reference/verl/trainer/main_eval.py
++verl_reference/verl/trainer/main_generation.py
++verl_reference/verl/trainer/main_ppo.py
++verl_reference/verl/trainer/ppo/__init__.py
++verl_reference/verl/trainer/ppo/core_algos.py
++verl_reference/verl/trainer/ppo/metric_utils.py
++verl_reference/verl/trainer/ppo/ray_trainer.py
++verl_reference/verl/trainer/ppo/reward.py
++verl_reference/verl/trainer/runtime_env.yaml
++verl_reference/verl/utils/__init__.py
++verl_reference/verl/utils/activation_offload.py
++verl_reference/verl/utils/checkpoint/__init__.py
++verl_reference/verl/utils/checkpoint/checkpoint_manager.py
++verl_reference/verl/utils/checkpoint/fsdp_checkpoint_manager.py
++verl_reference/verl/utils/checkpoint/megatron_checkpoint_manager.py
++verl_reference/verl/utils/config.py
++verl_reference/verl/utils/dataset/README.md
++verl_reference/verl/utils/dataset/__init__.py
++verl_reference/verl/utils/dataset/multiturn_sft_dataset.py
++verl_reference/verl/utils/dataset/rl_dataset.py
++verl_reference/verl/utils/dataset/rm_dataset.py
++verl_reference/verl/utils/dataset/sft_dataset.py
++verl_reference/verl/utils/dataset/vision_utils.py
++verl_reference/verl/utils/debug/__init__.py
++verl_reference/verl/utils/debug/metrics.py
++verl_reference/verl/utils/debug/performance.py
++verl_reference/verl/utils/debug/trajectory_tracker.py
++verl_reference/verl/utils/device.py
++verl_reference/verl/utils/distributed.py
++verl_reference/verl/utils/experimental/__init__.py
++verl_reference/verl/utils/experimental/torch_functional.py
++verl_reference/verl/utils/flops_counter.py
++verl_reference/verl/utils/fs.py
++verl_reference/verl/utils/fsdp_utils.py
++verl_reference/verl/utils/hdfs_io.py
++verl_reference/verl/utils/import_utils.py
++verl_reference/verl/utils/kernel/__init__.py
++verl_reference/verl/utils/kernel/kernels.py
++verl_reference/verl/utils/kernel/linear_cross_entropy.py
++verl_reference/verl/utils/logger/__init__.py
++verl_reference/verl/utils/logger/aggregate_logger.py
++verl_reference/verl/utils/logging_utils.py
++verl_reference/verl/utils/megatron/__init__.py
++verl_reference/verl/utils/megatron/dist_checkpointing.py
++verl_reference/verl/utils/megatron/memory.py
++verl_reference/verl/utils/megatron/optimizer.py
++verl_reference/verl/utils/megatron/pipeline_parallel.py
++verl_reference/verl/utils/megatron/sequence_parallel.py
++verl_reference/verl/utils/megatron/tensor_parallel.py
++verl_reference/verl/utils/megatron_utils.py
++verl_reference/verl/utils/memory_buffer.py
++verl_reference/verl/utils/memory_utils.py
++verl_reference/verl/utils/metric/__init__.py
++verl_reference/verl/utils/metric/utils.py
++verl_reference/verl/utils/model.py
++verl_reference/verl/utils/net_utils.py
++verl_reference/verl/utils/profiler/__init__.py
++verl_reference/verl/utils/profiler/config.py
++verl_reference/verl/utils/profiler/empty_annotations.py
++verl_reference/verl/utils/profiler/mstx_profile.py
++verl_reference/verl/utils/profiler/nvtx_profile.py
++verl_reference/verl/utils/profiler/performance.py
++verl_reference/verl/utils/profiler/profile.py
++verl_reference/verl/utils/py_functional.py
++verl_reference/verl/utils/ray_utils.py
++verl_reference/verl/utils/rendezvous/__init__.py
++verl_reference/verl/utils/rendezvous/ray_backend.py
++verl_reference/verl/utils/reward_score/__init__.py
++verl_reference/verl/utils/reward_score/geo3k.py
++verl_reference/verl/utils/reward_score/gsm8k.py
++verl_reference/verl/utils/reward_score/math.py
++verl_reference/verl/utils/reward_score/math_batch.py
++verl_reference/verl/utils/reward_score/math_dapo.py
++verl_reference/verl/utils/reward_score/math_verify.py
++verl_reference/verl/utils/reward_score/prime_code/README.md
++verl_reference/verl/utils/reward_score/prime_code/__init__.py
++verl_reference/verl/utils/reward_score/prime_code/testing_util.py
++verl_reference/verl/utils/reward_score/prime_code/utils.py
++verl_reference/verl/utils/reward_score/prime_math/__init__.py
++verl_reference/verl/utils/reward_score/prime_math/grader.py
++verl_reference/verl/utils/reward_score/prime_math/math_normalize.py
++verl_reference/verl/utils/reward_score/sandbox_fusion/__init__.py
++verl_reference/verl/utils/reward_score/sandbox_fusion/utils.py
++verl_reference/verl/utils/reward_score/search_r1_like_qa_em.py
++verl_reference/verl/utils/rollout_skip.py
++verl_reference/verl/utils/rollout_trace.py
++verl_reference/verl/utils/seqlen_balancing.py
++verl_reference/verl/utils/tokenizer.py
++verl_reference/verl/utils/torch_dtypes.py
++verl_reference/verl/utils/torch_functional.py
++verl_reference/verl/utils/tracking.py
++verl_reference/verl/utils/transformers_compat.py
++verl_reference/verl/utils/ulysses.py
++verl_reference/verl/utils/vllm/__init__.py
++verl_reference/verl/utils/vllm/patch.py
++verl_reference/verl/utils/vllm/utils.py
++verl_reference/verl/version/version
++verl_reference/verl/workers/__init__.py
++verl_reference/verl/workers/actor/__init__.py
++verl_reference/verl/workers/actor/base.py
++verl_reference/verl/workers/actor/dp_actor.py
++verl_reference/verl/workers/actor/megatron_actor.py
++verl_reference/verl/workers/config/__init__.py
++verl_reference/verl/workers/config/actor.py
++verl_reference/verl/workers/config/critic.py
++verl_reference/verl/workers/config/engine.py
++verl_reference/verl/workers/config/model.py
++verl_reference/verl/workers/config/optimizer.py
++verl_reference/verl/workers/config/rollout.py
++verl_reference/verl/workers/critic/__init__.py
++verl_reference/verl/workers/critic/base.py
++verl_reference/verl/workers/critic/dp_critic.py
++verl_reference/verl/workers/critic/megatron_critic.py
++verl_reference/verl/workers/engine/__init__.py
++verl_reference/verl/workers/engine/base.py
++verl_reference/verl/workers/engine/fsdp/__init__.py
++verl_reference/verl/workers/engine/fsdp/engine_impl.py
++verl_reference/verl/workers/engine/fsdp/utils.py
++verl_reference/verl/workers/engine/megatron/__init__.py
++verl_reference/verl/workers/engine/megatron/engine_impl.py
++verl_reference/verl/workers/fsdp_workers.py
++verl_reference/verl/workers/megatron_workers.py
++verl_reference/verl/workers/reward_manager/__init__.py
++verl_reference/verl/workers/reward_manager/abstract.py
++verl_reference/verl/workers/reward_manager/batch.py
++verl_reference/verl/workers/reward_manager/dapo.py
++verl_reference/verl/workers/reward_manager/naive.py
++verl_reference/verl/workers/reward_manager/prime.py
++verl_reference/verl/workers/reward_manager/registry.py
++verl_reference/verl/workers/reward_model/__init__.py
++verl_reference/verl/workers/reward_model/base.py
++verl_reference/verl/workers/reward_model/megatron/__init__.py
++verl_reference/verl/workers/reward_model/megatron/reward_model.py
++verl_reference/verl/workers/roles/__init__.py
++verl_reference/verl/workers/roles/actor.py
++verl_reference/verl/workers/roles/critic.py
++verl_reference/verl/workers/rollout/__init__.py
++verl_reference/verl/workers/rollout/async_server.py
++verl_reference/verl/workers/rollout/base.py
++verl_reference/verl/workers/rollout/hf_rollout.py
++verl_reference/verl/workers/rollout/naive/__init__.py
++verl_reference/verl/workers/rollout/naive/naive_rollout.py
++verl_reference/verl/workers/rollout/rollout_worker.py
++verl_reference/verl/workers/rollout/schemas.py
++verl_reference/verl/workers/rollout/sglang_rollout/__init__.py
++verl_reference/verl/workers/rollout/sglang_rollout/async_sglang_server.py
++verl_reference/verl/workers/rollout/sglang_rollout/sglang_rollout.py
++verl_reference/verl/workers/rollout/sglang_rollout/utils.py
++verl_reference/verl/workers/rollout/tokenizer.py
++verl_reference/verl/workers/rollout/vllm_rollout/__init__.py
++verl_reference/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++verl_reference/verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py
++verl_reference/verl/workers/sharding_manager/__init__.py
++verl_reference/verl/workers/sharding_manager/base.py
++verl_reference/verl/workers/sharding_manager/fsdp_sglang.py
++verl_reference/verl/workers/sharding_manager/fsdp_ulysses.py
++verl_reference/verl/workers/sharding_manager/fsdp_vllm.py
++verl_reference/verl/workers/sharding_manager/megatron_sglang.py
++verl_reference/verl/workers/sharding_manager/megatron_vllm.py
+diff --git a/.codex_tmp/theirs.txt b/.codex_tmp/theirs.txt
+new file mode 100644
+index 00000000..89cc4cac
+--- /dev/null
++++ b/.codex_tmp/theirs.txt
+@@ -0,0 +1,1028 @@
++.cursorignore
++.gitattributes
++.github/workflows/docker-image.yaml
++.github/workflows/lint.yaml
++.gitignore
++=2.19.0
++CHANGELOG.md
++README.md
++TPU_TROUBLESHOOTING.md
++combined_group_relative_policy_optimization.txt
++docs/api_docs/inference.rst
++docs/api_docs/inference_esurge.rst
++docs/api_docs/inference_esurge_engine.rst
++docs/api_docs/inference_esurge_esurge_engine.rst
++docs/api_docs/inference_esurge_runners.rst
++docs/api_docs/inference_esurge_runners_execution_manager.rst
++docs/api_docs/inference_function_calling.rst
++docs/api_docs/inference_function_calling_handler.rst
++docs/api_docs/inference_tools.rst
++docs/api_docs/inference_tools___init__.rst
++docs/api_docs/inference_tools_abstract_tool.rst
++docs/api_docs/inference_tools_parsers.rst
++docs/api_docs/inference_tools_parsers___init__.rst
++docs/api_docs/inference_tools_parsers_deepseekv3_tool_parser.rst
++docs/api_docs/inference_tools_parsers_glm4_moe_tool_parser.rst
++docs/api_docs/inference_tools_parsers_granite_20b_fc_tool_parser.rst
++docs/api_docs/inference_tools_parsers_granite_tool_parser.rst
++docs/api_docs/inference_tools_parsers_hermes_tool_parser.rst
++docs/api_docs/inference_tools_parsers_hunyuan_a13b_tool_parser.rst
++docs/api_docs/inference_tools_parsers_internlm2_tool_parser.rst
++docs/api_docs/inference_tools_parsers_jamba_tool_parser.rst
++docs/api_docs/inference_tools_parsers_kimi_k2_tool_parser.rst
++docs/api_docs/inference_tools_parsers_llama4_pythonic_tool_parser.rst
++docs/api_docs/inference_tools_parsers_llama_tool_parser.rst
++docs/api_docs/inference_tools_parsers_minimax_tool_parser.rst
++docs/api_docs/inference_tools_parsers_mistral_tool_parser.rst
++docs/api_docs/inference_tools_parsers_phi4mini_tool_parser.rst
++docs/api_docs/inference_tools_parsers_pythonic_tool_parser.rst
++docs/api_docs/inference_tools_parsers_qwen3coder_tool_parser.rst
++docs/api_docs/inference_tools_parsers_seed_oss_tool_parser.rst
++docs/api_docs/inference_tools_parsers_step3_tool_parser.rst
++docs/api_docs/inference_tools_tool_calling_mixin.rst
++docs/api_docs/inference_tools_utils.rst
++docs/api_docs/kernels_cpu_ops_ragged_paged_attention_jax.rst
++docs/api_docs/kernels_cpu_ops_ragged_paged_attention_jax__forward_jax_optimized.rst
++docs/api_docs/kernels_gpu_ops.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas___init__.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas__forward_pallas.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_pallas__ragged_paged_attention.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton___init__.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton__forward_triton.rst
++docs/api_docs/kernels_gpu_ops_ragged_paged_attention_triton__ragged_paged_attention.rst
++docs/api_docs/layers_attention_operator_modules.rst
++docs/api_docs/layers_attention_operator_modules_paged_attn.rst
++docs/api_docs/layers_attention_operator_modules_ragged_page_attn.rst
++docs/esurge.rst
++docs/esurge_examples.rst
++docs/vsurge_api_server_example.rst
++docs/vsurge_example.rst
++easydel/__init__.py
++easydel/inference/__init__.py
++easydel/inference/decoders.py
++easydel/inference/esurge/esurge_engine.py
++easydel/inference/esurge/page_table.py
++easydel/inference/esurge/runners/execution_manager.py
++easydel/inference/esurge/runners/model_runner.py
++easydel/inference/esurge/runners/sequence_buffer.py
++easydel/inference/esurge/server/api_server.py
++easydel/inference/esurge/utils.py
++easydel/inference/function_calling.py
++easydel/inference/function_calling_handler.py
++easydel/inference/inference_engine_interface.py
++easydel/inference/logits_process.py
++easydel/inference/oai_proxies.py
++easydel/inference/openai_api_modules.py
++easydel/inference/sampling_params.py
++easydel/inference/tools/__init__.py
++easydel/inference/tools/abstract_tool.py
++easydel/inference/tools/parsers/__init__.py
++easydel/inference/tools/parsers/deepseekv3_tool_parser.py
++easydel/inference/tools/parsers/glm4_moe_tool_parser.py
++easydel/inference/tools/parsers/granite_20b_fc_tool_parser.py
++easydel/inference/tools/parsers/granite_tool_parser.py
++easydel/inference/tools/parsers/hermes_tool_parser.py
++easydel/inference/tools/parsers/hunyuan_a13b_tool_parser.py
++easydel/inference/tools/parsers/internlm2_tool_parser.py
++easydel/inference/tools/parsers/jamba_tool_parser.py
++easydel/inference/tools/parsers/kimi_k2_tool_parser.py
++easydel/inference/tools/parsers/llama4_pythonic_tool_parser.py
++easydel/inference/tools/parsers/llama_tool_parser.py
++easydel/inference/tools/parsers/minimax_tool_parser.py
++easydel/inference/tools/parsers/mistral_tool_parser.py
++easydel/inference/tools/parsers/phi4mini_tool_parser.py
++easydel/inference/tools/parsers/pythonic_tool_parser.py
++easydel/inference/tools/parsers/qwen3coder_tool_parser.py
++easydel/inference/tools/parsers/seed_oss_tool_parser.py
++easydel/inference/tools/parsers/step3_tool_parser.py
++easydel/inference/tools/tool_calling_mixin.py
++easydel/inference/tools/utils.py
++easydel/inference/vinference/api_server.py
++easydel/inference/vsurge/core/engine.py
++easydel/inference/vsurge/server/api_server.py
++easydel/inference/vsurge/utils.py
++easydel/inference/vsurge/vsurge.py
++easydel/infra/base_config.py
++easydel/infra/base_module.py
++easydel/infra/base_state.py
++easydel/infra/mixins/bridge.py
++easydel/infra/mixins/generation.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_forward_jax.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_forward_jax_optimized.py
++easydel/kernels/cpu_ops/ragged_paged_attention_jax/_ragged_paged_attention.py
++easydel/kernels/gpu_ops/__init__.py
++easydel/kernels/gpu_ops/ragged_paged_attention_pallas/_forward_pallas.py
++easydel/kernels/gpu_ops/ragged_paged_attention_pallas/_ragged_paged_attention.py
++easydel/kernels/gpu_ops/ragged_paged_attention_triton/__init__.py
++easydel/kernels/gpu_ops/ragged_paged_attention_triton/_forward_triton.py
++easydel/kernels/gpu_ops/ragged_paged_attention_triton/_ragged_paged_attention.py
++easydel/layers/attention.py
++easydel/layers/attention_operator/__init__.py
++easydel/layers/attention_operator/modules/__init__.py
++easydel/layers/attention_operator/modules/ragged_page_attn.py
++easydel/modules/qwen2/modeling_qwen.py
++easydel/py.typed
++easydel/scripts/finetune/gsm8k_math_gfspo.py
++easydel/scripts/finetune/gsm8k_math_gspo.py
++easydel/scripts/finetune/numinamath_grpo.py
++easydel/scripts/finetune/numinamath_gspo.py
++easydel/scripts/monitor.py
++easydel/trainers/__init__.py
++easydel/trainers/base_trainer.py
++easydel/trainers/group_relative_policy_optimization/__init__.py
++easydel/trainers/group_relative_policy_optimization/_dapo_fn.py
++easydel/trainers/group_relative_policy_optimization/_dr_grpo_fn.py
++easydel/trainers/group_relative_policy_optimization/_fn.py
++easydel/trainers/group_relative_policy_optimization/_gfpo_fn.py
++easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
++easydel/trainers/group_relative_policy_optimization/adaptive_mesh.py
++easydel/trainers/group_relative_policy_optimization/dapo_config.py
++easydel/trainers/group_relative_policy_optimization/dapo_trainer.py
++easydel/trainers/group_relative_policy_optimization/dr_grpo_config.py
++easydel/trainers/group_relative_policy_optimization/dr_grpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfpo_config.py
++easydel/trainers/group_relative_policy_optimization/gfpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfpo_utils.py
++easydel/trainers/group_relative_policy_optimization/gfspo_config.py
++easydel/trainers/group_relative_policy_optimization/gfspo_stable_trainer.py
++easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
++easydel/trainers/group_relative_policy_optimization/grpo_config.py
++easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++easydel/trainers/group_relative_policy_optimization/gspo_config.py
++easydel/trainers/group_relative_policy_optimization/gspo_trainer.py
++easydel/trainers/trainer/trainer.py
++easydel/trainers/training_configurations.py
++easydel/trainers/training_utils.py
++easydel/utils/checkpoint_managers/streamer.py
++easydel/utils/cli_helpers.py
++easydel/utils/helpers.py
++easydel/utils/hf_hub_utils.py
++easydel/utils/readme_generator.py
++easydel/utils/safe_ops.py
++easydel/verification/gsm8k_preprocess.py
++easydel/verification/gsm8k_reward.py
++easydel/verification/math_preprocess.py
++easydel/verification/math_reward.py
++easydel/verification/reward_utils.py
++examples/dapo_dr_grpo_trainer.md
++examples/esurge_simple_monitoring.py
++model_specific_diagnosis.py
++pyproject.toml
++run_gfspo_training.sh
++run_gspo_training.sh
++simple_diagnostic.py
++test_curriculum_fix.py
++test_math_pipeline.py
++test_mesh_fix.py
++tests/GRPO_IMPLEMENTATION_NOTES.md
++tests/adaptive_mesh_test.py
++tests/grpo_trainer_integration_test.py
++tests/test_grpo_implementation.py
++tests/trainers/causal_language_model_trainer.py
++tests/trainers/dpo_trainer.py
++tests/trainers/orpo_trainer.py
++tutorials/post-training/direct_preference_optimization/README.md
++tutorials/post-training/direct_preference_optimization/launch.py
++tutorials/post-training/easy_peft/launch.py
++tutorials/post-training/group_relative_policy_optimization/README.md
++tutorials/post-training/group_relative_policy_optimization/launch.py
++tutorials/post-training/odds_ratio_preference_optimization/README.md
++tutorials/post-training/odds_ratio_preference_optimization/launch.py
++tutorials/post-training/supervised-finetuning/README.md
++tutorials/post-training/supervised-finetuning/launch.py
++tutorials/pre-training/distillation/launch.py
++uv.lock
++verl_reference/.gitignore
++verl_reference/.pre-commit-config.yaml
++verl_reference/.readthedocs.yaml
++verl_reference/CONTRIBUTING.md
++verl_reference/LICENSE
++verl_reference/Notice.txt
++verl_reference/README.md
++verl_reference/docker/Apptainerfile.rocm
++verl_reference/docker/Dockerfile.extention.awsefa
++verl_reference/docker/Dockerfile.ngc.vllm
++verl_reference/docker/Dockerfile.ngc.vllm0.8
++verl_reference/docker/Dockerfile.ngc.vllm0.8.sagemaker
++verl_reference/docker/Dockerfile.rocm
++verl_reference/docker/Dockerfile.rocm_verl-0.3.0.post1
++verl_reference/docker/Dockerfile.rocm_verl-0.4.1
++verl_reference/docker/Dockerfile.sglang
++verl_reference/docker/Dockerfile.vemlp.vllm.te
++verl_reference/docker/Dockerfile.vllm.sglang.megatron.deepseek
++verl_reference/docker/README.md
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.12
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.12.deepep
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.sglang.vllm.mcore0.13.preview
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.12
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.12.deepep
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.app.vllm.mcore0.13.preview
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/Dockerfile.base
++verl_reference/docker/verl0.4-cu124-torch2.6-fa2.7.4/README.md
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.8.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.9.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.sglang0.4.9.post6.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.app.vllm.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.base.torch2.7.0
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/Dockerfile.base.torch2.7.1
++verl_reference/docker/verl0.5-cu126-torch2.7-fa2.7.4/README.md
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.mcore0.12
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.mcore0.13.preview
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/Dockerfile.base
++verl_reference/docker/verl0.5-cu126-torch2.7.1-fa2.8.0/README.md
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/Dockerfile.app.sglang.megatron
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/Dockerfile.base
++verl_reference/docker/verl0.5-preview-cu128-torch2.7.1-fa2.8.0/README.md
++verl_reference/docs/Makefile
++verl_reference/docs/README.md
++verl_reference/docs/README_vllm0.7.md
++verl_reference/docs/README_vllm0.8.md
++verl_reference/docs/_static/custom.css
++verl_reference/docs/_static/js/resizable-sidebar.js
++verl_reference/docs/_static/js/runllm-widget.js
++verl_reference/docs/_static/logo.png
++verl_reference/docs/advance/agent_loop.rst
++verl_reference/docs/advance/checkpoint.rst
++verl_reference/docs/advance/dpo_extension.rst
++verl_reference/docs/advance/fsdp_extension.rst
++verl_reference/docs/advance/megatron_extension.rst
++verl_reference/docs/advance/one_step_off.md
++verl_reference/docs/advance/placement.rst
++verl_reference/docs/advance/ppo_lora.rst
++verl_reference/docs/advance/rollout_skip.rst
++verl_reference/docs/advance/rollout_trace.rst
++verl_reference/docs/advance/rope.rst
++verl_reference/docs/algo/baseline.md
++verl_reference/docs/algo/dapo.md
++verl_reference/docs/algo/entropy.md
++verl_reference/docs/algo/gpg.md
++verl_reference/docs/algo/grpo.md
++verl_reference/docs/algo/opo.md
++verl_reference/docs/algo/ppo.md
++verl_reference/docs/algo/spin.md
++verl_reference/docs/algo/sppo.md
++verl_reference/docs/amd_tutorial/amd_build_dockerfile_page.rst
++verl_reference/docs/amd_tutorial/amd_vllm_page.rst
++verl_reference/docs/api/data.rst
++verl_reference/docs/api/single_controller.rst
++verl_reference/docs/api/trainer.rst
++verl_reference/docs/api/utils.rst
++verl_reference/docs/ascend_tutorial/ascend_profiling_en.rst
++verl_reference/docs/ascend_tutorial/ascend_profiling_zh.rst
++verl_reference/docs/ascend_tutorial/ascend_quick_start.rst
++verl_reference/docs/conf.py
++verl_reference/docs/examples/config.rst
++verl_reference/docs/examples/gsm8k_example.rst
++verl_reference/docs/examples/multi_modal_example.rst
++verl_reference/docs/examples/ppo_code_architecture.rst
++verl_reference/docs/examples/sandbox_fusion_example.rst
++verl_reference/docs/faq/faq.rst
++verl_reference/docs/hybrid_flow.rst
++verl_reference/docs/index.rst
++verl_reference/docs/perf/device_tuning.rst
++verl_reference/docs/perf/dpsk.md
++verl_reference/docs/perf/nsight_profiling.md
++verl_reference/docs/perf/perf_tuning.rst
++verl_reference/docs/perf/verl_profiler_system.md
++verl_reference/docs/preparation/prepare_data.rst
++verl_reference/docs/preparation/reward_function.rst
++verl_reference/docs/requirements-docs.txt
++verl_reference/docs/sglang_multiturn/interaction_system.rst
++verl_reference/docs/sglang_multiturn/multiturn.rst
++verl_reference/docs/sglang_multiturn/sandbox_fusion.rst
++verl_reference/docs/sglang_multiturn/search_tool_example.rst
++verl_reference/docs/single_controller.rst
++verl_reference/docs/start/agentic_rl.rst
++verl_reference/docs/start/install.rst
++verl_reference/docs/start/more_resources.rst
++verl_reference/docs/start/multinode.rst
++verl_reference/docs/start/quickstart.rst
++verl_reference/docs/start/ray_debug_tutorial.rst
++verl_reference/docs/workers/fsdp_workers.rst
++verl_reference/docs/workers/megatron_workers.rst
++verl_reference/docs/workers/ray_trainer.rst
++verl_reference/docs/workers/sglang_worker.rst
++verl_reference/examples/data_preprocess/aime2024_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/dapo_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/full_hh_rlhf.py
++verl_reference/examples/data_preprocess/geo3k.py
++verl_reference/examples/data_preprocess/geo3k_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/gsm8k.py
++verl_reference/examples/data_preprocess/gsm8k_multiturn_w_interaction.py
++verl_reference/examples/data_preprocess/gsm8k_multiturn_w_tool.py
++verl_reference/examples/data_preprocess/gsm8k_tool_agent_loop.py
++verl_reference/examples/data_preprocess/hellaswag.py
++verl_reference/examples/data_preprocess/math_dataset.py
++verl_reference/examples/data_preprocess/multiturn.py
++verl_reference/examples/data_preprocess/preprocess_search_r1_dataset.py
++verl_reference/examples/generation/run_deepseek7b_mutli_node.sh
++verl_reference/examples/generation/run_deepseek_v2_lite_math.sh
++verl_reference/examples/gmpo_trainer/README.md
++verl_reference/examples/gmpo_trainer/run_qwen2_5-7b_math.sh
++verl_reference/examples/gmpo_trainer/test_dapo_7b_math.sh
++verl_reference/examples/gmpo_trainer/test_dapo_qwen3_30b_math.sh
++verl_reference/examples/gpg_trainer/gpg.md
++verl_reference/examples/gpg_trainer/run_qwen2-7b_math.sh
++verl_reference/examples/gpg_trainer/run_qwen2-7b_math_megatron.sh
++verl_reference/examples/grpo_trainer/README.md
++verl_reference/examples/grpo_trainer/run_deepseek671b_math_megatron_80gb.sh
++verl_reference/examples/grpo_trainer/run_deepseek671b_math_megatron_96gb.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_math.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_deepseek7b_llm_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_minicpmo2_6.sh
++verl_reference/examples/grpo_trainer/run_moonlight16b_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_math.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_seq_balance_math_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2-7b_sgl_megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5-3b_gsm8k_grpo_lora.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5-7b_math_megatron_diff_tp.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_32b_grpo_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_discrete_prof_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_e2e_prof_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_7b_grpo_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b-megatron.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b-sglang.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b_lora.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl-7b_seq_balance.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_32b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_3b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen2_5_vl_7b_npu.sh
++verl_reference/examples/grpo_trainer/run_qwen3-235b_megatron_96gb.sh
++verl_reference/examples/grpo_trainer/run_qwen3-8b.sh
++verl_reference/examples/grpo_trainer/run_qwen3moe-30b_megatron_96gb.sh
++verl_reference/examples/ppo_trainer/README.md
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_modelscope.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_pfppo.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_sandbox_fusion.sh
++verl_reference/examples/ppo_trainer/run_deepseek7b_llm_sp2.sh
++verl_reference/examples/ppo_trainer/run_deepseek_full_hh_rlhf.sh
++verl_reference/examples/ppo_trainer/run_deepseek_math_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_deepseek_math_gsm8k_megatron_nsys.sh
++verl_reference/examples/ppo_trainer/run_gemma.sh
++verl_reference/examples/ppo_trainer/run_moonlight16b_a3b_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen1.5_moe_a2.7b-gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_math_gsm8k_megatron.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance_fused_kernels.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_rm_seq_balance_nsys.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2-7b_sglang_seq_balance.sh
++verl_reference/examples/ppo_trainer/run_qwen2.5-32b.sh
++verl_reference/examples/ray/tutorial.ipynb
++verl_reference/examples/reinforce_plus_plus_trainer/run_qwen2-7b_math_rf.sh
++verl_reference/examples/reinforce_plus_plus_trainer/run_qwen2-7b_math_rf_baseline.sh
++verl_reference/examples/remax_trainer/run_qwen2.5-3b_seq_balance.sh
++verl_reference/examples/remax_trainer/run_qwen2.5-7b_seq_balance.sh
++verl_reference/examples/rloo_trainer/run_qwen2-7b.sh
++verl_reference/examples/sft/gsm8k/run_deepseek_6b7.sh
++verl_reference/examples/sft/gsm8k/run_gemma_2b.sh
++verl_reference/examples/sft/gsm8k/run_gemma_7b.sh
++verl_reference/examples/sft/gsm8k/run_qwen3_8b_sft_peft_sp2_npu.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_peft.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_sp2.sh
++verl_reference/examples/sft/gsm8k/run_qwen_05_sp2_liger.sh
++verl_reference/examples/sft/multiturn/run_qwen_05_sp2.sh
++verl_reference/examples/sglang_multiturn/README.md
++verl_reference/examples/sglang_multiturn/config/geo3k_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/geo3k_multiturn_megatron_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_grpo_w_interaction.yaml
++verl_reference/examples/sglang_multiturn/config/gsm8k_multiturn_megatron_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/interaction_config/gsm8k_interaction_config.yaml
++verl_reference/examples/sglang_multiturn/config/retool_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/search_multiturn_grpo.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/geo3k_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/mcp_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/sandbox_fusion_tool_config.yaml
++verl_reference/examples/sglang_multiturn/config/tool_config/search_tool_config.yaml
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_geo3k_multiturn.sh
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_geo3k_multiturn_4xgpu.sh
++verl_reference/examples/sglang_multiturn/geo3k/run_qwen2.5-3b_megatron_geo3k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen0.5b_gsm8k_multiturn_curriculum.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-0.5b_gsm8k_multiturn_w_interaction.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_multiturn_4xgpu.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_gsm8k_tool_agent_mlflow.sh
++verl_reference/examples/sglang_multiturn/run_qwen2.5-3b_megatron_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen3-4b_gsm8k_multiturn.sh
++verl_reference/examples/sglang_multiturn/run_qwen3_4b_dapo_multiturn.sh
++verl_reference/examples/sglang_multiturn/search_r1_like/local_dense_retriever/download.py
++verl_reference/examples/sglang_multiturn/search_r1_like/local_dense_retriever/retrieval_server.py
++verl_reference/examples/sglang_multiturn/search_r1_like/run_qwen2.5-3b_instruct_search_multiturn.sh
++verl_reference/examples/split_placement/README.md
++verl_reference/examples/split_placement/config/ppo_trainer_split.yaml
++verl_reference/examples/split_placement/main_ppo_split.py
++verl_reference/examples/split_placement/run_deepseek7b_llm.sh
++verl_reference/examples/split_placement/split_monkey_patch.py
++verl_reference/examples/tuning/0.5b/qwen2-0.5b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/1.5b/qwen2-1.5b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/14b/qwen2-14b_grpo-lora_2_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/14b/qwen2_14b_grpo_4_h800_fsdp_vllm.sh
++verl_reference/examples/tuning/32b/qwen2-32b_grpo-lora_4_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/32b/qwen2_32B_grpo_8_h20_megatron_vllm.sh
++verl_reference/examples/tuning/3b/qwen2-3b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-70b_grpo_32_h20_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-70b_grpo_32_h800_fsdp_vllm.sh
++verl_reference/examples/tuning/70b/qwen2-72b_grpo-lora_8_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/7b/qwen2-7b_grpo-lora_1_h100_fsdp_vllm.sh
++verl_reference/examples/tuning/7b/qwen2-7b_grpo_2_h800_fsdp_vllm.sh
++verl_reference/pyproject.toml
++verl_reference/recipe/README.md
++verl_reference/recipe/char_count/README.md
++verl_reference/recipe/char_count/create_dataset.py
++verl_reference/recipe/char_count/reward_function.py
++verl_reference/recipe/char_count/train_grpo.sh
++verl_reference/recipe/char_count/train_sft.sh
++verl_reference/recipe/dapo/README.md
++verl_reference/recipe/dapo/config/dapo_trainer.yaml
++verl_reference/recipe/dapo/dapo_ray_trainer.py
++verl_reference/recipe/dapo/main_dapo.py
++verl_reference/recipe/dapo/prepare_dapo_data.sh
++verl_reference/recipe/dapo/run_dapo_early_qwen2.5_32b.sh
++verl_reference/recipe/dapo/run_dapo_qwen2.5_32b.sh
++verl_reference/recipe/dapo/run_dapo_qwen2.5_32b_npu.sh
++verl_reference/recipe/dapo/run_dapo_qwen3_14b_base_npu.sh
++verl_reference/recipe/dapo/run_dapo_qwen3_8b_base_npu.sh
++verl_reference/recipe/dapo/run_dapo_wo_ds_qwen2.5_32b.sh
++verl_reference/recipe/dapo/runtime_env.yaml
++verl_reference/recipe/dapo/test_dapo_7b.sh
++verl_reference/recipe/dapo/test_dapo_7b_math.sh
++verl_reference/recipe/dapo/test_dapo_7b_math_lora.sh
++verl_reference/recipe/dapo/test_dapo_7b_math_megatron.sh
++verl_reference/recipe/dapo/test_dapo_dspk_671b_megatron_96gb.sh
++verl_reference/recipe/dapo/test_dapo_qwen3_30b_math.sh
++verl_reference/recipe/dapo/test_dapo_qwen3_30b_math_single_node.sh
++verl_reference/recipe/deepeyes/README.md
++verl_reference/recipe/deepeyes/configs/deepeyes_multiturn_grpo.yaml
++verl_reference/recipe/deepeyes/configs/image_zoom_in_tool_config.yaml
++verl_reference/recipe/deepeyes/deepeyes.py
++verl_reference/recipe/deepeyes/run_deepeyes_grpo.sh
++verl_reference/recipe/entropy/32b_clip_cov.sh
++verl_reference/recipe/entropy/32b_kl_cov.sh
++verl_reference/recipe/entropy/32b_kl_cov_mininbsz.sh
++verl_reference/recipe/entropy/7b_clip_cov.sh
++verl_reference/recipe/entropy/7b_kl_cov.sh
++verl_reference/recipe/entropy/README.md
++verl_reference/recipe/entropy/config/entropy_trainer.yaml
++verl_reference/recipe/entropy/entropy_ray_trainer.py
++verl_reference/recipe/entropy/main_entropy.py
++verl_reference/recipe/entropy/reward.py
++verl_reference/recipe/entropy/reward_score/__init__.py
++verl_reference/recipe/entropy/reward_score/entropy_math/__init__.py
++verl_reference/recipe/entropy/reward_score/entropy_math/grader.py
++verl_reference/recipe/entropy/reward_score/entropy_math/math_normalize.py
++verl_reference/recipe/genrm_remote/README.md
++verl_reference/recipe/genrm_remote/reward_function.py
++verl_reference/recipe/genrm_remote/run_genrm_remote.sh
++verl_reference/recipe/gspo/test_gspo_3b_math.sh
++verl_reference/recipe/gspo/test_gspo_3b_math_slurm.sh
++verl_reference/recipe/langgraph_agent/__init__.py
++verl_reference/recipe/langgraph_agent/chat_model.py
++verl_reference/recipe/langgraph_agent/example/README.md
++verl_reference/recipe/langgraph_agent/example/agent.yaml
++verl_reference/recipe/langgraph_agent/example/create_dataset.py
++verl_reference/recipe/langgraph_agent/example/math_expression.py
++verl_reference/recipe/langgraph_agent/example/run_qwen2.5_3b.sh
++verl_reference/recipe/langgraph_agent/react_agent_loop.py
++verl_reference/recipe/langgraph_agent/test_react_agent_loop.py
++verl_reference/recipe/minicpmo/rl_dataset.py
++verl_reference/recipe/one_step_off_policy/README.md
++verl_reference/recipe/one_step_off_policy/config/one_step_off_ppo_megatron_trainer.yaml
++verl_reference/recipe/one_step_off_policy/config/one_step_off_ppo_trainer.yaml
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_fsdp2_4_12.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_fsdp2_colocate.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_megatron_4_12.sh
++verl_reference/recipe/one_step_off_policy/dapo_7b_math_megatron_colocate.sh
++verl_reference/recipe/one_step_off_policy/fsdp_workers.py
++verl_reference/recipe/one_step_off_policy/grpo_0.6b_gsm8k_fsdp2_2_6.sh
++verl_reference/recipe/one_step_off_policy/grpo_3b_gsm8k_fsdp2_2_6.sh
++verl_reference/recipe/one_step_off_policy/main_ppo.py
++verl_reference/recipe/one_step_off_policy/megatron_workers.py
++verl_reference/recipe/one_step_off_policy/ray_trainer.py
++verl_reference/recipe/one_step_off_policy/vllm_sharding_manager.py
++verl_reference/recipe/prime/__init__.py
++verl_reference/recipe/prime/config/prime_trainer.yaml
++verl_reference/recipe/prime/main_prime.py
++verl_reference/recipe/prime/prime_core_algos.py
++verl_reference/recipe/prime/prime_dp_rm.py
++verl_reference/recipe/prime/prime_fsdp_workers.py
++verl_reference/recipe/prime/prime_ray_trainer.py
++verl_reference/recipe/prime/run_prime_qwen.sh
++verl_reference/recipe/prime/run_prime_qwen_code.sh
++verl_reference/recipe/r1/README.md
++verl_reference/recipe/r1/__init__.py
++verl_reference/recipe/r1/config/evaluation.yaml
++verl_reference/recipe/r1/data_process.py
++verl_reference/recipe/r1/main_eval.py
++verl_reference/recipe/r1/reward_score.py
++verl_reference/recipe/r1/run_r1_distill_qwen.sh
++verl_reference/recipe/r1/tasks/__init__.py
++verl_reference/recipe/r1/tasks/gpqa.py
++verl_reference/recipe/r1/tasks/livecodebench.py
++verl_reference/recipe/r1/tasks/math.py
++verl_reference/recipe/retool/README.md
++verl_reference/recipe/retool/retool.py
++verl_reference/recipe/retool/retool_sft_preprocess.py
++verl_reference/recipe/retool/run_qwen2-32b_dapo.sh
++verl_reference/recipe/retool/run_qwen2-32b_ppo.sh
++verl_reference/recipe/retool/run_qwen2-32b_sft.sh
++verl_reference/recipe/retool/run_qwen2_7b_dapo.sh
++verl_reference/recipe/retool/run_qwen2_7b_sft.sh
++verl_reference/recipe/retool/run_qwen2_7b_sft_npu.sh
++verl_reference/recipe/retool/sandbox_fusion_tool_config.yaml
++verl_reference/recipe/spin/README.md
++verl_reference/recipe/spin/config/spin_trainer.yaml
++verl_reference/recipe/spin/core_algos.py
++verl_reference/recipe/spin/dp_actor.py
++verl_reference/recipe/spin/fsdp_workers.py
++verl_reference/recipe/spin/main_spin.py
++verl_reference/recipe/spin/run_spin.sh
++verl_reference/recipe/spin/spin_trainer.py
++verl_reference/recipe/sppo/README.md
++verl_reference/recipe/sppo/__init__.py
++verl_reference/recipe/sppo/config.py
++verl_reference/recipe/sppo/config/sppo_trainer.yaml
++verl_reference/recipe/sppo/dp_actor.py
++verl_reference/recipe/sppo/main_sppo.py
++verl_reference/recipe/sppo/run_qwen2.5-7b_rm.sh
++verl_reference/recipe/sppo/sppo_ray_trainer.py
++verl_reference/recipe/sppo/sppo_worker.py
++verl_reference/requirements-npu.txt
++verl_reference/requirements.txt
++verl_reference/requirements_sglang.txt
++verl_reference/scripts/__init__.py
++verl_reference/scripts/converter_hf_to_mcore.py
++verl_reference/scripts/diagnose.py
++verl_reference/scripts/generate_trainer_config.sh
++verl_reference/scripts/init_random_model.py
++verl_reference/scripts/install_vllm_sglang_mcore.sh
++verl_reference/scripts/legacy_model_merger.py
++verl_reference/scripts/print_cfg.py
++verl_reference/scripts/rollout_viewer.py
++verl_reference/setup.py
++verl_reference/tests/README.md
++verl_reference/tests/__init__.py
++verl_reference/tests/experimental/agent_loop/agent_utils.py
++verl_reference/tests/experimental/agent_loop/qwen_vl_tool_chat_template.jinja2
++verl_reference/tests/experimental/agent_loop/test_agent_loop_reward.py
++verl_reference/tests/experimental/agent_loop/test_basic_agent_loop.py
++verl_reference/tests/experimental/agent_loop/test_multi_modal.py
++verl_reference/tests/interactions/__init__.py
++verl_reference/tests/interactions/test_gsm8k_interaction.py
++verl_reference/tests/interactions/test_interaction_registry.py
++verl_reference/tests/kill_github_tests.sh
++verl_reference/tests/models/test_transformer.py
++verl_reference/tests/models/test_transformers_ulysses.py
++verl_reference/tests/single_controller/__init__.py
++verl_reference/tests/single_controller/base/test_decorator.py
++verl_reference/tests/single_controller/check_worker_alive/main.py
++verl_reference/tests/single_controller/detached_worker/README.md
++verl_reference/tests/single_controller/detached_worker/client.py
++verl_reference/tests/single_controller/detached_worker/run.sh
++verl_reference/tests/single_controller/detached_worker/server.py
++verl_reference/tests/single_controller/test_auto_padding_on_cpu.py
++verl_reference/tests/single_controller/test_colocated_workers.py
++verl_reference/tests/single_controller/test_colocated_workers_fused.py
++verl_reference/tests/single_controller/test_data_transfer.py
++verl_reference/tests/single_controller/test_decorator_on_cpu.py
++verl_reference/tests/single_controller/test_device_mesh_register.py
++verl_reference/tests/single_controller/test_driverfunc_to_worker.py
++verl_reference/tests/single_controller/test_fused_workers_on_cpu.py
++verl_reference/tests/single_controller/test_high_level_scheduling_api.py
++verl_reference/tests/single_controller/test_nested_worker.py
++verl_reference/tests/single_controller/test_ray_collectives.py
++verl_reference/tests/single_controller/test_ray_local_envs_on_cpu.py
++verl_reference/tests/single_controller/test_ray_utils_on_cpu.py
++verl_reference/tests/single_controller/test_rvdz.py
++verl_reference/tests/single_controller/test_worker_group_basics.py
++verl_reference/tests/single_controller/test_worker_group_torch.py
++verl_reference/tests/special_distributed/README.md
++verl_reference/tests/special_distributed/run_all.sh
++verl_reference/tests/special_distributed/test_fsdp_ckpt.py
++verl_reference/tests/special_distributed/test_mcore_config_converter.py
++verl_reference/tests/special_distributed/test_tensor_dict.py
++verl_reference/tests/special_e2e/README.md
++verl_reference/tests/special_e2e/__init__.py
++verl_reference/tests/special_e2e/check_custom_rwd_fn.py
++verl_reference/tests/special_e2e/check_results.py
++verl_reference/tests/special_e2e/envs/__init__.py
++verl_reference/tests/special_e2e/envs/digit_completion/__init__.py
++verl_reference/tests/special_e2e/envs/digit_completion/task.py
++verl_reference/tests/special_e2e/envs/digit_completion/tokenizer.py
++verl_reference/tests/special_e2e/generation/run_gen_qwen05.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_function_reward.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_model_reward.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_single_gpu.sh
++verl_reference/tests/special_e2e/ppo_trainer/run_single_gpu_with_engine.sh
++verl_reference/tests/special_e2e/run_dapo.sh
++verl_reference/tests/special_e2e/run_genrm_remote.sh
++verl_reference/tests/special_e2e/run_geo3k_fsdp_sgl_multiturn_w_tool.sh
++verl_reference/tests/special_e2e/run_grpo_lora_with_merge.sh
++verl_reference/tests/special_e2e/run_gsm8k_fsdp_sgl_multiturn_sf_tool.sh
++verl_reference/tests/special_e2e/run_gsm8k_fsdp_sgl_multiturn_w_tool.sh
++verl_reference/tests/special_e2e/run_one_step_off_policy.sh
++verl_reference/tests/special_e2e/run_ppo_trainer_megatron.sh
++verl_reference/tests/special_e2e/run_prime.sh
++verl_reference/tests/special_e2e/run_r1_distill_qwen_aime24_eval.sh
++verl_reference/tests/special_e2e/run_spin.sh
++verl_reference/tests/special_e2e/run_sppo.sh
++verl_reference/tests/special_e2e/run_test.sh
++verl_reference/tests/special_e2e/sft/run_sft.sh
++verl_reference/tests/special_e2e/sft/test_sp_loss_match.py
++verl_reference/tests/special_npu/run_qwen2_5_05b_dapo.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_grpo.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_grpo_mindspeed.sh
++verl_reference/tests/special_npu/run_qwen2_5_05b_sft_peft_sp2.sh
++verl_reference/tests/special_npu/run_qwen2_5_vl_3b_npu.sh
++verl_reference/tests/special_sanity/check_api_docs.py
++verl_reference/tests/special_sanity/check_device_api_usage.py
++verl_reference/tests/special_sanity/check_docs_time_info.py
++verl_reference/tests/special_sanity/check_docstrings.py
++verl_reference/tests/special_sanity/check_license.py
++verl_reference/tests/special_sanity/check_pr_description.py
++verl_reference/tests/special_sanity/check_pr_title.py
++verl_reference/tests/special_sanity/test_config_docs.py
++verl_reference/tests/special_sanity/test_import.py
++verl_reference/tests/special_sanity/type_coverage_check.py
++verl_reference/tests/special_sanity/validate_imported_docs.py
++verl_reference/tests/special_sanity/validate_structure.py
++verl_reference/tests/special_standalone/README.md
++verl_reference/tests/special_standalone/test_memory_buffers.py
++verl_reference/tests/test_base_config_on_cpu.py
++verl_reference/tests/test_protocol_on_cpu.py
++verl_reference/tests/trainer/__init__.py
++verl_reference/tests/trainer/config/__init__.py
++verl_reference/tests/trainer/config/legacy_ppo_megatron_trainer.yaml
++verl_reference/tests/trainer/config/legacy_ppo_trainer.yaml
++verl_reference/tests/trainer/config/test_algo_config_on_cpu.py
++verl_reference/tests/trainer/config/test_legacy_config_on_cpu.py
++verl_reference/tests/trainer/ppo/__init__.py
++verl_reference/tests/trainer/ppo/test_core_algos_on_cpu.py
++verl_reference/tests/trainer/ppo/test_metric_utils_on_cpu.py
++verl_reference/tests/utils/_test_module.py
++verl_reference/tests/utils/ckpt/test_esi_save_ckpt_on_cpu.py
++verl_reference/tests/utils/dataset/test_create_rl_sampler_on_cpu.py
++verl_reference/tests/utils/dataset/test_multiturn_sft_dataset_on_cpu.py
++verl_reference/tests/utils/dataset/test_rl_collate_fn_on_cpu.py
++verl_reference/tests/utils/dataset/test_rl_dataset_on_cpu.py
++verl_reference/tests/utils/dataset/test_sft_dataset_on_cpu.py
++verl_reference/tests/utils/debug/test_metrics.py
++verl_reference/tests/utils/megatron/test_pipeline_parallel.py
++verl_reference/tests/utils/reward_score/reward_score/test_sandbox_fusion_on_cpu.py
++verl_reference/tests/utils/reward_score/test_sandbox_on_cpu.py
++verl_reference/tests/utils/test_activation_offload.py
++verl_reference/tests/utils/test_config_on_cpu.py
++verl_reference/tests/utils/test_flops_counter.py
++verl_reference/tests/utils/test_fs_on_cpu.py
++verl_reference/tests/utils/test_import_utils_on_cpu.py
++verl_reference/tests/utils/test_linear_cross_entropy.py
++verl_reference/tests/utils/test_model_on_cpu.py
++verl_reference/tests/utils/test_nvtx_profile.py
++verl_reference/tests/utils/test_rollout_skip_on_cpu.py
++verl_reference/tests/utils/test_rollout_trace_on_cpu.py
++verl_reference/tests/utils/test_seqlen_balancing.py
++verl_reference/tests/utils/test_special_linear_cross_entropy_tp.py
++verl_reference/tests/utils/test_special_mstx_profile.py
++verl_reference/tests/utils/test_temp_env_on_cpu.py
++verl_reference/tests/utils/test_timeout_decorator_cpu.py
++verl_reference/tests/utils/test_torch_functional.py
++verl_reference/tests/workers/actor/test_special_dp_actor.py
++verl_reference/tests/workers/config/test_actor_config_on_cpu.py
++verl_reference/tests/workers/config/test_critic_config_on_cpu.py
++verl_reference/tests/workers/config/test_engine_config_on_cpu.py
++verl_reference/tests/workers/config/test_optim_config_on_cpu.py
++verl_reference/tests/workers/critic/test_special_dp_critic.py
++verl_reference/tests/workers/engine/test_special_fsdp_engine.py
++verl_reference/tests/workers/reward_manager/test_registry_on_cpu.py
++verl_reference/tests/workers/rollout/async_rollout_utils.py
++verl_reference/tests/workers/rollout/perf/vllm_async_rollout.py
++verl_reference/tests/workers/rollout/resource/tool_configs/mcp_tool_config
++verl_reference/tests/workers/rollout/resource/tool_configs/sandbox_fusion_tool_config
++verl_reference/tests/workers/rollout/resource/tool_configs/search_tool_config
++verl_reference/tests/workers/rollout/rollout_vllm/run_fsdp_vllm.py
++verl_reference/tests/workers/rollout/rollout_vllm/test_vllm_model_rope_scaling.py
++verl_reference/tests/workers/rollout/rollout_vllm/test_vllm_spmd.py
++verl_reference/tests/workers/rollout/test_async_sglang_server_on_cpu.py
++verl_reference/tests/workers/rollout/test_hf_rollout.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_mcp_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_multimodal_delta.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_search_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_sf_tools.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_w_interaction.py
++verl_reference/tests/workers/rollout/test_sglang_async_rollout_w_tools.py
++verl_reference/tests/workers/rollout/test_sglang_multi_interaction.py
++verl_reference/tests/workers/rollout/test_sglang_rollout_sharding_manager.py
++verl_reference/tests/workers/rollout/test_sglang_spmd.py
++verl_reference/tests/workers/rollout/utils_sglang.py
++verl_reference/tests/workers/test_fsdp_workers.py
++verl_reference/verl/__init__.py
++verl_reference/verl/base_config.py
++verl_reference/verl/experimental/__init__.py
++verl_reference/verl/experimental/agent_loop/__init__.py
++verl_reference/verl/experimental/agent_loop/agent_loop.py
++verl_reference/verl/experimental/agent_loop/single_turn_agent_loop.py
++verl_reference/verl/experimental/agent_loop/tool_agent_loop.py
++verl_reference/verl/experimental/agent_loop/tool_parser.py
++verl_reference/verl/experimental/dataset/__init__.py
++verl_reference/verl/experimental/dataset/sampler.py
++verl_reference/verl/experimental/dynamic_dataset/__init__.py
++verl_reference/verl/experimental/dynamic_dataset/dynamicgen_dataset.py
++verl_reference/verl/interactions/__init__.py
++verl_reference/verl/interactions/base.py
++verl_reference/verl/interactions/gsm8k_interaction.py
++verl_reference/verl/interactions/utils/__init__.py
++verl_reference/verl/interactions/utils/interaction_registry.py
++verl_reference/verl/model_merger/__init__.py
++verl_reference/verl/model_merger/__main__.py
++verl_reference/verl/model_merger/base_model_merger.py
++verl_reference/verl/model_merger/fsdp_model_merger.py
++verl_reference/verl/model_merger/megatron_model_merger.py
++verl_reference/verl/models/README.md
++verl_reference/verl/models/__init__.py
++verl_reference/verl/models/llama/__init__.py
++verl_reference/verl/models/llama/megatron/__init__.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/__init__.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_loader.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_loader_depracated.py
++verl_reference/verl/models/llama/megatron/checkpoint_utils/llama_saver.py
++verl_reference/verl/models/llama/megatron/layers/__init__.py
++verl_reference/verl/models/llama/megatron/layers/parallel_attention.py
++verl_reference/verl/models/llama/megatron/layers/parallel_decoder.py
++verl_reference/verl/models/llama/megatron/layers/parallel_linear.py
++verl_reference/verl/models/llama/megatron/layers/parallel_mlp.py
++verl_reference/verl/models/llama/megatron/layers/parallel_rmsnorm.py
++verl_reference/verl/models/llama/megatron/modeling_llama_megatron.py
++verl_reference/verl/models/mcore/__init__.py
++verl_reference/verl/models/mcore/config_converter.py
++verl_reference/verl/models/mcore/loader.py
++verl_reference/verl/models/mcore/mbridge.py
++verl_reference/verl/models/mcore/model_forward.py
++verl_reference/verl/models/mcore/model_forward_fused.py
++verl_reference/verl/models/mcore/model_initializer.py
++verl_reference/verl/models/mcore/patch_v012.py
++verl_reference/verl/models/mcore/qwen2_5_vl/__init__.py
++verl_reference/verl/models/mcore/qwen2_5_vl/attention.py
++verl_reference/verl/models/mcore/qwen2_5_vl/model.py
++verl_reference/verl/models/mcore/qwen2_5_vl/rope_utils.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_config.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_model.py
++verl_reference/verl/models/mcore/qwen2_5_vl/vision_transformer_block.py
++verl_reference/verl/models/mcore/readme.md
++verl_reference/verl/models/mcore/registry.py
++verl_reference/verl/models/mcore/saver.py
++verl_reference/verl/models/mcore/util.py
++verl_reference/verl/models/mcore/weight_converter.py
++verl_reference/verl/models/qwen2/__init__.py
++verl_reference/verl/models/qwen2/megatron/__init__.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/__init__.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_loader.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_loader_depracated.py
++verl_reference/verl/models/qwen2/megatron/checkpoint_utils/qwen2_saver.py
++verl_reference/verl/models/qwen2/megatron/layers/__init__.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_attention.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_decoder.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_linear.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_mlp.py
++verl_reference/verl/models/qwen2/megatron/layers/parallel_rmsnorm.py
++verl_reference/verl/models/qwen2/megatron/modeling_qwen2_megatron.py
++verl_reference/verl/models/registry.py
++verl_reference/verl/models/transformers/__init__.py
++verl_reference/verl/models/transformers/dense_common.py
++verl_reference/verl/models/transformers/kimi_vl.py
++verl_reference/verl/models/transformers/llama.py
++verl_reference/verl/models/transformers/monkey_patch.py
++verl_reference/verl/models/transformers/npu_patch.py
++verl_reference/verl/models/transformers/qwen2.py
++verl_reference/verl/models/transformers/qwen2_5_vl.py
++verl_reference/verl/models/transformers/qwen2_vl.py
++verl_reference/verl/models/weight_loader_registry.py
++verl_reference/verl/protocol.py
++verl_reference/verl/single_controller/__init__.py
++verl_reference/verl/single_controller/base/__init__.py
++verl_reference/verl/single_controller/base/decorator.py
++verl_reference/verl/single_controller/base/worker.py
++verl_reference/verl/single_controller/base/worker_group.py
++verl_reference/verl/single_controller/ray/__init__.py
++verl_reference/verl/single_controller/ray/base.py
++verl_reference/verl/third_party/__init__.py
++verl_reference/verl/third_party/sglang/__init__.py
++verl_reference/verl/third_party/sglang/parallel_state.py
++verl_reference/verl/third_party/torch/__init__.py
++verl_reference/verl/third_party/torch/distributed/__init__.py
++verl_reference/verl/third_party/torch/distributed/_state_dict_utils.py
++verl_reference/verl/third_party/torch/distributed/checkpoint/__init__.py
++verl_reference/verl/third_party/torch/distributed/checkpoint/state_dict.py
++verl_reference/verl/third_party/vllm/__init__.py
++verl_reference/verl/tools/__init__.py
++verl_reference/verl/tools/base_tool.py
++verl_reference/verl/tools/geo3k_tool.py
++verl_reference/verl/tools/gsm8k_tool.py
++verl_reference/verl/tools/image_zoom_in_tool.py
++verl_reference/verl/tools/mcp_base_tool.py
++verl_reference/verl/tools/mcp_search_tool.py
++verl_reference/verl/tools/sandbox_fusion_tools.py
++verl_reference/verl/tools/schemas.py
++verl_reference/verl/tools/search_tool.py
++verl_reference/verl/tools/utils/__init__.py
++verl_reference/verl/tools/utils/mcp_clients/McpClientManager.py
++verl_reference/verl/tools/utils/mcp_clients/utils.py
++verl_reference/verl/tools/utils/search_r1_like_utils.py
++verl_reference/verl/tools/utils/tool_registry.py
++verl_reference/verl/trainer/__init__.py
++verl_reference/verl/trainer/config/__init__.py
++verl_reference/verl/trainer/config/_generated_ppo_megatron_trainer.yaml
++verl_reference/verl/trainer/config/_generated_ppo_trainer.yaml
++verl_reference/verl/trainer/config/actor/actor.yaml
++verl_reference/verl/trainer/config/actor/dp_actor.yaml
++verl_reference/verl/trainer/config/actor/megatron_actor.yaml
++verl_reference/verl/trainer/config/algorithm.py
++verl_reference/verl/trainer/config/config.py
++verl_reference/verl/trainer/config/critic/critic.yaml
++verl_reference/verl/trainer/config/critic/dp_critic.yaml
++verl_reference/verl/trainer/config/critic/megatron_critic.yaml
++verl_reference/verl/trainer/config/data/legacy_data.yaml
++verl_reference/verl/trainer/config/evaluation.yaml
++verl_reference/verl/trainer/config/generation.yaml
++verl_reference/verl/trainer/config/npu_profile/npu_profile.yaml
++verl_reference/verl/trainer/config/ppo_megatron_trainer.yaml
++verl_reference/verl/trainer/config/ppo_trainer.yaml
++verl_reference/verl/trainer/config/ref/dp_ref.yaml
++verl_reference/verl/trainer/config/ref/megatron_ref.yaml
++verl_reference/verl/trainer/config/ref/ref.yaml
++verl_reference/verl/trainer/config/reward_model/dp_reward_model.yaml
++verl_reference/verl/trainer/config/reward_model/megatron_reward_model.yaml
++verl_reference/verl/trainer/config/reward_model/reward_model.yaml
++verl_reference/verl/trainer/config/rollout/rollout.yaml
++verl_reference/verl/trainer/config/sft_trainer.yaml
++verl_reference/verl/trainer/constants_ppo.py
++verl_reference/verl/trainer/fsdp_sft_trainer.py
++verl_reference/verl/trainer/main_eval.py
++verl_reference/verl/trainer/main_generation.py
++verl_reference/verl/trainer/main_ppo.py
++verl_reference/verl/trainer/ppo/__init__.py
++verl_reference/verl/trainer/ppo/core_algos.py
++verl_reference/verl/trainer/ppo/metric_utils.py
++verl_reference/verl/trainer/ppo/ray_trainer.py
++verl_reference/verl/trainer/ppo/reward.py
++verl_reference/verl/trainer/runtime_env.yaml
++verl_reference/verl/utils/__init__.py
++verl_reference/verl/utils/activation_offload.py
++verl_reference/verl/utils/checkpoint/__init__.py
++verl_reference/verl/utils/checkpoint/checkpoint_manager.py
++verl_reference/verl/utils/checkpoint/fsdp_checkpoint_manager.py
++verl_reference/verl/utils/checkpoint/megatron_checkpoint_manager.py
++verl_reference/verl/utils/config.py
++verl_reference/verl/utils/dataset/README.md
++verl_reference/verl/utils/dataset/__init__.py
++verl_reference/verl/utils/dataset/multiturn_sft_dataset.py
++verl_reference/verl/utils/dataset/rl_dataset.py
++verl_reference/verl/utils/dataset/rm_dataset.py
++verl_reference/verl/utils/dataset/sft_dataset.py
++verl_reference/verl/utils/dataset/vision_utils.py
++verl_reference/verl/utils/debug/__init__.py
++verl_reference/verl/utils/debug/metrics.py
++verl_reference/verl/utils/debug/performance.py
++verl_reference/verl/utils/debug/trajectory_tracker.py
++verl_reference/verl/utils/device.py
++verl_reference/verl/utils/distributed.py
++verl_reference/verl/utils/experimental/__init__.py
++verl_reference/verl/utils/experimental/torch_functional.py
++verl_reference/verl/utils/flops_counter.py
++verl_reference/verl/utils/fs.py
++verl_reference/verl/utils/fsdp_utils.py
++verl_reference/verl/utils/hdfs_io.py
++verl_reference/verl/utils/import_utils.py
++verl_reference/verl/utils/kernel/__init__.py
++verl_reference/verl/utils/kernel/kernels.py
++verl_reference/verl/utils/kernel/linear_cross_entropy.py
++verl_reference/verl/utils/logger/__init__.py
++verl_reference/verl/utils/logger/aggregate_logger.py
++verl_reference/verl/utils/logging_utils.py
++verl_reference/verl/utils/megatron/__init__.py
++verl_reference/verl/utils/megatron/dist_checkpointing.py
++verl_reference/verl/utils/megatron/memory.py
++verl_reference/verl/utils/megatron/optimizer.py
++verl_reference/verl/utils/megatron/pipeline_parallel.py
++verl_reference/verl/utils/megatron/sequence_parallel.py
++verl_reference/verl/utils/megatron/tensor_parallel.py
++verl_reference/verl/utils/megatron_utils.py
++verl_reference/verl/utils/memory_buffer.py
++verl_reference/verl/utils/memory_utils.py
++verl_reference/verl/utils/metric/__init__.py
++verl_reference/verl/utils/metric/utils.py
++verl_reference/verl/utils/model.py
++verl_reference/verl/utils/net_utils.py
++verl_reference/verl/utils/profiler/__init__.py
++verl_reference/verl/utils/profiler/config.py
++verl_reference/verl/utils/profiler/empty_annotations.py
++verl_reference/verl/utils/profiler/mstx_profile.py
++verl_reference/verl/utils/profiler/nvtx_profile.py
++verl_reference/verl/utils/profiler/performance.py
++verl_reference/verl/utils/profiler/profile.py
++verl_reference/verl/utils/py_functional.py
++verl_reference/verl/utils/ray_utils.py
++verl_reference/verl/utils/rendezvous/__init__.py
++verl_reference/verl/utils/rendezvous/ray_backend.py
++verl_reference/verl/utils/reward_score/__init__.py
++verl_reference/verl/utils/reward_score/geo3k.py
++verl_reference/verl/utils/reward_score/gsm8k.py
++verl_reference/verl/utils/reward_score/math.py
++verl_reference/verl/utils/reward_score/math_batch.py
++verl_reference/verl/utils/reward_score/math_dapo.py
++verl_reference/verl/utils/reward_score/math_verify.py
++verl_reference/verl/utils/reward_score/prime_code/README.md
++verl_reference/verl/utils/reward_score/prime_code/__init__.py
++verl_reference/verl/utils/reward_score/prime_code/testing_util.py
++verl_reference/verl/utils/reward_score/prime_code/utils.py
++verl_reference/verl/utils/reward_score/prime_math/__init__.py
++verl_reference/verl/utils/reward_score/prime_math/grader.py
++verl_reference/verl/utils/reward_score/prime_math/math_normalize.py
++verl_reference/verl/utils/reward_score/sandbox_fusion/__init__.py
++verl_reference/verl/utils/reward_score/sandbox_fusion/utils.py
++verl_reference/verl/utils/reward_score/search_r1_like_qa_em.py
++verl_reference/verl/utils/rollout_skip.py
++verl_reference/verl/utils/rollout_trace.py
++verl_reference/verl/utils/seqlen_balancing.py
++verl_reference/verl/utils/tokenizer.py
++verl_reference/verl/utils/torch_dtypes.py
++verl_reference/verl/utils/torch_functional.py
++verl_reference/verl/utils/tracking.py
++verl_reference/verl/utils/transformers_compat.py
++verl_reference/verl/utils/ulysses.py
++verl_reference/verl/utils/vllm/__init__.py
++verl_reference/verl/utils/vllm/patch.py
++verl_reference/verl/utils/vllm/utils.py
++verl_reference/verl/version/version
++verl_reference/verl/workers/__init__.py
++verl_reference/verl/workers/actor/__init__.py
++verl_reference/verl/workers/actor/base.py
++verl_reference/verl/workers/actor/dp_actor.py
++verl_reference/verl/workers/actor/megatron_actor.py
++verl_reference/verl/workers/config/__init__.py
++verl_reference/verl/workers/config/actor.py
++verl_reference/verl/workers/config/critic.py
++verl_reference/verl/workers/config/engine.py
++verl_reference/verl/workers/config/model.py
++verl_reference/verl/workers/config/optimizer.py
++verl_reference/verl/workers/config/rollout.py
++verl_reference/verl/workers/critic/__init__.py
++verl_reference/verl/workers/critic/base.py
++verl_reference/verl/workers/critic/dp_critic.py
++verl_reference/verl/workers/critic/megatron_critic.py
++verl_reference/verl/workers/engine/__init__.py
++verl_reference/verl/workers/engine/base.py
++verl_reference/verl/workers/engine/fsdp/__init__.py
++verl_reference/verl/workers/engine/fsdp/engine_impl.py
++verl_reference/verl/workers/engine/fsdp/utils.py
++verl_reference/verl/workers/engine/megatron/__init__.py
++verl_reference/verl/workers/engine/megatron/engine_impl.py
++verl_reference/verl/workers/fsdp_workers.py
++verl_reference/verl/workers/megatron_workers.py
++verl_reference/verl/workers/reward_manager/__init__.py
++verl_reference/verl/workers/reward_manager/abstract.py
++verl_reference/verl/workers/reward_manager/batch.py
++verl_reference/verl/workers/reward_manager/dapo.py
++verl_reference/verl/workers/reward_manager/naive.py
++verl_reference/verl/workers/reward_manager/prime.py
++verl_reference/verl/workers/reward_manager/registry.py
++verl_reference/verl/workers/reward_model/__init__.py
++verl_reference/verl/workers/reward_model/base.py
++verl_reference/verl/workers/reward_model/megatron/__init__.py
++verl_reference/verl/workers/reward_model/megatron/reward_model.py
++verl_reference/verl/workers/roles/__init__.py
++verl_reference/verl/workers/roles/actor.py
++verl_reference/verl/workers/roles/critic.py
++verl_reference/verl/workers/rollout/__init__.py
++verl_reference/verl/workers/rollout/async_server.py
++verl_reference/verl/workers/rollout/base.py
++verl_reference/verl/workers/rollout/hf_rollout.py
++verl_reference/verl/workers/rollout/naive/__init__.py
++verl_reference/verl/workers/rollout/naive/naive_rollout.py
++verl_reference/verl/workers/rollout/rollout_worker.py
++verl_reference/verl/workers/rollout/schemas.py
++verl_reference/verl/workers/rollout/sglang_rollout/__init__.py
++verl_reference/verl/workers/rollout/sglang_rollout/async_sglang_server.py
++verl_reference/verl/workers/rollout/sglang_rollout/sglang_rollout.py
++verl_reference/verl/workers/rollout/sglang_rollout/utils.py
++verl_reference/verl/workers/rollout/tokenizer.py
++verl_reference/verl/workers/rollout/vllm_rollout/__init__.py
++verl_reference/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++verl_reference/verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py
++verl_reference/verl/workers/sharding_manager/__init__.py
++verl_reference/verl/workers/sharding_manager/base.py
++verl_reference/verl/workers/sharding_manager/fsdp_sglang.py
++verl_reference/verl/workers/sharding_manager/fsdp_ulysses.py
++verl_reference/verl/workers/sharding_manager/fsdp_vllm.py
++verl_reference/verl/workers/sharding_manager/megatron_sglang.py
++verl_reference/verl/workers/sharding_manager/megatron_vllm.py
+diff --git a/easydel/scripts/finetune/gsm8k_math_gfspo.py b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+index 006e70c2..7b1d4eb4 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gfspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+@@ -423,7 +423,8 @@ def main():
+                 args.mini_batch_size = mini_batch_size_override
+                 args.total_batch_size = mini_batch_size_override
+ 
+-            new_tr = ed.GFSPOTrainer(
++            # Use the same trainer class (stable vs. regular) for curriculum
++            new_tr = TrainerCls(
+                 model=trainer.model_state,
+                 reward_funcs=trainer.reward_funcs,
+                 processing_class=trainer.processing_class,
+@@ -487,4 +488,3 @@ def main():
+ 
+ if __name__ == "__main__":
+     main()
+-
+diff --git a/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py b/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
+index 082214ab..0d3e50b5 100644
+--- a/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
++++ b/easydel/trainers/group_relative_policy_optimization/_gspo_fn.py
+@@ -124,6 +124,9 @@ def gspo_step(
+             eps_eff = jnp.asarray(epsilon, dtype=jnp.float32) * jnp.asarray(_eps_scale, dtype=jnp.float32)
+         else:
+             eps_eff = jnp.asarray(epsilon, dtype=jnp.float32)
++        # Ensure epsilon broadcasts across tokens (B, T) safely
++        if hasattr(eps_eff, "ndim") and eps_eff.ndim == 1:
++            eps_eff = eps_eff[:, None]
+ 
+         # Optional runtime beta scaling (host-updated, avoids recompiles)
+         _beta_scale = minibatch.get("beta_scale", None)
+@@ -131,6 +134,9 @@ def gspo_step(
+             beta_eff = jnp.asarray(beta, dtype=jnp.float32) * jnp.asarray(_beta_scale, dtype=jnp.float32)
+         else:
+             beta_eff = jnp.asarray(beta, dtype=jnp.float32)
++        # Ensure beta broadcasts across tokens (B, T) safely
++        if hasattr(beta_eff, "ndim") and beta_eff.ndim == 1:
++            beta_eff = beta_eff[:, None]
+ 
+         # GSPO: Compute importance sampling weights based on specified level
+         if importance_sampling_level == "token":
+@@ -138,8 +144,9 @@ def gspo_step(
+             log_importance_weights = log_ratio
+             ratio = jnp.exp(log_importance_weights)
+             clipped_ratio = jnp.clip(ratio, 1 - eps_eff, 1 + eps_eff)
+-            clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6) * completion_mask
+-            clipfrac = jnp.mean(clipped_frac_mask.astype(jnp.float32))
++            # Mask-aware clipping fraction: count over valid tokens only
++            clipped_frac_mask = (jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32) * completion_mask
++            clipfrac = jnp.sum(clipped_frac_mask) / jnp.maximum(jnp.sum(completion_mask), 1.0)
+         elif importance_sampling_level == "sequence":
+             # GSPO: sequence-level importance weights
+             # Average log ratios across valid tokens to get single weight per sequence
+@@ -200,9 +207,13 @@ def gspo_step(
+         # Compute loss
+         loss = jnp.mean(jnp.sum(per_token_loss * weighted_mask, axis=1) / jnp.maximum(eff_comps, 1.0))
+ 
+-        # Compute metrics: ratio clipping fraction only (simpler, comparable across modes)
+-        clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
+-        mean_ratio = jnp.mean(ratio)
++        # Compute metrics: clipping fraction (masked for token mode) and mean ratio (masked if token mode)
++        if importance_sampling_level == "token":
++            clipped_fraction = clipfrac
++            mean_ratio = jnp.sum(ratio * completion_mask) / jnp.maximum(jnp.sum(completion_mask), 1.0)
++        else:
++            clipped_fraction = jnp.mean((jnp.abs(ratio - clipped_ratio) > 1e-6).astype(jnp.float32))
++            mean_ratio = jnp.mean(ratio)
+ 
+         # Compute advantage statistics for progress bar
+         advantage_median_abs = jnp.median(jnp.abs(advantages))
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index 4b108260..ca6d9638 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -162,6 +162,26 @@ class GRPOConfig(TrainingArguments):
+         },
+     )
+ 
++    # Post-update logprob analysis (policy vs reference)
++    logprob_analysis_enable: bool = field(
++        default=True,
++        metadata={
++            "help": "Enable post-update analysis of policy vs reference per-token logprob differences and log to WandB.",
++        },
++    )
++    logprob_analysis_max_tokens: int = field(
++        default=50000,
++        metadata={
++            "help": "Maximum number of valid tokens to sample uniformly when computing token-level percentiles to reduce overhead.",
++        },
++    )
++    logprob_analysis_every_n_steps: int = field(
++        default=1,
++        metadata={
++            "help": "Compute and log logprob analysis every N training steps to reduce overhead.",
++        },
++    )
++
+     def __post_init__(self):
+         """Post initialization to set dependent parameters."""
+         try:
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index c9e96704..cb1d0680 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -166,6 +166,8 @@ class GRPOTrainer(Trainer):
+         self.train_is_conversational = False
+         self.eval_is_conversational = False
+         self.data_tokenize_fn = data_tokenize_fn
++        # Diagnostics cache for post-update logprob analysis
++        self._last_logprob_diag = None
+         if train_dataset is not None:
+             train_dataset = self._prepare_dataset(
+                 dataset=train_dataset,
+@@ -960,6 +962,29 @@ class GRPOTrainer(Trainer):
+                 except Exception:
+                     pass
+ 
++            # Cache minimal inputs for post-update logprob diagnostics
++            try:
++                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
++                    try:
++                        # Build full mask: repeat prompt mask for each generation and concat with completion mask
++                        total_k = int(self.num_generations)
++                        ridmask_final = prompt_mask.repeat(total_k, 0)
++                        full_mask = jnp.concatenate([ridmask_final, completion_mask], axis=-1)
++                        # Keep only what we need to avoid large caches
++                        self._last_logprob_diag = {
++                            "ids": prompt_completion_ids,
++                            "full_mask": full_mask,
++                            "completion_mask": completion_mask,
++                            "ref_logps": ref_per_token_logps,
++                        }
++                    except Exception:
++                        self._last_logprob_diag = None
++                else:
++                    self._last_logprob_diag = None
++            except Exception:
++                # Never crash preprocessing due to diagnostics cache
++                self._last_logprob_diag = None
++
+             # Print one local example from process 0 each step: prompt, ground truth, extracted prediction
+             if getattr(self.arguments, "verbose", True) and jax.process_index() == 0:
+                 try:
+@@ -1577,8 +1602,134 @@ class GRPOTrainer(Trainer):
+         metrics: MetricsType,
+         step: int,
+     ) -> tuple[EasyDeLState, MetricsType]:
+-        """hook process to call in start of the step."""
++        """hook process to call in end of the step."""
++
++        # Post-update logprob diagnostics (policy vs reference)
++        try:
++            do_diag = bool(getattr(self.arguments, "logprob_analysis_enable", True))
++            every = int(getattr(self.arguments, "logprob_analysis_every_n_steps", 1))
++        except Exception:
++            do_diag, every = True, 1
++
++        if (
++            do_diag
++            and (every > 0)
++            and (step % every == 0)
++            and hasattr(self, "_last_logprob_diag")
++            and self._last_logprob_diag is not None
++        ):
++            try:
++                ids = self._last_logprob_diag.get("ids")
++                full_mask = self._last_logprob_diag.get("full_mask")
++                completion_mask = self._last_logprob_diag.get("completion_mask")
++                ref_logps = self._last_logprob_diag.get("ref_logps")
++
++                # Compute policy per-token log-probs with UPDATED state (post-update)
++                pol_logps = self.compute_policymodel_logps(
++                    state.graphstate,
++                    state.graphother,
++                    ids,
++                    full_mask,
++                )  # shape: (B*k, Tcomp)
++
++                # Token-level delta (policy - ref), masked by completion_mask
++                delta = (pol_logps - ref_logps) * completion_mask
++                valid_tokens = jnp.maximum(jnp.sum(completion_mask), 1.0)
++                token_mean = jnp.sum(delta) / valid_tokens
++                e2 = jnp.sum(delta * delta) / valid_tokens
++                token_var = jnp.maximum(e2 - token_mean * token_mean, 0.0)
++                token_std = jnp.sqrt(token_var)
++
++                # Sequence-level stats
++                seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
++                seq_sum = jnp.sum(delta, axis=1)
++                seq_mean = seq_sum / seq_valid
++
++                # Percentiles with subsampling to reduce overhead
++                try:
++                    max_tokens = int(getattr(self.arguments, "logprob_analysis_max_tokens", 50000))
++                except Exception:
++                    max_tokens = 50000
++                flat_valid = delta[completion_mask > 0]
++                if flat_valid.size > 0:
++                    if (max_tokens > 0) and (flat_valid.size > max_tokens):
++                        idx = jax.random.randint(
++                            jax.random.PRNGKey(step),
++                            shape=(max_tokens,),
++                            minval=0,
++                            maxval=flat_valid.size,
++                        )
++                        sample_vals = jnp.take(flat_valid, idx)
++                    else:
++                        sample_vals = flat_valid
++                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
++                    token_q = jnp.quantile(sample_vals.astype(jnp.float32), qs)
++                    token_p50, token_p90, token_p99 = [float(x) for x in jax.device_get(token_q)]
++                else:
++                    token_p50 = token_p90 = token_p99 = 0.0
++
++                if seq_mean.size > 0:
++                    qs = jnp.asarray([0.5, 0.9, 0.99], dtype=jnp.float32)
++                    seqm_q = jnp.quantile(seq_mean.astype(jnp.float32), qs)
++                    seqs_q = jnp.quantile(seq_sum.astype(jnp.float32), qs)
++                    seqm_p50, seqm_p90, seqm_p99 = [float(x) for x in jax.device_get(seqm_q)]
++                    seqs_p50, seqs_p90, seqs_p99 = [float(x) for x in jax.device_get(seqs_q)]
++                else:
++                    seqm_p50 = seqm_p90 = seqm_p99 = 0.0
++                    seqs_p50 = seqs_p90 = seqs_p99 = 0.0
++
++                # Absolute logp levels for sanity
++                pol_token_mean = jnp.sum(pol_logps * completion_mask) / valid_tokens
++                ref_token_mean = jnp.sum(ref_logps * completion_mask) / valid_tokens
++
++                diag_metrics = {
++                    "diag/logprob_diff/token_mean": float(jax.device_get(token_mean)),
++                    "diag/logprob_diff/token_std": float(jax.device_get(token_std)),
++                    "diag/logprob_diff/token_p50": float(token_p50),
++                    "diag/logprob_diff/token_p90": float(token_p90),
++                    "diag/logprob_diff/token_p99": float(token_p99),
++                    "diag/logprob_diff/seq_sum_mean": float(jax.device_get(jnp.mean(seq_sum))),
++                    "diag/logprob_diff/seq_mean_mean": float(jax.device_get(jnp.mean(seq_mean))),
++                    "diag/logprob_diff/seq_sum_p50": float(seqs_p50),
++                    "diag/logprob_diff/seq_sum_p90": float(seqs_p90),
++                    "diag/logprob_diff/seq_sum_p99": float(seqs_p99),
++                    "diag/logprob_diff/seq_mean_p50": float(seqm_p50),
++                    "diag/logprob_diff/seq_mean_p90": float(seqm_p90),
++                    "diag/logprob_diff/seq_mean_p99": float(seqm_p99),
++                    "diag/policy_logp/token_mean": float(jax.device_get(pol_token_mean)),
++                    "diag/ref_logp/token_mean": float(jax.device_get(ref_token_mean)),
++                }
++
++                # Merge into metrics.other_metrics for completeness (even if base logger won't include)
++                try:
++                    if hasattr(metrics, "other_metrics") and metrics.other_metrics is not None:
++                        merged = dict(metrics.other_metrics)
++                        merged.update({k: jnp.asarray(v, dtype=jnp.float32) for k, v in diag_metrics.items()})
++                        metrics.other_metrics = merged
++                except Exception:
++                    pass
++
++                # Direct WandB logging (best-effort, rank 0 only)
++                try:
++                    if (
++                        jax.process_index() == 0
++                        and self.arguments.use_wandb
++                        and self.arguments.can_log_metrics
++                        and wandb is not None
++                    ):
++                        wandb.log(diag_metrics, step=step)
++                except Exception:
++                    pass
++                # Release cached tensors ASAP to avoid holding extra memory
++                try:
++                    self._last_logprob_diag = None
++                except Exception:
++                    pass
++            except Exception:
++                # Never crash on diagnostics
++                pass
+ 
++        # Periodic reference model sync
+         if (
+             self.arguments.sync_ref_model
+             and self.ref_state is not None
+diff --git a/run_gfspo_training.sh b/run_gfspo_training.sh
+index 40981964..fa6b4ded 100755
+--- a/run_gfspo_training.sh
++++ b/run_gfspo_training.sh
+@@ -36,7 +36,7 @@ CURRICULUM_MATH="${2:-false}"
+ 
+ # If DATASET is math-ds, force curriculum math to true
+ if [ "$DATASET" = "math-ds" ]; then
+-  CURRICULUM_MATH="false"
++  CURRICULUM_MATH="true"
+ fi
+ 
+ echo "Using dataset: ${DATASET}"

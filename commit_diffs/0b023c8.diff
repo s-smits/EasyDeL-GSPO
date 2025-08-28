@@ -1,0 +1,69 @@
+commit 0b023c81b94c41aca0ed0fb8ec9ea41e0d05a2de
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 13:14:04 2025 +0000
+
+    fix(utils): add DataClassArgumentParser to utils import structure
+    
+    Export DataClassArgumentParser from easydel.utils to resolve
+    AttributeError in gsm8k_math_gspo.py script. Added to both main
+    __init__.py import structure and utils module __all__ list.
+    
+    🤖 Generated with [Claude Code](https://claude.ai/code)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+diff --git a/easydel/__init__.py b/easydel/__init__.py
+index 3c39fe5c..135c1a0c 100644
+--- a/easydel/__init__.py
++++ b/easydel/__init__.py
+@@ -35,13 +35,11 @@ if _check_bool_flag("EASYDEL_AUTO", True):
+     # Tell jax xla bridge to stay quiet and only yied warnings or errors.
+     _getlogger("jax._src.xla_bridge").setLevel(30)
+     _getlogger("jax._src.mesh_utils").setLevel(30)
+-    _getlogger("jax._src.distributed").setLevel(30)
+     _getlogger("datasets").setLevel(30)
+ 
+     _os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+     _os.environ["KMP_AFFINITY"] = "noverbose"
+-    # Use symbolic level to avoid grpc "Unknown log verbosity: 3"
+-    _os.environ["GRPC_VERBOSITY"] = "ERROR"
++    _os.environ["GRPC_VERBOSITY"] = "3"
+     _os.environ["GLOG_minloglevel"] = "3"
+     _os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+     _os.environ["CACHE_TRITON_KERNELS"] = "1"
+@@ -118,6 +116,7 @@ _import_structure = {
+         "ePathLike",
+         "TextDatasetInform",
+         "VisualDatasetInform",
++        "DataClassArgumentParser",
+     ],
+     "inference": [
+         "EngineRequest",
+@@ -962,6 +961,7 @@ if _tp.TYPE_CHECKING:
+         ePath,
+         ePathLike,
+         traversals,
++        DataClassArgumentParser,
+     )
+     from .utils.parameters_transformation import (
+         ModelConverter,
+diff --git a/easydel/utils/__init__.py b/easydel/utils/__init__.py
+index c2786546..66f4fbee 100644
+--- a/easydel/utils/__init__.py
++++ b/easydel/utils/__init__.py
+@@ -58,6 +58,7 @@ Note:
+     efficient development and deployment of EasyDeL models.
+ """
+ 
++from eformer.aparser import DataClassArgumentParser
+ from eformer.paths import ePath, ePathLike
+ 
+ from . import analyze_memory, compiling_utils, traversals
+@@ -74,6 +75,7 @@ from .helpers import Timer, Timers, capture_time, check_bool_flag, get_cache_dir
+ from .lazy_import import LazyModule, is_package_available
+ 
+ __all__ = (
++    "DataClassArgumentParser",
+     "DataManager",
+     "DatasetLoadError",
+     "DatasetMixture",

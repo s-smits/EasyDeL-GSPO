@@ -1,0 +1,25 @@
+commit c186c803a5790c1ee44438cb528c5427f0e3acb8
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 13:00:54 2025 +0000
+
+    chore(logging): set jax._src.distributed to WARNING and GRPC_VERBOSITY=ERROR to reduce noise
+
+diff --git a/easydel/__init__.py b/easydel/__init__.py
+index 5da1c6f4..3c39fe5c 100644
+--- a/easydel/__init__.py
++++ b/easydel/__init__.py
+@@ -35,11 +35,13 @@ if _check_bool_flag("EASYDEL_AUTO", True):
+     # Tell jax xla bridge to stay quiet and only yied warnings or errors.
+     _getlogger("jax._src.xla_bridge").setLevel(30)
+     _getlogger("jax._src.mesh_utils").setLevel(30)
++    _getlogger("jax._src.distributed").setLevel(30)
+     _getlogger("datasets").setLevel(30)
+ 
+     _os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+     _os.environ["KMP_AFFINITY"] = "noverbose"
+-    _os.environ["GRPC_VERBOSITY"] = "3"
++    # Use symbolic level to avoid grpc "Unknown log verbosity: 3"
++    _os.environ["GRPC_VERBOSITY"] = "ERROR"
+     _os.environ["GLOG_minloglevel"] = "3"
+     _os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+     _os.environ["CACHE_TRITON_KERNELS"] = "1"

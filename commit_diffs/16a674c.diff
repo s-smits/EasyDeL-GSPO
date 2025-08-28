@@ -1,0 +1,124 @@
+commit 16a674c017e0f6852d9c993677652a14e2741e9c
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 17:38:52 2025 +0000
+
+    chore(grpo): simplify warmup dummy lengths; confirm streamlined ref sync\n\n- Warmup: derive PL/CL from arguments with max(1, int(...)).\n- Ref sync: keep interval-based logic; obsolete skip-first remains removed.\n- Update progress.txt.
+
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index 7d63e3c5..538d942f 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -674,6 +674,17 @@ class BaseTrainer(BaseTrainerProtocol):
+                     num_epochs=num_epochs,
+                     shuffle=shuffle,
+                 )
++                # Verbose logging of data loading configuration per worker
++                try:
++                    if jax.process_count() > 1:
++                        msg = (
++                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} "
++                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
++                        )
++                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
++                            logger.info(msg)
++                except Exception:
++                    pass
+             else:
+                 data_source = grain.MapDataset.source(dataset)
+                 base_seed = self.arguments.shuffle_seed_train or 0
+@@ -688,6 +699,16 @@ class BaseTrainer(BaseTrainerProtocol):
+                     num_epochs=num_epochs,
+                     shuffle=shuffle,
+                 )
++                try:
++                    if jax.process_count() > 1:
++                        msg = (
++                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} "
++                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
++                        )
++                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
++                            logger.info(msg)
++                except Exception:
++                    pass
+             # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
+             try:
+                 num_records = int(len(data_source))
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 40a45600..ae7cdada 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -948,11 +948,9 @@ class GRPOTrainer(Trainer):
+             if jax.process_count() > 1:
+                 B = int(self.training_batch_size)
+                 G = int(self.num_generations)
+-                # Lengths: prefer explicit prompt/completion limits, fall back conservatively
+-                PL = int(getattr(self.arguments, "max_prompt_length", 64) or 64)
+-                CL = int(getattr(self.arguments, "max_completion_length", 64) or 64)
+-                PL = max(1, PL)
+-                CL = max(1, CL)
++                # Lengths from config with minimal guards
++                PL = max(1, int(self.arguments.max_prompt_length))
++                CL = max(1, int(self.arguments.max_completion_length))
+ 
+                 pad_id = int(self.pad_token_id)
+ 
+@@ -1006,6 +1004,15 @@ class GRPOTrainer(Trainer):
+         batch: dict[str, jax.Array],
+         is_train: bool,
+     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
++        # Entry log for preprocessing path with basic batch keys and step
++        try:
++            _step = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
++            logger.debug(
++                f"[GRPOTrainer:_preprocess_batch_input] p{jax.process_index()} step={_step} "
++                f"entry: batch_keys={list(batch.keys())}"
++            )
++        except Exception:
++            pass
+         with capture_time() as preprocessing_time_fn:
+             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
+ 
+@@ -1017,6 +1024,15 @@ class GRPOTrainer(Trainer):
+                 logger.error(f"Failed to convert arrays to JAX on worker {jax.process_index()}: {e}")
+                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
+ 
++            # Hash a small slice of inputs to verify cross-worker consistency deterministically
++            try:
++                import hashlib
++                id_slice = np.asarray(prompt_ids[:2, :16])
++                hasher = hashlib.md5(id_slice.tobytes())
++                logger.info(f"[GRPOTrainer:DataCheck] p{jax.process_index()} batch_hash={hasher.hexdigest()}")
++            except Exception as e:
++                logger.warning(f"[GRPOTrainer:DataCheck] p{jax.process_index()} hashing failed: {e!s}")
++
+ 
+             # Ensure unique prompts if enabled
+             if getattr(self.arguments, "ensure_unique_prompts", True):
+@@ -1753,6 +1769,7 @@ class GRPOTrainer(Trainer):
+         for key, value in metrics_dict.items():
+             if hasattr(value, 'item'):
+                 try:
++                    logger.debug(f"[GRPOTrainer:metrics] Converting scalar metric '{key}' via .item()")
+                     processed_metrics_dict[key] = float(value.item())
+                 except Exception as e:
+                     logger.warning(f"Failed to convert metric '{key}' to float for logging: {e}")
+diff --git a/progress.txt b/progress.txt
+index d77fb5af..1813bb61 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -153,3 +153,15 @@ IterableDataset True Sharding
+ - Why: Ensures each worker processes a unique stream (true DP) instead of duplicated prompts, preventing redundant work and silent OOMs that led to `FAILED_PRECONDITION` when a peer died.
+ - Notes: Keeps deterministic seeding across workers; sharding occurs at dataset-level so `HFDataSource`/Grain sampler index handling no longer causes duplicate reads.
+  - Additionally: Enforce positive seed for IterableDataset path (`seed = max(1, seed)` when training) to satisfy Grain requirements when `shuffle_seed_train` may be 0/None.
++---
++Verbose Instrumentation
++
++- Added entry + data hash logs in `GRPOTrainer._preprocess_batch_input` to verify cross-worker data consistency (prints batch keys, step, and md5 hash of a small input slice).
++- Added metric conversion debug logs before calling `.item()` to pinpoint potential device-to-host hangs.
++- Logged data loader config per worker in `BaseTrainer._configure_grain_dataloader` (seed, shard index/count, shuffle, epochs) for both Iterable and MapDataset paths.
++- Confirmed obsolete `ref_model_skip_first_sync` is not used; sync logic now relies solely on interval + flags.
++---
++Cleanup: Simplify warmup + sync logic
++
++- GRPO warmup: Simplified PL/CL derivation to `max(1, int(self.arguments.max_prompt_length))` and `max(1, int(self.arguments.max_completion_length))`.
++- Reference sync: Confirmed removal of obsolete `ref_model_skip_first_sync`; `on_step_start` uses only interval-based logic.

@@ -1,0 +1,293 @@
+commit 7070a074269349e27a6ac814e33faf97d0b1d284
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 09:25:24 2025 +0000
+
+    GRPO: add sync_multihost_phases barrier after generation/ref-logps; default True to prevent multi-host launch-id divergence on TPU. Also adds config flag to GRPOConfig.
+
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index a63aabb0..b7cfb9c0 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -482,8 +482,18 @@ def main():
+         try:
+             args.num_train_epochs = 1
+             if mini_batch_size_override:
++                # Keep DP constant across phases by NOT mutating total_batch_size.
++                # Only adjust mini_batch_size to accommodate small levels.
+                 args.mini_batch_size = mini_batch_size_override
+-                args.total_batch_size = mini_batch_size_override
++
++            # In multi-host runs, synchronize before creating the second trainer to avoid
++            # launch-group divergence if hosts arrive here at slightly different times.
++            try:
++                if jax.process_count() > 1:
++                    from jax.experimental.multihost_utils import sync_global_devices as _sync
++                    _sync("pre_curriculum_trainer_init")
++            except Exception:
++                pass
+ 
+             # Use the same trainer class for curriculum
+             new_tr = ed.GSPOTrainer(
+@@ -496,6 +506,14 @@ def main():
+                 data_tokenize_fn=trainer.data_tokenize_fn,
+             )
+             out = new_tr.train()
++
++            # Synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
++            try:
++                if jax.process_count() > 1:
++                    from jax.experimental.multihost_utils import sync_global_devices as _sync
++                    _sync("post_curriculum_trainer_train")
++            except Exception:
++                pass
+             return out.state
+         finally:
+             # Restore original knobs
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index 778ff482..f833954d 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -687,27 +687,53 @@ class BaseTrainer(BaseTrainerProtocol):
+             per_shard_base = num_records // max(1, shard_count)
+             remainder = num_records % max(1, shard_count)
+             per_shard_len = per_shard_base + (1 if shard_index < remainder else 0)
+-            base_eff = max(1, min(int(batch_size), int(per_shard_len)))
++            # IMPORTANT: Use uniform per_shard_base (not per_shard_len) to derive effective batch size,
++            # so all hosts choose the SAME batch size even when remainder differs.
++            base_eff = max(1, min(int(batch_size), int(per_shard_base)))
+             if base_eff < int(batch_size):
+                 logger.warning(
+                     f"Batch size {int(batch_size)} reduced to {base_eff} for shard {shard_index}/{shard_count} "
+                     f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
+                 )
+-            # Align batch size to a multiple of DP axis to satisfy pjit sharding requirements
+-            dp_axis = int(self.arguments.grain_shard_count or 1)
+-            aligned_eff = (base_eff // max(1, dp_axis)) * max(1, dp_axis)
++            # Align batch size to a multiple of per-host DP to satisfy pjit sharding requirements
++            # Compute dp_per_host from the model mesh: dp_global / process_count when divisible; else 1
++            try:
++                mesh_shape = getattr(self.model.mesh, "shape", {})
++                dp_global = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
++            except Exception:
++                dp_global = 1
++            try:
++                pc = int(jax.process_count())
++            except Exception:
++                pc = 1
++            if dp_global >= pc and (dp_global % max(1, pc) == 0):
++                dp_per_host = max(1, dp_global // max(1, pc))
++            else:
++                dp_per_host = 1
++            # Also ensure divisibility by gradient_accumulation_steps to avoid scan reshape mismatches
++            try:
++                gas = int(self.arguments.gradient_accumulation_steps or 1)
++            except Exception:
++                gas = 1
++            mult = max(1, int(dp_per_host)) * max(1, gas)
++            aligned_eff = (base_eff // mult) * mult
+             if aligned_eff == 0:
+-                # Cannot form any DP-consistent batch on this shard; keep base_eff to let drop_remainder yield 0 steps
+-                effective_batch_size = base_eff
++                # Fallback: try DP-only alignment
++                aligned_eff = (base_eff // max(1, dp_per_host)) * max(1, dp_per_host)
++                if aligned_eff == 0:
++                    # Cannot form any DP-aligned batch on this shard; keep base_eff to let drop_remainder yield 0 steps
++                    effective_batch_size = base_eff
++                else:
++                    effective_batch_size = aligned_eff
+                 logger.warning(
+-                    f"No DP-aligned batch can be formed on shard {shard_index}/{shard_count} (per-shard={per_shard_len}, dp={dp_axis}). "
+-                    f"This shard will likely yield 0 steps due to drop_remainder."
++                    f"Batch size not divisible by dp_per_host*GAS; relaxed to dp alignment only: base={base_eff} -> {effective_batch_size} "
++                    f"(dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
+                 )
+             else:
+                 effective_batch_size = aligned_eff
+                 if effective_batch_size != base_eff:
+                     logger.warning(
+-                        f"Batch size aligned to DP multiple: {base_eff} -> {effective_batch_size} (dp={dp_axis})"
++                        f"Batch size aligned to per-host DP * GAS: {base_eff} -> {effective_batch_size} (dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
+                     )
+             collate_fn = self.create_grain_collect_function(
+                 max_sequence_length=self.arguments.max_sequence_length,
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index 4d15e06d..f1faa112 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -20,6 +20,13 @@ class GRPOConfig(TrainingArguments):
+         default="grpotrainer",
+         metadata={"help": "default prefix name for trainer."},
+     )
++    # Synchronize multi-host phase transitions to avoid TPU launch-group divergence
++    sync_multihost_phases: bool = field(
++        default=True,
++        metadata={
++            "help": "If True, inserts a cross-host barrier between generation/ref-logps and optimization to keep all hosts in lockstep.",
++        },
++    )
+     remove_unused_columns: bool | None = field(
+         default=False,
+         metadata={"help": "Whether to remove unused columns from the dataset."},
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 4bad60bd..8807fe32 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -1025,6 +1025,15 @@ class GRPOTrainer(Trainer):
+                 nrs_remaining -= cur_nrs
+                 chunk_idx += 1
+ 
++            # In multi-host runs, ensure all hosts finish generation and ref-logps
++            # before proceeding to downstream aggregation and optimization.
++            try:
++                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                    jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
++            except Exception:
++                # Best-effort; do not crash if barrier is unavailable
++                pass
++
+             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
+             if len(sequences_chunks) == 1:
+                 prompt_completion_ids = sequences_chunks[0]
+@@ -1095,7 +1104,8 @@ class GRPOTrainer(Trainer):
+ 
+             # Cache minimal inputs for post-update logprob diagnostics
+             try:
+-                if bool(getattr(self.arguments, "logprob_analysis_enable", True)):
++                # Multi-host safety: run diagnostics only in single-host mode
++                if (jax.process_count() == 1) and bool(getattr(self.arguments, "logprob_analysis_enable", True)):
+                     try:
+                         # Build full mask: repeat prompt mask for each generation and concat with completion mask
+                         total_k = int(self.num_generations)
+@@ -1109,37 +1119,22 @@ class GRPOTrainer(Trainer):
+                         except Exception:
+                             seqs_per_host = 4
+ 
+-                        # Ensure diagnostics batch dimension is divisible by batch-partition axes (e.g., dp, fsdp)
++                        # Ensure diagnostics batch dimension is divisible by per-host DP to satisfy sharding
+                         try:
+-                            step_spec = getattr(self.arguments, "step_partition_spec", None)
+-                            batch_spec = step_spec[0] if (step_spec is not None and len(step_spec) > 0) else None
+                             mesh_shape = getattr(self.model.mesh, "shape", {})
+-
+-                            def _axis_mult(ax):
+-                                if ax is None:
+-                                    return 1
+-                                if isinstance(ax, tuple):
+-                                    m = 1
+-                                    for a in ax:
+-                                        try:
+-                                            m *= int(mesh_shape.get(a, 1))
+-                                        except Exception:
+-                                            m *= 1
+-                                    return max(1, int(m))
+-                                try:
+-                                    return max(1, int(mesh_shape.get(ax, 1)))
+-                                except Exception:
+-                                    return 1
+-
+-                            batch_mult = _axis_mult(batch_spec)
+-                            if batch_mult < 1:
+-                                batch_mult = 1
+-                            # Round up to nearest multiple to satisfy with_sharding_constraint in diagnostics
+-                            if seqs_per_host % batch_mult != 0:
+-                                seqs_per_host = ((seqs_per_host + batch_mult - 1) // batch_mult) * batch_mult
++                            dp_global = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
+                         except Exception:
+-                            # Fallback: keep as-is; in worst case, diagnostics are skipped by except below
+-                            pass
++                            dp_global = 1
++                        try:
++                            pc = int(jax.process_count())
++                        except Exception:
++                            pc = 1
++                        if dp_global >= pc and (dp_global % max(1, pc) == 0):
++                            dp_per_host = max(1, dp_global // max(1, pc))
++                        else:
++                            dp_per_host = 1
++                        if seqs_per_host % dp_per_host != 0:
++                            seqs_per_host = ((seqs_per_host + dp_per_host - 1) // dp_per_host) * dp_per_host
+ 
+                         try:
+                             cur_step_int = int(jax.device_get(state.step))
+@@ -1821,13 +1816,14 @@ class GRPOTrainer(Trainer):
+         except Exception:
+             do_diag, every = True, 1
+ 
+-        if (
+-            do_diag
+-            and (every > 0)
+-            and (step % every == 0)
+-            and hasattr(self, "_last_logprob_diag")
+-            and self._last_logprob_diag is not None
+-        ):
++                if (
++                    do_diag
++                    and (every > 0)
++                    and (step % every == 0)
++                    and hasattr(self, "_last_logprob_diag")
++                    and self._last_logprob_diag is not None
++                    and jax.process_count() == 1
++                ):
+             try:
+                 ids = self._last_logprob_diag.get("ids")
+                 full_mask = self._last_logprob_diag.get("full_mask")
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index f4117921..3cdd05c9 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -335,17 +335,41 @@ class Trainer(BaseTrainer):
+         run_exception = None
+         for _ in range(iters):
+             current_step = int(jax.device_get(state.step))
++            # Robust multi-host end-of-epoch coordination: if any host runs out of data,
++            # all hosts stop together to avoid TPU launch-id mismatches.
++            has_batch_local = 1
++            next_batch = None
+             try:
+-                batch, train_iter = self._get_next_batch(train_iter, train_dataset)
+-                if self._should_skip_step(current_step):
+-                    pbar.update(1)
+-                    continue
+-                step_metrics.start_step()
+-                state = self.on_step_start(state=state, step=current_step)
+-            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest, StopIteration) as exect:
++                next_batch, train_iter = self._get_next_batch(train_iter, train_dataset)
++            except (StopIteration,) as _:
++                has_batch_local = 0
++            except (KeyboardInterrupt, EasyDeLTimerError, EasyDeLBreakRequest) as exect:
+                 run_exception = exect
+                 return state, run_exception, train_iter
+ 
++            # Allgather a tiny scalar to check if any host ran out of data
++            try:
++                import jax
++                import jax.numpy as jnp
++                gathered = jax.experimental.multihost_utils.process_allgather(jnp.array(has_batch_local, dtype=jnp.int32))
++                any_missing = int(jnp.sum(gathered == 0)) > 0
++            except Exception:
++                # Best-effort fallback: use local status only
++                any_missing = (has_batch_local == 0)
++
++            if any_missing:
++                # If any host is out of data, stop the epoch in lockstep without executing another step
++                run_exception = StopIteration()
++                return state, run_exception, train_iter
++
++            # All hosts have a batch; continue
++            batch = next_batch
++            if self._should_skip_step(current_step):
++                pbar.update(1)
++                continue
++            step_metrics.start_step()
++            state = self.on_step_start(state=state, step=current_step)
++
+             # Execute training step
+             with self.train_tracker.trace_compilation():
+                 with capture_time() as execution_time:
+@@ -642,4 +666,4 @@ class Trainer(BaseTrainer):
+             )
+         except RuntimeError:
+             # In multi-host evaluation, RuntimeError might be raised; catch and continue.
+-            ...
+\ No newline at end of file
++            ...

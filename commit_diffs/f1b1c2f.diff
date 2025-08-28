@@ -1,0 +1,29 @@
+commit f1b1c2fd05427844fe77e1a1eff773919044f3df
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 11:44:34 2025 +0000
+
+    Fix syntax in GRPOTrainer.on_step_start: place except before finally in alignment-check try block
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 97e568dd..6adb7a0a 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -2122,15 +2122,15 @@ class GRPOTrainer(Trainer):
+                                             self.ref_state = self.ref_state.replace(graphother=deepcopy_model(state.graphother))
+                                         except Exception:
+                                             ...
++                        except Exception:
++                            # Never crash on diagnostics
++                            ...
+                         finally:
+                             try:
+                                 if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+                                     jax.experimental.multihost_utils.sync_global_devices("after_alignment_check")
+                             except Exception:
+                                 ...
+-                        except Exception:
+-                            # Never crash on diagnostics
+-                            ...
+         except Exception:
+             # Best-effort: never block training on ref sync
+             ...

@@ -1,0 +1,70 @@
+commit aa250d0ddf3ffad665165390140b6e053d23c1e1
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 01:27:09 2025 +0200
+
+    Run: explicit SYNC_FLAGS for barriers/ref modes; remove contradictions; ref_mode sets ref_model_sync_steps=16
+
+diff --git a/progress.txt b/progress.txt
+index c32e85d0..36d9312f 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -234,3 +234,9 @@ Reference Trainer Streamlining
+ [] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).
+ [] Run script: added SYNC_MODE (ref|barriers) to select either reference sync or multihost barriers; flags are mutually exclusive and inferred automatically.
+ [] Fix SYNC_MODE one-of semantics in run script: barriers -> only --sync_multihost_phases true (and disable ref sync); ref -> ref-sync flags + --sync_multihost_phases false.
++[] Critical assessment of SYNC_MODE and current run
++- Mesh config mismatch: force_data_parallel=2, force_tensor_parallel=4 on 16 devices → dp*tp=8 != 16 and dp % process_count(4) != 0. Expect instability; recommend dp=4 (so dp*tp=16 and divisible by pc) or remove force_* and let adaptive mesh decide.
++- Barriers off (SYNC_MODE=ref) with multi-host=4: acceptable for debugging but can cause host phase drift around on_step_start/train_step; expect occasional divergence warnings/skips.
++- SYNC_FLAGS: one-of semantics OK. But logprob_analysis_enable is disabled only in ref mode now; if you want it off in both modes, move the flag outside SYNC_FLAGS.
++- Logging tee warning (‘os’ UnboundLocalError): non-fatal; fix by ensuring no local shadowing and importing sys earlier.
++[] Run script: make SYNC_FLAGS explicit in both modes (barriers-only vs ref-sync-only), remove contradictions, include ref_model_sync_steps only in ref mode.
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 554dbb1e..5f2fc972 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -54,11 +54,24 @@ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
+ 
+ # Compute sync flags based on SYNC_MODE (mutually exclusive)
+ if [ "$SYNC_MODE" = "barriers" ]; then
+-  # Multi-host barriers only; explicitly disable reference sync
+-  SYNC_FLAGS="--sync_multihost_phases true --sync_ref_model false"
++  # Multi-host barriers only; explicitly disable all ref-sync toggles
++  SYNC_FLAGS="\
++  --sync_multihost_phases true \
++  --sync_ref_model false \
++  --sync_ref_model_on_step_start false \
++  --ref_sync_copy_graphother false \
++  --logprob_alignment_check_on_sync false \
++  --logprob_analysis_enable false"
+ else
+-  # Reference sync mode with safe defaults; disable multi-host barriers
+-  SYNC_FLAGS="--sync_ref_model true --ref_model_sync_steps 16 --sync_ref_model_on_step_start true --ref_sync_copy_graphother true --logprob_alignment_check_on_sync false --sync_multihost_phases false"
++  # Reference sync mode with safe defaults; explicitly disable multihost barriers
++  SYNC_FLAGS="\
++  --sync_multihost_phases false \
++  --sync_ref_model true \
++  --ref_model_sync_steps 16 \
++  --sync_ref_model_on_step_start true \
++  --ref_sync_copy_graphother true \
++  --logprob_alignment_check_on_sync false \
++  --logprob_analysis_enable false"
+ fi
+ 
+ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+@@ -74,7 +87,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --learning_rate 2e-6 \
+   --dataset_use_pct 10 \
+   --force_tensor_parallel 4 \
+-  --force_data_parallel 2 \
++  --force_data_parallel 4 \
+   --report_steps 1 \
+   --log_global ${LOG_GLOBAL_VAL} \
+   --log_steps 1 \
+@@ -87,7 +100,6 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --top_p 0.95 \
+   --top_k 50 \
+   --advantage_epsilon 1e-6 \
+-  --logprob_analysis_enable false \
+   ${SYNC_FLAGS} \
+   --cap_rollout_chunk_to_tp true \
+   --verbose true \

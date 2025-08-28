@@ -1,0 +1,28 @@
+commit b7516bb7b568524dcca4925e17087ba10dde0180
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 16:14:01 2025 +0000
+
+    stability: revert skip-first-sync; add deterministic_generation_across_hosts (default True); unify jitted debug flag across hosts; remove CLI skip flag
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index b56c9677..aa08cfe3 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -2226,7 +2226,7 @@ class GRPOTrainer(Trainer):
+                 ...
+             sync_enabled = getattr(self.arguments, "sync_ref_model", False)
+             sync_on_start = getattr(self.arguments, "sync_ref_model_on_step_start", True)
+-            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", True)
++            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", False)
+             interval = int(getattr(self.arguments, "ref_model_sync_steps", 64))
+             should_sync = (
+                 sync_enabled
+diff --git a/progress.txt b/progress.txt
+index 587f8bc1..ff472e3b 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -122,3 +122,4 @@ Use this script to get rich per‑step host and JIT logs without destabilizing m
+ [2025-08-27T15:49:56Z] Preparing commit: enable debug flags, add JIT/host logs, quiet JAX noise, and update run script.
+ [2025-08-27T15:59:34Z] Added per-run log tee to file in gsm8k_math_gspo.py (logs/gspo_<TS>/*_p<proc>.log); kept flags in run script.
+ [2025-08-27T16:08:26Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
++[2025-08-27T16:14:01Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.

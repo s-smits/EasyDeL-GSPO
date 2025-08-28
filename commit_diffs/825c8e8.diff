@@ -1,0 +1,33 @@
+commit 825c8e892640a790a0b33dcb5870a3371b5f7f1d
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 12:52:30 2025 +0000
+
+    chore(types): satisfy ePathLike by casting ePath returns in get_path/_get_save_directory
+
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index b78e8f53..a1c3783e 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -710,10 +710,10 @@ class TrainingArguments:
+         """
+         if self.process_zero_is_admin:
+             if self.is_process_zero:
+-                return ePath(self.save_directory) / (self.model_name or "model")
++                return tp.cast(ePathLike, ePath(self.save_directory) / (self.model_name or "model"))
+             else:
+-                return ePath("/dev/null")
+-        return ePath(self.save_directory) / (self.model_name or "model")
++                return tp.cast(ePathLike, ePath("/dev/null"))
++        return tp.cast(ePathLike, ePath(self.save_directory) / (self.model_name or "model"))
+ 
+     def ensure_checkpoint_path(self):
+         """
+@@ -1095,7 +1095,7 @@ class TrainingArguments:
+         directory_name = f"run-{step}"
+         savedir = self._get_save_directory(create=create)
+         if savedir is None:
+-            return ePath("/dev/null")
++            return tp.cast(ePathLike, ePath("/dev/null"))
+         save_directory = savedir / directory_name
+         if create:
+             save_directory.mkdir(exist_ok=True, parents=True)

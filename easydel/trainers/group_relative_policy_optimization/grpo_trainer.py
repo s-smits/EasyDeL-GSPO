@@ -291,8 +291,44 @@ class GRPOTrainer(Trainer):
             if isinstance(conf_eos, (list, tuple)):
                 eos_ids.extend([t for t in conf_eos if t is not None])
 
-        # Return unique list with deterministic ordering
-        return sorted(set(eos_ids))
+        # Exclude pad token id from EOS to avoid premature stopping/padding confusion
+        try:
+            if isinstance(self.processing_class, ProcessorMixin):
+                _pad_id = self.processing_class.tokenizer.pad_token_id
+            else:
+                _pad_id = getattr(self.processing_class, "pad_token_id", None)
+        except Exception:
+            _pad_id = None
+
+        if _pad_id is not None:
+            eos_ids = [tid for tid in eos_ids if tid != _pad_id]
+
+        # Return unique list with deterministic ordering; ensure non-empty fallback
+        final_eos_ids = sorted(set(eos_ids))
+        if not final_eos_ids:
+            base_eos = []
+            if isinstance(proc_eos_token_id, int):
+                base_eos = [proc_eos_token_id]
+            elif isinstance(proc_eos_token_id, (list, tuple)):
+                base_eos = [t for t in proc_eos_token_id if t is not None]
+            # As a last resort, if still empty and pad exists, prefer not to use pad as EOS
+            final_eos_ids = base_eos if len(base_eos) > 0 else []
+        
+        # Debug logging for EOS token detection
+        try:
+            if jax.process_index() == 0:
+                logger.info(f"Detected EOS token IDs: {final_eos_ids}")
+                # Also log token strings for verification
+                for tid in final_eos_ids:
+                    try:
+                        token_str = tokenizer.decode([tid]) if hasattr(tokenizer, 'decode') else str(tid)
+                        logger.info(f"  EOS token {tid}: '{token_str}'")
+                    except Exception:
+                        logger.info(f"  EOS token {tid}: (decode failed)")
+        except Exception:
+            pass
+        
+        return final_eos_ids
 
     def _prepare_dataset(
         self,

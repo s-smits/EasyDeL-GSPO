@@ -1,0 +1,106 @@
+commit 30e88977c7fd5546f1c4aa9d44ab745f07d78f2f
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 23:43:19 2025 +0000
+
+    add extra robustness policy/ref stats
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index 6120dbf4..4d15e06d 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -228,4 +228,30 @@ class GRPOConfig(TrainingArguments):
+             print(f"DEBUG: GRPOConfig post_init failed: {e}")
+             raise
+ 
++        # After parent post_init, enforce robust, efficient multi-host-safe diagnostics defaults.
++        # Clamp to safe ranges automatically; users need not set these.
++        try:
++            import jax as _jax  # lazy import
++            procs = int(_jax.process_count())
++        except Exception:
++            procs = 1
++
++        try:
++            # Clamp sequences per host to [2,4] on multi-host for shape stability and efficiency
++            if procs > 1:
++                s = int(getattr(self, "logprob_sequences_per_host", 4))
++                # Heuristic: very long completions => prefer smaller S
++                if int(self.max_completion_length) >= 4096:
++                    s = min(s, 2)
++                s = max(2, min(4, s))
++                self.logprob_sequences_per_host = s
++
++                # Clamp token samples per host to [1024, 4096]
++                m = int(getattr(self, "logprob_token_samples_per_host", 4096))
++                m = max(1024, min(4096, m))
++                self.logprob_token_samples_per_host = m
++        except Exception:
++            # Best-effort; keep defaults if clamping fails
++            ...
++
+     __hash__ = hash_fn
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index fe55f625..4bad60bd 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -1109,6 +1109,38 @@ class GRPOTrainer(Trainer):
+                         except Exception:
+                             seqs_per_host = 4
+ 
++                        # Ensure diagnostics batch dimension is divisible by batch-partition axes (e.g., dp, fsdp)
++                        try:
++                            step_spec = getattr(self.arguments, "step_partition_spec", None)
++                            batch_spec = step_spec[0] if (step_spec is not None and len(step_spec) > 0) else None
++                            mesh_shape = getattr(self.model.mesh, "shape", {})
++
++                            def _axis_mult(ax):
++                                if ax is None:
++                                    return 1
++                                if isinstance(ax, tuple):
++                                    m = 1
++                                    for a in ax:
++                                        try:
++                                            m *= int(mesh_shape.get(a, 1))
++                                        except Exception:
++                                            m *= 1
++                                    return max(1, int(m))
++                                try:
++                                    return max(1, int(mesh_shape.get(ax, 1)))
++                                except Exception:
++                                    return 1
++
++                            batch_mult = _axis_mult(batch_spec)
++                            if batch_mult < 1:
++                                batch_mult = 1
++                            # Round up to nearest multiple to satisfy with_sharding_constraint in diagnostics
++                            if seqs_per_host % batch_mult != 0:
++                                seqs_per_host = ((seqs_per_host + batch_mult - 1) // batch_mult) * batch_mult
++                        except Exception:
++                            # Fallback: keep as-is; in worst case, diagnostics are skipped by except below
++                            pass
++
+                         try:
+                             cur_step_int = int(jax.device_get(state.step))
+                         except Exception:
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 7533b971..f07d5b0c 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -67,7 +67,6 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --dataset_use_pct 10 \
+   --force_tensor_parallel 4 \
+   --force_data_parallel 2 \
+-  --log_logprobs_metrics false \
+   --report_steps 1 \
+   --log_global ${LOG_GLOBAL_VAL} \
+   --log_steps 1 \
+@@ -79,8 +78,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --temperature 0.7 \
+   --top_p 0.95 \
+   --top_k 50 \
+-  --logprob_analysis_enable false \
+   --advantage_epsilon 1e-6 \
++  --logprob_analysis_enable false \
+   --verbose true
+ 
+ echo "Training completed!"

@@ -1,0 +1,25 @@
+commit 95823936ab147c324493ab09959ce8e1ee327bd9
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 15:31:15 2025 +0000
+
+    Ignore .codex_tmp/ in .gitignore
+
+diff --git a/.gitignore b/.gitignore
+index cd845de5..49c3253a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -30,6 +30,7 @@ tmp-files
+ *.json
+ .Python
+ EasyDeL-Checkpoints
++.codex_tmp/
+ easydel-Checkpoints
+ build/
+ develop-eggs/
+@@ -166,4 +167,4 @@ TPU_Sharding_GSPO_Summary.txt
+ uv.lock
+ uv.lock.json
+ easydel_reference
+-EasyDeL-Checkpoints
+\ No newline at end of file
++EasyDeL-Checkpoints

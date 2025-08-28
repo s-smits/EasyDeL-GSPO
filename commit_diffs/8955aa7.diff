@@ -1,0 +1,85 @@
+commit 8955aa7dc8be881e68508b6f5759d27b4fcbbb92
+Author: air <air@localhost>
+Date:   Thu Aug 28 01:48:52 2025 +0000
+
+    cache: normalize causal mask shapes; ensure cond branches return [B,H,q,max_kv]; fix batch_dims source
+
+diff --git a/easydel/layers/caching/transformer/cache.py b/easydel/layers/caching/transformer/cache.py
+index d34c0f00..5c0fb36f 100644
+--- a/easydel/layers/caching/transformer/cache.py
++++ b/easydel/layers/caching/transformer/cache.py
+@@ -295,7 +295,7 @@ class TransformerCacheView(BaseCacheView):
+         num_updated_cache_vectors = query.shape[1]
+         masking_details = self.masking_details
+         indexs = self.indexs
+-        batch_dims = self.value.shape[0]
++        batch_dims = key.shape[0]
+         sharding_statics = dict(mode=MODE_PREFILL, partition_manager=partition_manager)
+ 
+         def _kv_struct_shard(x: cx.Array) -> cx.Array:
+@@ -314,28 +314,35 @@ class TransformerCacheView(BaseCacheView):
+             # If it's shorter than required, rebuild a fresh mask with correct kv length.
+             def _ensure_causal_mask_shape(mask: cx.Array) -> cx.Array:
+                 expected_kv = self.maximum_sequence_length
+-                cur_q = num_updated_cache_vectors
+-                # mask shape is expected [1, 1, q_len, kv_len] or [B, H, q_len, kv_len]
++                q = num_updated_cache_vectors
++                # Normalize mask to [B, H, q, expected_kv] by either padding or rebuilding
+                 kv_len = mask.shape[-1]
+-                q_len = mask.shape[-2]
+-                # If kv_len is too small, recreate with correct size
+-                def _rebuild():
+-                    from easydel.infra.base_config import EasyDeLBaseConfig
+-                    # Build a lower-triangular causal mask of shape [1,1,q_len,expected_kv]
+-                    # Always allow attention up to existing positions
+-                    q = cur_q
+-                    kv = expected_kv
+-                    base = jnp.arange(q)[:, None]
+-                    cols = jnp.arange(kv)[None, :]
+-                    rebuilt = (cols <= base).astype("b1")[None, None, :, :]
+-                    # Broadcast batch/heads if needed
+-                    if mask.ndim == 4 and mask.shape[0] > 1:
+-                        rebuilt = jnp.broadcast_to(rebuilt, (mask.shape[0], 1, q, kv))
+-                    if mask.ndim == 4 and mask.shape[1] > 1:
+-                        rebuilt = jnp.broadcast_to(rebuilt, (rebuilt.shape[0], mask.shape[1], q, kv))
+-                    return rebuilt
+-
+-                return lax.cond(kv_len < expected_kv, _rebuild, lambda: mask)
++                # If kv_len is already correct, return as-is
++                def _ok():
++                    return mask
++                # Otherwise, pad or rebuild to expected_kv
++                def _fix():
++                    cur_q = mask.shape[-2]
++                    # Align q dimension (take the most recent positions)
++                    take_q = jnp.minimum(cur_q, q)
++                    trimmed = mask[..., :take_q, :]
++                    # Align kv dimension: truncate if longer, pad if shorter
++                    kv_final = jnp.minimum(trimmed.shape[-1], expected_kv)
++                    trimmed = trimmed[..., :kv_final]
++                    pad_k = expected_kv - kv_final
++                    if pad_k > 0:
++                        pad_cfg = [(0, 0)] * trimmed.ndim
++                        pad_cfg[-1] = (0, pad_k)
++                        trimmed = jnp.pad(trimmed, pad_cfg, constant_values=False)
++                    # If q increased, pad q axis at front with False to reach q
++                    if take_q < q:
++                        pad_q = q - take_q
++                        pad_cfg_q = [(0, 0)] * trimmed.ndim
++                        pad_cfg_q[-2] = (pad_q, 0)
++                        trimmed = jnp.pad(trimmed, pad_cfg_q, constant_values=False)
++                    return trimmed
++
++                return lax.cond(kv_len == expected_kv, _ok, _fix)
+ 
+             causal_mask = _ensure_causal_mask_shape(causal_mask)
+ 
+diff --git a/progress.txt b/progress.txt
+index 009fb72c..3a3ada22 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -309,3 +309,4 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
+ [grpo] Simplified sync/logging: SYNC_MODE env to toggle barriers; barriers now gated strictly; lints fixed; proceeding without cross-host barriers when disabled.
+ - Implemented GRPO collate functions for Grain and TFDS; added create_collect_function dispatch in grpo_trainer; lint clean; committed and pushed.
+ - Reverted Grain dataloader and step logic in base_trainer to upstream; fixed typing and None guards; committed and pushed.
++- Fixed decode-time causal mask slicing: added shape guard and clamp in TransformerCacheView to avoid out-of-range when kv_len < max; committed and pushed.

@@ -1,0 +1,193 @@
+commit d86f5b9f4f862101896581168b45f85c37944fde
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 15:49:56 2025 +0000
+
+    debug: add granular GRPO/GSPO debug logging and JIT summaries; quiet JAX/absl DEBUG noise; enable debug flags in run_gspo_training.sh; add multi-host barrier logs
+    
+    - Add config knobs: debug_enable, debug_jit_print_every_n, debug_rank0_only, debug_dump_batch_shapes
+    - Inject debug flags into batch and jitted steps (GRPO/GSPO)
+    - Host logs for barriers, shapes/dtypes, rollout chunking; ref-sync strategy + alignment MAD
+    - Reduce JAX/absl verbosity via per-module logger levels; keep EasyDeL at DEBUG
+    - Update run script to export EASYDEL_LOG_LEVEL=DEBUG and pass --debug_* flags
+    - Append progress summaries to progress.txt
+
+diff --git a/Screenshot 2025-08-27 at 17.46.17.png b/Screenshot 2025-08-27 at 17.46.17.png
+new file mode 100644
+index 00000000..df58c30c
+Binary files /dev/null and b/Screenshot 2025-08-27 at 17.46.17.png differ
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index 45d9acb8..1d92c297 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -8,6 +8,8 @@ from eformer.pytree import auto_pytree
+ from jax import numpy as jnp
+ from transformers import AutoConfig, AutoTokenizer
+ from easydel.utils.safe_ops import safe_call
++from easydel.utils.helpers import set_module_log_levels
++import logging
+ 
+ import easydel as ed
+ from easydel.infra.factory import registry
+@@ -54,6 +56,20 @@ def main():
+     parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
+     gspo_config, runtime = parser.parse_args_into_dataclasses()
+ 
++    # Reduce third-party noise (JAX/absl) while keeping EasyDeL debug visible
++    # Root remains at the global level configured by EASYDEL_LOG_LEVEL; we down-tune noisy modules.
++    set_module_log_levels({
++        "jax": logging.WARNING,
++        "jax._src": logging.WARNING,
++        "jax._src.cache_key": logging.ERROR,
++        "jaxlib": logging.WARNING,
++        "absl": logging.INFO,
++    })
++    # Keep EasyDeL debug messages flowing even if root is higher
++    set_module_log_levels({
++        "easydel": logging.DEBUG,
++    })
++
+     if jax.process_index() == 0:
+         print("Training Arguments\n----------------------")
+         print(gspo_config)
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index c8c1e621..a2f95223 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -751,6 +751,14 @@ class GRPOTrainer(Trainer):
+             self._train_shared_fn_static_args,
+             self._eval_shared_fn_static_args,
+         )
++        # Debug: report partition specs used for the step
++        try:
++            _pi = jax.process_index()
++            logger.debug(
++                f"[GRPOTrainer:compile] p{_pi} step_partition_spec={self.arguments.step_partition_spec} state_shardings={getattr(self, 'state_shardings', None)}"
++            )
++        except Exception:
++            pass
+ 
+         # Unified per-token log-probs compute (works for both policy and reference states)
+         def _compute_model_logps(graphtree, graphother, ids, mask, graphdef):
+@@ -773,6 +781,14 @@ class GRPOTrainer(Trainer):
+             ),
+             out_shardings=empty_sharding,
+         )
++        try:
++            _pi = jax.process_index()
++            logger.debug(
++                f"[GRPOTrainer:compile] p{_pi} compute_logps in_shardings=(graphstate, graphother, ids, mask) -> ("
++                f"{self.model_state.shardings.graphstate}, {self.model_state.shardings.graphother}, None, None)"
++            )
++        except Exception:
++            pass
+ 
+         self.arguments.ensure_checkpoint_path()
+         checkpoint_manager = self.arguments.get_streaming_checkpointer()
+@@ -1033,6 +1049,14 @@ class GRPOTrainer(Trainer):
+                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
+ 
+                 # Accumulate
++                try:
++                    if chunk_idx == 0 and getattr(self.arguments, "verbose", True):
++                        _pi = jax.process_index()
++                        logger.debug(
++                            f"[GRPOTrainer:preprocess] p{_pi} chunk0 cur_nrs={cur_nrs} seq_chunk.shape={getattr(prompt_completion_ids_chunk,'shape',None)} ref_logps.shape={getattr(ref_logps_chunk,'shape',None)}"
++                        )
++                except Exception:
++                    pass
+                 sequences_chunks.append(prompt_completion_ids_chunk)
+                 completion_ids_chunks.append(completion_ids_chunk)
+                 completion_mask_chunks.append(completion_mask_chunk)
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index f5884456..19a31f92 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -610,6 +610,16 @@ class Trainer(BaseTrainer):
+                 is_train=True,
+             )
+ 
++            # Debug: print training batch shapes/dtypes before entering the sharded step
++            try:
++                _pi = jax.process_index()
++                _shapes = {k: getattr(v, 'shape', None) for k, v in (batch.items() if hasattr(batch, 'items') else [])}
++                _dtypes = {k: getattr(v, 'dtype', None) for k, v in (batch.items() if hasattr(batch, 'items') else [])}
++                logger.debug(f"[Trainer] p{_pi} train-step batch shapes={_shapes}")
++                logger.debug(f"[Trainer] p{_pi} train-step batch dtypes={_dtypes}")
++            except Exception:
++                pass
++
+             # Optional: dump key batch shapes/dtypes for debugging
+             try:
+                 if getattr(self.arguments, "debug_enable", False) and getattr(self.arguments, "debug_dump_batch_shapes", True) and jax.process_index() == 0:
+diff --git a/easydel/utils/helpers.py b/easydel/utils/helpers.py
+index b0352a67..4de48c90 100644
+--- a/easydel/utils/helpers.py
++++ b/easydel/utils/helpers.py
+@@ -125,6 +125,26 @@ def set_loggers_level(level: int = logging.WARNING):
+ logger = get_logger(__name__)
+ 
+ 
++def set_module_log_levels(levels: dict[str, int]) -> None:
++    """Set logging levels for specific modules without changing root.
++
++    Example:
++        set_module_log_levels({
++            'jax': logging.WARNING,
++            'jax._src': logging.WARNING,
++            'jax._src.cache_key': logging.ERROR,
++            'absl': logging.INFO,
++            'easydel': logging.DEBUG,
++        })
++    """
++    for name, lvl in (levels or {}).items():
++        try:
++            logging.getLogger(name).setLevel(lvl)
++        except Exception:
++            # Best-effort; skip unknown loggers
++            pass
++
++
+ @contextlib.contextmanager
+ def capture_time():
+     """Context manager that measures elapsed time.
+diff --git a/progress.txt b/progress.txt
+index 00b400bd..301a4165 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -112,3 +112,11 @@ Config toggles:
+ - debug_enable (bool), debug_jit_print_every_n (int), debug_rank0_only (bool), debug_dump_batch_shapes (bool).
+ How to use:
+ - Set debug_enable=True; pick debug_jit_print_every_n (e.g., 64); keep debug_rank0_only=True for stability.
++[2025-08-27T15:39:50Z] Added targeted debug logging for multi-host sync, reference sync, alignment checks, generation chunking, and training batch shapes in trainer and GRPO trainer.
++Updated run_gspo_training.sh to enable maximal safe debugging output:
++- Added GSPO/GRPO debug flags: --debug_enable true, --debug_jit_print_every_n 1, --debug_rank0_only true, --debug_dump_batch_shapes true
++- Keeps multi‑host safety: alignment check off; barriers remain on; cap_rollout_chunk_to_tp true
++Use this script to get rich per‑step host and JIT logs without destabilizing multi‑host runs.
++[2025-08-27T15:43:48Z] Enabled EASYDEL_LOG_LEVEL=DEBUG and added --debug_* flags to run_gspo_training.sh so debug data is actually shown when flag is set.
++[2025-08-27T15:49:18Z] Silenced JAX/absl DEBUG logs via per-module log levels in gsm8k_math_gspo.py; kept EasyDeL at DEBUG.
++[2025-08-27T15:49:56Z] Preparing commit: enable debug flags, add JIT/host logs, quiet JAX noise, and update run script.
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 36f6fad2..d1fd11bd 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -16,6 +16,8 @@ echo "Setting up environment..."
+ # Set environment variables for TPU
+ export JAX_PLATFORMS=tpu
+ export JAX_TRACEBACK_FILTERING=off
++# Show DEBUG logs from EasyDeL when debug flags are enabled (safe to always enable during debugging)
++export EASYDEL_LOG_LEVEL=DEBUG
+ 
+ # Navigate to project directory and pull latest changes (non-fatal)
+ cd /home/air/EasyDeL-GSPO || exit 1
+@@ -80,6 +82,10 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --ref_sync_copy_graphother true \
+   --logprob_alignment_check_on_sync false \
+   --cap_rollout_chunk_to_tp true \
+-  --verbose true
++  --verbose true \
++  --debug_enable true \
++  --debug_jit_print_every_n 1 \
++  --debug_rank0_only true \
++  --debug_dump_batch_shapes true
+ 
+ echo "Training completed!"

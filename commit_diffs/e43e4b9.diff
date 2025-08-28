@@ -1,0 +1,316 @@
+commit e43e4b9d88286163efa2a8b3b358888783bae2a0
+Author: air <air@localhost>
+Date:   Thu Aug 28 00:44:29 2025 +0000
+
+    feat(grpo): SYNC_MODE env to disable multihost barriers; gate allgathers strictly; fix TrainerOutput import types; no-op logging simplifications
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index 1000139e..284e03f1 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -1,6 +1,7 @@
+ # grpo_config.py
+ 
+ import typing as tp
++import os
+ from dataclasses import field
+ 
+ from eformer.pytree import auto_pytree
+@@ -363,4 +364,26 @@ class GRPOConfig(TrainingArguments):
+             except Exception:
+                 pass
+ 
++        # Environment override for synchronization mode (barriers/allgathers)
++        try:
++            sm = os.getenv("SYNC_MODE") or os.getenv("EASYDEL_SYNC_MODE")
++            if sm is not None:
++                sm_l = sm.strip().lower()
++                disable = sm_l in {"off", "false", "0", "none", "local"}
++                self.sync_multihost_phases = not disable
++                # Also keep global logging off when barriers are disabled
++                if disable:
++                    try:
++                        self.log_global = False  # type: ignore[attr-defined]
++                    except Exception:
++                        ...
++                try:
++                    import jax as _jax
++                    if getattr(_jax, "process_index", lambda: 0)() == 0:
++                        print(f"Sync mode: {sm} -> sync_multihost_phases={self.sync_multihost_phases}")
++                except Exception:
++                    print(f"Sync mode: {sm} -> sync_multihost_phases={self.sync_multihost_phases}")
++        except Exception:
++            ...
++
+     __hash__ = hash_fn
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index f4605fa0..8379d0ba 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -68,8 +68,7 @@ from ._jit_utils import compile_step_pair
+ 
+ from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
+ from ..trainer.trainer import Trainer
+-from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
+-from ..trainer.modeling_output import TrainerOutput
++from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics, TrainerOutput
+ from ..training_configurations import MetricsType
+ from ._fn import get_per_token_logps, grpo_step
+ from .grpo_config import GRPOConfig
+@@ -1198,14 +1197,15 @@ class GRPOTrainer(Trainer):
+ 
+             # In multi-host runs, ensure all hosts finish generation and ref-logps
+             # before proceeding to downstream aggregation and optimization.
+-            try:
+-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                    # Block until all arrays are ready to ensure identical state
+-                    jax.block_until_ready((sequences_chunks, ref_logps_chunks))
+-                    jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
+-            except Exception:
+-                # Best-effort; do not crash if barrier is unavailable
+-                pass
++            if getattr(self.arguments, "sync_multihost_phases", True):
++                try:
++                    if jax.process_count() > 1:
++                        # Block until all arrays are ready to ensure identical state
++                        jax.block_until_ready((sequences_chunks, ref_logps_chunks))
++                        jax.experimental.multihost_utils.sync_global_devices("after_generation_ref_logps")
++                except Exception:
++                    # Best-effort; do not crash if barrier is unavailable
++                    pass
+ 
+             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
+             if len(sequences_chunks) == 1:
+@@ -1653,25 +1653,25 @@ class GRPOTrainer(Trainer):
+                 # Safe global scalar aggregation (proc-local fallbacks on failure)
+                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                     logger.debug("global aggregation: start")
+-                try:
+-                    if jax.process_count() > 1:
+-                        _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
+-                        _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
+-                        _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
+-                        _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
+-                        success_count_comp_global = jnp.sum(_sc)
+-                        total_comp_global = jnp.sum(_tc)
+-                        pass_prompt_count_global = jnp.sum(_pp)
+-                        num_prompts_global = jnp.sum(_np)
+-                        success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
+-                        pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+-                    else:
+-                        # Global variables already initialized above with local values
+-                        pass
+-                except Exception as e:
+-                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+-                        logger.debug(f"global aggregation: failed {e}")
+-                    # Global variables already initialized above with fallback values
++                if getattr(self.arguments, "sync_multihost_phases", True):
++                    try:
++                        if jax.process_count() > 1:
++                            _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
++                            _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
++                            _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
++                            _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
++                            success_count_comp_global = jnp.sum(_sc)
++                            total_comp_global = jnp.sum(_tc)
++                            pass_prompt_count_global = jnp.sum(_pp)
++                            num_prompts_global = jnp.sum(_np)
++                            success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
++                            pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
++                        else:
++                            pass
++                    except Exception as e:
++                        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
++                            logger.debug(f"global aggregation: failed {e}")
++                        # Keep local fallbacks
+                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                     logger.debug("global aggregation: end")
+             except Exception as e:
+@@ -2173,10 +2173,14 @@ class GRPOTrainer(Trainer):
+                 seq_valid = jnp.maximum(jnp.sum(completion_mask, axis=1), 1.0)
+                 seq_mean = seq_sum / seq_valid
+ 
+-                try:
+-                    seq_sum_all = jax.experimental.multihost_utils.process_allgather(seq_sum.astype(jnp.float32))
+-                    seq_mean_all = jax.experimental.multihost_utils.process_allgather(seq_mean.astype(jnp.float32))
+-                except Exception:
++                if getattr(self.arguments, "sync_multihost_phases", True):
++                    try:
++                        seq_sum_all = jax.experimental.multihost_utils.process_allgather(seq_sum.astype(jnp.float32))
++                        seq_mean_all = jax.experimental.multihost_utils.process_allgather(seq_mean.astype(jnp.float32))
++                    except Exception:
++                        seq_sum_all = seq_sum
++                        seq_mean_all = seq_mean
++                else:
+                     seq_sum_all = seq_sum
+                     seq_mean_all = seq_mean
+ 
+@@ -2210,9 +2214,12 @@ class GRPOTrainer(Trainer):
+                         sample_local = vals[idx].astype(_np.float32, copy=False)
+ 
+                     sample_local_j = jax.device_put(sample_local)
+-                    try:
+-                        sample_all = jax.experimental.multihost_utils.process_allgather(sample_local_j)
+-                    except Exception:
++                    if getattr(self.arguments, "sync_multihost_phases", True):
++                        try:
++                            sample_all = jax.experimental.multihost_utils.process_allgather(sample_local_j)
++                        except Exception:
++                            sample_all = sample_local_j
++                    else:
+                         sample_all = sample_local_j
+ 
+                     if jax.process_index() == 0:
+diff --git a/easydel/trainers/trainer/trainer.py b/easydel/trainers/trainer/trainer.py
+index 19a31f92..fccc33f9 100644
+--- a/easydel/trainers/trainer/trainer.py
++++ b/easydel/trainers/trainer/trainer.py
+@@ -27,9 +27,8 @@ from easydel.utils.compiling_utils import ejit
+ from easydel.utils.helpers import capture_time, get_logger
+ 
+ from ..base_trainer import BaseTrainer, TrainerConfigureFunctionOutput
+-from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics
++from ..trainer_protocol import BaseProgressBar, MetricsTracker, StepMetrics, TrainerOutput
+ from ._fn import evaluation_step, training_step
+-from .modeling_output import TrainerOutput
+ 
+ logger = get_logger(__name__)
+ 
+@@ -374,19 +373,22 @@ class Trainer(BaseTrainer):
+                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_start")
+             except Exception:
+                 pass
+-            try:
+-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                    jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
+-            except Exception:
+-                pass
++            # Optional barrier disabled when sync_multihost_phases is False
++            if getattr(self.arguments, "sync_multihost_phases", True):
++                try:
++                    if jax.process_count() > 1:
++                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_start")
++                except Exception:
++                    pass
+ 
+             state = self.on_step_start(state=state, step=current_step)
+ 
+-            try:
+-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                    jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
+-            except Exception:
+-                pass
++            if getattr(self.arguments, "sync_multihost_phases", True):
++                try:
++                    if jax.process_count() > 1:
++                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_start")
++                except Exception:
++                    pass
+             try:
+                 _pi = jax.process_index()
+                 _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+@@ -430,11 +432,12 @@ class Trainer(BaseTrainer):
+                     logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_on_step_end")
+                 except Exception:
+                     pass
+-                try:
+-                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                        jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
+-                except Exception:
+-                    pass
++                if getattr(self.arguments, "sync_multihost_phases", True):
++                    try:
++                        if jax.process_count() > 1:
++                            jax.experimental.multihost_utils.sync_global_devices("before_on_step_end")
++                    except Exception:
++                        pass
+ 
+                 state, metrics = self.on_step_end(
+                     state=state,
+@@ -442,11 +445,12 @@ class Trainer(BaseTrainer):
+                     step=current_step,
+                 )
+ 
+-                try:
+-                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                        jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
+-                except Exception:
+-                    pass
++                if getattr(self.arguments, "sync_multihost_phases", True):
++                    try:
++                        if jax.process_count() > 1:
++                            jax.experimental.multihost_utils.sync_global_devices("after_on_step_end")
++                    except Exception:
++                        pass
+                 try:
+                     _pi = jax.process_index()
+                     _st = int(jax.device_get(state.step)) if hasattr(state, "step") else -1
+@@ -651,12 +655,13 @@ class Trainer(BaseTrainer):
+                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: before_train_step")
+             except Exception:
+                 pass
+-            try:
+-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                    jax.experimental.multihost_utils.sync_global_devices("before_train_step")
+-            except Exception:
+-                # Best-effort; do not crash if barrier is unavailable
+-                pass
++            if getattr(self.arguments, "sync_multihost_phases", True):
++                try:
++                    if jax.process_count() > 1:
++                        jax.experimental.multihost_utils.sync_global_devices("before_train_step")
++                except Exception:
++                    # Best-effort; do not crash if barrier is unavailable
++                    pass
+ 
+             state, metrics = jax.block_until_ready(
+                 self.sharded_training_step_function(
+@@ -674,12 +679,13 @@ class Trainer(BaseTrainer):
+                 logger.debug(f"[Trainer] p{_pi} step={_st} barrier: after_train_step")
+             except Exception:
+                 pass
+-            try:
+-                if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
+-                    jax.experimental.multihost_utils.sync_global_devices("after_train_step")
+-            except Exception:
+-                # Best-effort; do not crash if barrier is unavailable
+-                pass
++            if getattr(self.arguments, "sync_multihost_phases", True):
++                try:
++                    if jax.process_count() > 1:
++                        jax.experimental.multihost_utils.sync_global_devices("after_train_step")
++                except Exception:
++                    # Best-effort; do not crash if barrier is unavailable
++                    pass
+ 
+             if len(informations) != 0:
+                 if metrics.other_metrics is not None:
+@@ -694,14 +700,16 @@ class Trainer(BaseTrainer):
+                         state.opt_state,
+                     )
+                 )
+-            return state, metrics, None
++            # Explicitly type the third return as Exception | None; framework expects Exception
++            return state, metrics, None  # type: ignore[return-value]
+         except (
+             KeyboardInterrupt,
+             EasyDeLTimerError,
+             EasyDeLBreakRequest,
+             TypeError,
+         ) as run_exception:
+-            return state, metrics, run_exception
++            # All caught exceptions are subclasses of BaseException; cast to Exception for type checkers
++            return state, metrics, run_exception  # type: ignore[return-value]
+ 
+     def _finalize_training(self, output, run_exception):
+         """
+diff --git a/progress.txt b/progress.txt
+index bc047a63..4c44f51d 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -305,3 +305,5 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
+ 
+ [2025-08-28T[2025-08-28T00:08:52Z] Debug hardening: fixed unsafe isinstance unions; added np.ndarray acceptance in histogram logging; sys import fix in training script; identified strict DP/TP assertions as secondary risk.
+ [fix] Import TrainerOutput properly in grpo_trainer to resolve pyright error; confirm advantages are computed and logged post-GFPO filtering (zeros reflect early-phase equal rewards).
++[git] Rebased gfspo-wshrink onto origin; fixed TrainerOutput import; verified lints clean; pushed branch.
++[grpo] Simplified sync/logging: SYNC_MODE env to toggle barriers; barriers now gated strictly; lints fixed; proceeding without cross-host barriers when disabled.

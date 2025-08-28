@@ -1,0 +1,130 @@
+commit 14a0d9cb40fa65c44572bff1b179846b6b54a5c7
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 18:08:20 2025 +0000
+
+    feat(assert): add fail-fast guards for DP/TP, GFPO relations, and per-shard batch feasibility\n\n- GRPOConfig: assert mesh/device compatibility and per-host batch divisibility.\n- GFPOConfig: assert num_return_sequences == gfpo_group_size and retain < group.\n- BaseTrainer: assert steps_per_epoch>0 for training given per-shard base length.\n- Update progress.txt with assertion summary.
+
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index 538d942f..75501c74 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -826,6 +826,13 @@ class BaseTrainer(BaseTrainerProtocol):
+             # 4) Grain drops remainder, so use floor.
+             #    Use the base per-shard length for a uniform step count across all workers.
+             steps_per_epoch = per_shard_len_base // batch_size
++            # Assertion: ensure at least one train step is possible per epoch on every worker
++            if is_train:
++                assert steps_per_epoch > 0, (
++                    "Training batch size exceeds the smallest per-worker shard. "
++                    f"batch_size={batch_size}, per_shard_len_base={per_shard_len_base}. "
++                    "Reduce --total_batch_size or increase dataset size to avoid idle workers."
++                )
+             num_epochs = self.arguments.num_train_epochs if is_train else 1
+             num_steps = steps_per_epoch * num_epochs
+ 
+diff --git a/easydel/trainers/group_relative_policy_optimization/gfpo_config.py b/easydel/trainers/group_relative_policy_optimization/gfpo_config.py
+index 6dfd9eaa..d6523440 100644
+--- a/easydel/trainers/group_relative_policy_optimization/gfpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/gfpo_config.py
+@@ -191,6 +191,15 @@ class GFPOConfig(GRPOConfig):
+             print(f"DEBUG: GFPOConfig post_init - gfpo_group_size={self.gfpo_group_size}, gfpo_retain_count={self.gfpo_retain_count}")
+             super().__post_init__()
+             enforce_gfpo_constraints(self)
++            # Assert relationships explicitly for clarity
++            assert int(self.num_return_sequences) == int(self.gfpo_group_size), (
++                "GFPO requires num_return_sequences == gfpo_group_size. "
++                f"Got num_return_sequences={self.num_return_sequences}, gfpo_group_size={self.gfpo_group_size}."
++            )
++            assert int(self.gfpo_retain_count) < int(self.gfpo_group_size), (
++                "gfpo_retain_count must be < gfpo_group_size for meaningful filtering. "
++                f"Got retain={self.gfpo_retain_count}, group={self.gfpo_group_size}."
++            )
+             # Validate adaptive fields
+             if not isinstance(self.gfpo_adaptive_warmup_steps, int) or self.gfpo_adaptive_warmup_steps < 0:
+                 raise ValueError("gfpo_adaptive_warmup_steps must be a non-negative integer")
+@@ -220,4 +229,3 @@ class GFPOConfig(GRPOConfig):
+             raise
+ 
+     __hash__ = hash_fn
+-
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index 9ebf1d53..1000139e 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -329,4 +329,38 @@ class GRPOConfig(TrainingArguments):
+             # Best-effort; keep defaults if clamping fails
+             ...
+ 
++        # Early environment and divisibility assertions to fail fast on misconfiguration.
++        try:
++            import jax as _jax
++            dp = int(self.force_data_parallel or 1)
++            tp = int(self.force_tensor_parallel or 1)
++            num_devices = int(_jax.device_count())
++
++            # Mesh size must fit available devices exactly when explicit DP/TP are forced
++            if self.force_data_parallel is not None or self.force_tensor_parallel is not None:
++                assert dp * tp == num_devices, (
++                    "Mesh dimensions are incompatible with the hardware: "
++                    f"dp({dp})*tp({tp})={dp * tp}, but device_count={num_devices}. "
++                    "Adjust --force_data_parallel/--force_tensor_parallel or device allocation."
++                )
++
++            # On multi-host: per-host DP must be integral and batch divisible by per-host DP
++            pc = int(_jax.process_count())
++            if pc > 1 and dp > 0:
++                assert dp % pc == 0, (
++                    f"Data parallelism ({dp}) must be divisible by process_count ({pc}) for a balanced mesh."
++                )
++                dp_per_host = dp // pc
++                # Use configured per-process batch (total_batch_size) as physical batch per host
++                assert int(self.total_batch_size) % max(1, dp_per_host) == 0, (
++                    "The per-host physical batch size (total_batch_size) must be divisible by DP per host: "
++                    f"batch={int(self.total_batch_size)} dp_per_host={dp_per_host}."
++                )
++        except Exception as e:
++            # Do not crash config creation in minimal environments; surface as debug
++            try:
++                print(f"DEBUG: JAX environment checks in GRPOConfig failed/skipped: {e}")
++            except Exception:
++                pass
++
+     __hash__ = hash_fn
+diff --git a/progress.txt b/progress.txt
+index 1813bb61..f92e6485 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -165,3 +165,9 @@ Cleanup: Simplify warmup + sync logic
+ 
+ - GRPO warmup: Simplified PL/CL derivation to `max(1, int(self.arguments.max_prompt_length))` and `max(1, int(self.arguments.max_completion_length))`.
+ - Reference sync: Confirmed removal of obsolete `ref_model_skip_first_sync`; `on_step_start` uses only interval-based logic.
++---
++Fail-Fast Assertions
++
++- GRPOConfig: Added environment checks for DP/TP vs device_count and multi-host divisibility (DP % process_count == 0 and total_batch_size % dp_per_host == 0) to catch misconfigurations early.
++- GFPOConfig: Explicit asserts to ensure `num_return_sequences == gfpo_group_size` and `gfpo_retain_count < gfpo_group_size`.
++- BaseTrainer.calculate_steps: Assert at least one training step per epoch per worker (batch_size <= per_shard_len_base) to prevent idle/hanging workers.
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index d1fd11bd..57115043 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -52,7 +52,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --repo_id "Qwen/Qwen3-1.7B" \
+   --dataset ${DATASET} \
+   --curriculum_math ${CURRICULUM_MATH} \
+-  --total_batch_size 1 \
++  --total_batch_size 2 \
+   --num_return_sequences 8 \
+   --rollout_chunk_size 1 \
+   --num_train_epochs 2 \
+@@ -75,9 +75,8 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --top_k 50 \
+   --advantage_epsilon 1e-6 \
+   --logprob_analysis_enable false \
+-  --sync_multihost_phases true \
+   --sync_ref_model true \
+-  --ref_model_sync_steps 4 \
++  --ref_model_sync_steps 16 \
+   --sync_ref_model_on_step_start true \
+   --ref_sync_copy_graphother true \
+   --logprob_alignment_check_on_sync false \

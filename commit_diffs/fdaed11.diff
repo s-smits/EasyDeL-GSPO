@@ -1,0 +1,353 @@
+commit fdaed115701256becfbf9ac8eb167c5ecb70979f
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 18:55:13 2025 +0000
+
+    make sanity checks optional
+
+diff --git a/easydel/scripts/finetune/gsm8k_math_gfspo.py b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+index 6818587d..2743bfaa 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gfspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+@@ -44,6 +44,7 @@ class RunTimeConfig:
+     dtype: jnp.dtype = field(default=jnp.bfloat16)
+     attn_dtype: jnp.dtype = field(default=jnp.bfloat16)
+     attn_softmax_dtype: jnp.dtype = field(default=jnp.float32)
++    test_flight: bool = field(default=False, metadata={"help": "Enable extra sanity sample and preflight verification"})
+ 
+     def __post_init__(self):
+         if self.processor_repo_id is None:
+@@ -356,48 +357,49 @@ def main():
+ 
+         reward_funcs = [math_answer_reward]
+ 
+-        # Prepend a simple sanity sample to both train and test datasets (2+4 -> 6)
+-        try:
+-            sanity_sample = {
+-                "prompt": [
+-                    {"role": "system", "content": SYSTEM_PROMPT_MATH},
+-                    {"role": "user", "content": "Compute 2 + 4."},
+-                ],
+-                # Keep full solution text for Math-Verify/boxed fallback
+-                "solution": "We add 2 and 4 to obtain \\boxed{6}.",
+-                "level": "Level 0",
+-                "type": "sanity",
+-            }
+-            sanity_ds = Dataset.from_list([sanity_sample])
+-            train_ds = concatenate_datasets([sanity_ds, train_ds])
+-            if test_ds is not None:
+-                test_ds = concatenate_datasets([sanity_ds, test_ds])
+-            if jax.process_index() == 0:
+-                print("[Sanity] Prepended 2+4=6 sample to math datasets.")
+-        except Exception as _e:
+-            if jax.process_index() == 0:
+-                print(f"[Sanity] Could not prepend sample: {_e}")
+-
+-        # Quick preflight verification on process 0
+-        if jax.process_index() == 0:
++        if runtime.test_flight:
++            # Prepend a simple sanity sample to both train and test datasets (2+4 -> 6)
+             try:
+-                details = []
+-                # Case A: no boxed, exercise Math-Verify fallback if available
+-                comp_mv = [[{"content": "Calculate 2+4. The result is 6."}]]
+-                batch_mv = {"solution_normalized": ["6"]}
+-                score_mv = math_answer_reward(None, comp_mv, batch_mv, verification_details=details)[0]
+-                method_mv = details[0].get("verification_method", "?") if details else "?"
+-                print(f"[Sanity] Math verify (no boxed) 2+4->6 score={score_mv} method={method_mv}")
+-
+-                # Case B: boxed path should also succeed
+-                details2 = []
+-                comp_boxed = [[{"content": "Final answer: \\boxed{6}"}]]
+-                batch_boxed = {"solution_normalized": ["6"]}
+-                score_boxed = math_answer_reward(None, comp_boxed, batch_boxed, verification_details=details2)[0]
+-                method_boxed = details2[0].get("verification_method", "?") if details2 else "?"
+-                print(f"[Sanity] Boxed verify 2+4->6 score={score_boxed} method={method_boxed}")
++                sanity_sample = {
++                    "prompt": [
++                        {"role": "system", "content": SYSTEM_PROMPT_MATH},
++                        {"role": "user", "content": "Compute 2 + 4."},
++                    ],
++                    # Keep full solution text for Math-Verify/boxed fallback
++                    "solution": "We add 2 and 4 to obtain \\boxed{6}.",
++                    "level": "Level 0",
++                    "type": "sanity",
++                }
++                sanity_ds = Dataset.from_list([sanity_sample])
++                train_ds = concatenate_datasets([sanity_ds, train_ds])
++                if test_ds is not None:
++                    test_ds = concatenate_datasets([sanity_ds, test_ds])
++                if jax.process_index() == 0:
++                    print("[Sanity] Prepended 2+4=6 sample to math datasets.")
+             except Exception as _e:
+-                print(f"[Sanity] Preflight verification failed: {_e}")
++                if jax.process_index() == 0:
++                    print(f"[Sanity] Could not prepend sample: {_e}")
++
++            # Quick preflight verification on process 0
++            if jax.process_index() == 0:
++                try:
++                    details = []
++                    # Case A: no boxed, exercise Math-Verify fallback if available
++                    comp_mv = [[{"content": "Calculate 2+4. The result is 6."}]]
++                    batch_mv = {"solution_normalized": ["6"]}
++                    score_mv = math_answer_reward(None, comp_mv, batch_mv, verification_details=details)[0]
++                    method_mv = details[0].get("verification_method", "?") if details else "?"
++                    print(f"[Sanity] Math verify (no boxed) 2+4->6 score={score_mv} method={method_mv}")
++
++                    # Case B: boxed path should also succeed
++                    details2 = []
++                    comp_boxed = [[{"content": "Final answer: \\boxed{6}"}]]
++                    batch_boxed = {"solution_normalized": ["6"]}
++                    score_boxed = math_answer_reward(None, comp_boxed, batch_boxed, verification_details=details2)[0]
++                    method_boxed = details2[0].get("verification_method", "?") if details2 else "?"
++                    print(f"[Sanity] Boxed verify 2+4->6 score={score_boxed} method={method_boxed}")
++                except Exception as _e:
++                    print(f"[Sanity] Preflight verification failed: {_e}")
+ 
+     else:
+         raise ValueError("dataset must be 'gsm8k' or 'math'")
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index e49ebb7b..a63aabb0 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -41,6 +41,7 @@ class RunTimeConfig:
+     dtype: jnp.dtype = field(default=jnp.bfloat16)
+     attn_dtype: jnp.dtype = field(default=jnp.bfloat16)
+     attn_softmax_dtype: jnp.dtype = field(default=jnp.float32)
++    test_flight: bool = field(default=False, metadata={"help": "Enable extra sanity sample and preflight verification"})
+ 
+     def __post_init__(self):
+         if self.processor_repo_id is None:
+@@ -358,48 +359,49 @@ def main():
+ 
+         reward_funcs = [math_answer_reward]
+ 
+-        # Prepend a simple sanity sample to both train and test datasets (2+4 -> 6)
+-        try:
+-            sanity_sample = {
+-                "prompt": [
+-                    {"role": "system", "content": SYSTEM_PROMPT_MATH},
+-                    {"role": "user", "content": "Compute 2 + 4."},
+-                ],
+-                # Keep full solution text for Math-Verify/boxed fallback
+-                "solution": "We add 2 and 4 to obtain \\boxed{6}.",
+-                "level": "Level 0",
+-                "type": "sanity",
+-            }
+-            sanity_ds = Dataset.from_list([sanity_sample])
+-            train_ds = concatenate_datasets([sanity_ds, train_ds])
+-            if test_ds is not None:
+-                test_ds = concatenate_datasets([sanity_ds, test_ds])
+-            if jax.process_index() == 0:
+-                print("[Sanity] Prepended 2+4=6 sample to math datasets.")
+-        except Exception as _e:
+-            if jax.process_index() == 0:
+-                print(f"[Sanity] Could not prepend sample: {_e}")
+-
+-        # Quick preflight verification on process 0
+-        if jax.process_index() == 0:
++        if runtime.test_flight:
++            # Prepend a simple sanity sample to both train and test datasets (2+4 -> 6)
+             try:
+-                details = []
+-                # Case A: no boxed, exercise Math-Verify fallback if available
+-                comp_mv = [[{"content": "Calculate 2+4. The result is 6."}]]
+-                batch_mv = {"solution_normalized": ["6"]}
+-                score_mv = math_answer_reward(None, comp_mv, batch_mv, verification_details=details)[0]
+-                method_mv = details[0].get("verification_method", "?") if details else "?"
+-                print(f"[Sanity] Math verify (no boxed) 2+4->6 score={score_mv} method={method_mv}")
+-
+-                # Case B: boxed path should also succeed
+-                details2 = []
+-                comp_boxed = [[{"content": "Final answer: \\boxed{6}"}]]
+-                batch_boxed = {"solution_normalized": ["6"]}
+-                score_boxed = math_answer_reward(None, comp_boxed, batch_boxed, verification_details=details2)[0]
+-                method_boxed = details2[0].get("verification_method", "?") if details2 else "?"
+-                print(f"[Sanity] Boxed verify 2+4->6 score={score_boxed} method={method_boxed}")
++                sanity_sample = {
++                    "prompt": [
++                        {"role": "system", "content": SYSTEM_PROMPT_MATH},
++                        {"role": "user", "content": "Compute 2 + 4."},
++                    ],
++                    # Keep full solution text for Math-Verify/boxed fallback
++                    "solution": "We add 2 and 4 to obtain \\boxed{6}.",
++                    "level": "Level 0",
++                    "type": "sanity",
++                }
++                sanity_ds = Dataset.from_list([sanity_sample])
++                train_ds = concatenate_datasets([sanity_ds, train_ds])
++                if test_ds is not None:
++                    test_ds = concatenate_datasets([sanity_ds, test_ds])
++                if jax.process_index() == 0:
++                    print("[Sanity] Prepended 2+4=6 sample to math datasets.")
+             except Exception as _e:
+-                print(f"[Sanity] Preflight verification failed: {_e}")
++                if jax.process_index() == 0:
++                    print(f"[Sanity] Could not prepend sample: {_e}")
++
++            # Quick preflight verification on process 0
++            if jax.process_index() == 0:
++                try:
++                    details = []
++                    # Case A: no boxed, exercise Math-Verify fallback if available
++                    comp_mv = [[{"content": "Calculate 2+4. The result is 6."}]]
++                    batch_mv = {"solution_normalized": ["6"]}
++                    score_mv = math_answer_reward(None, comp_mv, batch_mv, verification_details=details)[0]
++                    method_mv = details[0].get("verification_method", "?") if details else "?"
++                    print(f"[Sanity] Math verify (no boxed) 2+4->6 score={score_mv} method={method_mv}")
++
++                    # Case B: boxed path should also succeed
++                    details2 = []
++                    comp_boxed = [[{"content": "Final answer: \\boxed{6}"}]]
++                    batch_boxed = {"solution_normalized": ["6"]}
++                    score_boxed = math_answer_reward(None, comp_boxed, batch_boxed, verification_details=details2)[0]
++                    method_boxed = details2[0].get("verification_method", "?") if details2 else "?"
++                    print(f"[Sanity] Boxed verify 2+4->6 score={score_boxed} method={method_boxed}")
++                except Exception as _e:
++                    print(f"[Sanity] Preflight verification failed: {_e}")
+ 
+     else:
+         raise ValueError("dataset must be 'gsm8k' or 'math'")
+diff --git a/easydel/trainers/prompt_utils.py b/easydel/trainers/prompt_utils.py
+index 566b57de..ce47d162 100644
+--- a/easydel/trainers/prompt_utils.py
++++ b/easydel/trainers/prompt_utils.py
+@@ -385,33 +385,11 @@ def maybe_apply_chat_template(
+     tools: list[dict | tp.Callable] | None = None,
+ ) -> dict[str, str]:
+     """
+-    If the example is conversational, apply tokenizer chat template.
+-    Otherwise, if the example contains prompt/completion or chosen/rejected fields,
+-    still apply the chat template using the non-conversational branches to ensure
+-    chat models (e.g., Qwen) receive proper role markers and can produce EOS tokens.
++    If the example is in a conversational format, apply a chat template to it.
+     """
+-    try:
+-        if is_conversational(example):
+-            print("[prompt_utils:chat] Applying chat template (conversational example).")
+-            return apply_chat_template(example, tokenizer, tools)
+-
+-        # Non-conversational fallback: apply template for known field patterns
+-        example_keys = set(example.keys())
+-        known_keys = {"prompt", "completion", "chosen", "rejected", "label"}
+-        if example_keys & known_keys:
+-            print(f"[prompt_utils:chat] Applying chat template (non-conversational fallback). keys={sorted(example_keys)}")
+-            try:
+-                return apply_chat_template(example, tokenizer, tools)
+-            except Exception as e:
+-                print(f"[prompt_utils:chat] Fallback chat templating failed: {e}; returning example unchanged.")
+-                return example
+-        return example
+-    except Exception as _e:
+-        # Best effort: never break dataset processing
+-        try:
+-            print(f"[prompt_utils:chat] maybe_apply_chat_template error: {_e}; returning example unchanged.")
+-        except Exception:
+-            ...
++    if is_conversational(example):
++        return apply_chat_template(example, tokenizer, tools)
++    else:
+         return example
+ 
+ 
+diff --git a/run_gfspo_training.sh b/run_gfspo_training.sh
+index 187ec181..e11bc8f9 100755
+--- a/run_gfspo_training.sh
++++ b/run_gfspo_training.sh
+@@ -23,8 +23,10 @@ uv pip install "math-verify[antlr4_13_2]" --quiet || true
+ 
+ cd /home/air/EasyDeL-GSPO
+ 
+-# Activate virtual environment if present
+-if [ -f .venv/bin/activate ]; then
++# Activate virtual environment if present (prefer global ~/.venv)
++if [ -f /home/air/.venv/bin/activate ]; then
++  source /home/air/.venv/bin/activate
++elif [ -f .venv/bin/activate ]; then
+   source .venv/bin/activate
+ fi
+ 
+@@ -76,6 +78,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
+   --advantage_epsilon 1e-6 \
+   --gfpo_adaptive false \
+   --use_stable false \
++  --test_flight false \
+   --verbose true
+ 
+ echo "Training completed!"
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 30c8c7a7..8d0294df 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -12,35 +12,37 @@
+ #   ./run_gspo_training.sh math-ds false   # Disable curriculum learning
+ #   ./run_gspo_training.sh gsm8k-ds        # Use GSM8K dataset (curriculum learning has no effect)
+ 
++echo "Setting up environment..."
+ # Set environment variables for TPU
+ export JAX_PLATFORMS=tpu
+-export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
+-
+-# Pull latest changes and install
+-echo "Setting up environment..."
+-git pull origin main 2>/dev/null || true
+-uv pip install -e . --quiet
+-uv pip install "math-verify[antlr4_13_2]" --quiet || true
++export JAX_TRACEBACK_FILTERING=off
+ 
+-# Navigate to project directory
+-cd /home/air/EasyDeL-GSPO
++# Navigate to project directory and pull latest changes (non-fatal)
++cd /home/air/EasyDeL-GSPO || exit 1
++git pull origin gfspo-wshrink 2>/dev/null || true
+ 
+-echo "Starting GSPO training with optimized configuration..."
+-
+-git pull origin math-only-improved || true
++# Install project and math-verify dependency
+ uv pip install -e . --quiet
+ uv pip install "math-verify[antlr4_13_2]" --quiet || true
+ 
+-export JAX_PLATFORMS=tpu
+-export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
+-
+-cd /home/air/EasyDeL-GSPO
++# Activate virtual environment if present (prefer global ~/.venv)
++if [ -f /home/air/.venv/bin/activate ]; then
++  source /home/air/.venv/bin/activate
++elif [ -f .venv/bin/activate ]; then
++  source .venv/bin/activate
++fi
+ 
+ echo "Starting GSPO training with optimized configuration..."
+ 
+ # Parse command line arguments
+ DATASET="${1:-math-ds}"
+ CURRICULUM_MATH="${2:-false}"
++
++# If DATASET is math-ds, enable curriculum learning (mirrors GFSPO script behavior)
++if [ "$DATASET" = "math-ds" ]; then
++  CURRICULUM_MATH="true"
++fi
++
+ echo "Using dataset: ${DATASET}"
+ echo "Curriculum math: ${CURRICULUM_MATH}"
+ 
+@@ -49,8 +51,7 @@ echo "Curriculum math: ${CURRICULUM_MATH}"
+ LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
+ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
+ 
+-# Set force_data_parallel to 8 for 8-worker setup
+-FORCE_DATA_PARALLEL=8
++#!/usr/bin/env bash
+ 
+ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --repo_id "Qwen/Qwen3-0.6B" \
+@@ -67,6 +68,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --force_tensor_parallel 4 \
+   --force_data_parallel 8 \
+   --log_logprobs_metrics false \
++  --report_steps 1 \
+   --log_global ${LOG_GLOBAL_VAL} \
+   --log_steps 1 \
+   --save_steps 100 \

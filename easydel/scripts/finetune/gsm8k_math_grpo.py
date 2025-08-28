@@ -50,12 +50,12 @@ class RunTimeConfig:
 
 
 def main():
-    parser = ed.utils.DataClassArgumentParser((ed.GSPOConfig, RunTimeConfig))
-    gspo_config, runtime = parser.parse_args_into_dataclasses()
+    parser = ed.utils.DataClassArgumentParser((ed.GRPOConfig, RunTimeConfig))
+    grpo_config, runtime = parser.parse_args_into_dataclasses()
 
     if jax.process_index() == 0:
         print("Training Arguments\n----------------------")
-        print(gspo_config)
+        print(grpo_config)
         print("----------------------")
         # Extra debugging for dataset selection/rates
         def _dbg_print():
@@ -81,15 +81,11 @@ def main():
         default=AutoTokenizer.from_pretrained(runtime.repo_id),
     )
     tokenizer.padding_side = "left"
-    try:
-        tokenizer.truncation_side = "left"
-    except Exception:
-        ...
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    max_prompt_len = gspo_config.max_prompt_length
-    max_completion_len = gspo_config.max_completion_length
+    max_prompt_len = grpo_config.max_prompt_length
+    max_completion_len = grpo_config.max_completion_length
     max_seq_len = max_prompt_len + max_completion_len
 
     hf_config = safe_call("load auto config", AutoConfig.from_pretrained, runtime.repo_id, default=AutoConfig.from_pretrained(runtime.repo_id))
@@ -100,14 +96,14 @@ def main():
         load_module = ed.AutoEasyDeLModelForCausalLM
 
     # Prefer adaptive mesh if specified
-    if gspo_config.force_tensor_parallel is not None or gspo_config.force_data_parallel is not None:
+    if grpo_config.force_tensor_parallel is not None or grpo_config.force_data_parallel is not None:
         from easydel.trainers.group_relative_policy_optimization.adaptive_mesh import (
             configure_adaptive_mesh_inplace,
         )
 
-        mesh_plan = configure_adaptive_mesh_inplace(gspo_config)
+        mesh_plan = configure_adaptive_mesh_inplace(grpo_config)
         sharding_axis_dims = (mesh_plan.dp, mesh_plan.fsdp, mesh_plan.ep, mesh_plan.tp, mesh_plan.sp)
-        gspo_config.sharding_axis_dims = sharding_axis_dims
+        grpo_config.sharding_axis_dims = sharding_axis_dims
         if jax.process_index() == 0:
             print(
                 f"Using adaptive mesh: DP={mesh_plan.dp}, FSDP={mesh_plan.fsdp}, TP={mesh_plan.tp}, EP={mesh_plan.ep}, SP={mesh_plan.sp}"
@@ -150,10 +146,7 @@ def main():
     )
 
     SYSTEM_PROMPT_MATH = (
-        "You are a helpful math assistant. Solve the math problem step by step. "
-        "Show your work clearly, then put your final answer in the format \\boxed{answer}. "
-        "The boxed answer must contain only the numerical value or simplified expression. "
-        "Do not include units, explanations, or extra text inside the boxed answer."
+        "You are a math expert. You are given a question and you need to solve it step by step and output the final answer within \\boxed{}."
     )
 
     # Helpers and Dataset builders
@@ -276,10 +269,9 @@ def main():
                 return_tensors="np",
                 padding="max_length",
                 padding_side="left",
-                max_length=gspo_config.max_prompt_length,
+                max_length=grpo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
-                return_attention_mask=True,
             )
             # Normalize ground-truth numbers for robustness (strip $, %, commas)
             def _norm(x: str) -> str:
@@ -308,10 +300,9 @@ def main():
                 return_tensors="np",
                 padding="max_length",
                 padding_side="left",
-                max_length=gspo_config.max_prompt_length,
+                max_length=grpo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
-                return_attention_mask=True,
             )
             # Keep full solution text for Math-Verify
             sol = batch["solution"]
@@ -366,13 +357,13 @@ def main():
         print(f"DEBUG: About to initialize trainer with reward_funcs: {[f.__name__ for f in reward_funcs]}")
         print(f"DEBUG: reward_funcs modules: {[f.__module__ for f in reward_funcs]}")
 
-    trainer = ed.GSPOTrainer(
+    trainer = ed.GRPOTrainer(
         model=model,
         reward_funcs=reward_funcs,
         processing_class=tokenizer,
         eval_dataset=test_ds,
         train_dataset=train_ds,
-        arguments=gspo_config,
+        arguments=grpo_config,
         data_tokenize_fn=data_tokenize_fn,
     )
 
@@ -445,7 +436,7 @@ def main():
                 args.mini_batch_size = mini_batch_size_override
                 args.total_batch_size = mini_batch_size_override
 
-            new_tr = ed.GSPOTrainer(
+            new_tr = ed.GRPOTrainer(
                 model=trainer.model_state,
                 reward_funcs=trainer.reward_funcs,
                 processing_class=trainer.processing_class,
@@ -467,18 +458,18 @@ def main():
     if runtime.curriculum_math and _ds == "math":
         if jax.process_index() == 0:
             print("DEBUG: Curriculum learning enabled for math dataset")
-            print(f"DEBUG: num_train_epochs={gspo_config.num_train_epochs}")
+            print(f"DEBUG: num_train_epochs={grpo_config.num_train_epochs}")
         
         # Pass mini_batch_size override for curriculum with small levels
-        mini_batch_override = 1 if gspo_config.force_tensor_parallel else None
-        final_state = curriculum_train(trainer, train_ds, test_ds, gspo_config.num_train_epochs, mini_batch_override)
+        mini_batch_override = 1 if grpo_config.force_tensor_parallel else None
+        final_state = curriculum_train(trainer, train_ds, test_ds, grpo_config.num_train_epochs, mini_batch_override)
         
         # Save final model if needed
-        if gspo_config.save_directory and jax.process_index() == 0:
-            print(f"Saving final curriculum-trained model to {gspo_config.save_directory}/final")
+        if grpo_config.save_directory and jax.process_index() == 0:
+            print(f"Saving final curriculum-trained model to {grpo_config.save_directory}/final")
             try:
                 import os
-                final_dir = os.path.join(gspo_config.save_directory, "final_curriculum")
+                final_dir = os.path.join(grpo_config.save_directory, "final_curriculum")
                 os.makedirs(final_dir, exist_ok=True)
                 # The trainer would handle saving, but we can log the final state info
                 print(f"Final model state ready for saving at: {final_dir}")
@@ -494,5 +485,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

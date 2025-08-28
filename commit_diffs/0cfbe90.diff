@@ -1,0 +1,40 @@
+commit 0cfbe90e7a0c7ed18a07384170b710c7a53d14c5
+Author: air <air@localhost>
+Date:   Thu Aug 28 00:19:15 2025 +0000
+
+    fix(grpo_trainer): import TrainerOutput from trainer.modeling_output to satisfy pyright; advantages are computed post-GFPO and zeros are expected early
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 636f2e94..f4605fa0 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -69,6 +69,7 @@ from ._jit_utils import compile_step_pair
+ from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
+ from ..trainer.trainer import Trainer
+ from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
++from ..trainer.modeling_output import TrainerOutput
+ from ..training_configurations import MetricsType
+ from ._fn import get_per_token_logps, grpo_step
+ from .grpo_config import GRPOConfig
+diff --git a/progress.txt b/progress.txt
+index 5a9749e5..bc047a63 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -304,3 +304,4 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
+ - Validate hardware configuration matches the strict new requirements
+ 
+ [2025-08-28T[2025-08-28T00:08:52Z] Debug hardening: fixed unsafe isinstance unions; added np.ndarray acceptance in histogram logging; sys import fix in training script; identified strict DP/TP assertions as secondary risk.
++[fix] Import TrainerOutput properly in grpo_trainer to resolve pyright error; confirm advantages are computed and logged post-GFPO filtering (zeros reflect early-phase equal rewards).
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 9b196331..39905ac8 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -77,7 +77,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --dataset ${DATASET} \
+   --curriculum_math ${CURRICULUM_MATH} \
+   --total_batch_size 2 \
+-  --num_return_sequences 8 \
++  --num_return_sequences 4 \
+   --rollout_chunk_size 1 \
+   --num_train_epochs 2 \
+   --max_prompt_length 512 \

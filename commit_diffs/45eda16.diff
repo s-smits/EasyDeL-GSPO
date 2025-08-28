@@ -1,0 +1,216 @@
+commit 45eda16c30db2a30b4864081a4816e5988bf739d
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 16:25:22 2025 +0000
+
+    replicate gspo setup to gfspo
+
+diff --git a/easydel/scripts/finetune/gsm8k_math_gfspo.py b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+index 7c5cde65..6818587d 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gfspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gfspo.py
+@@ -209,7 +209,7 @@ def main():
+             if jax.process_index() == 0:
+                 print(f"DEBUG: MATH split string -> test='{test_split}'")
+             ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
+-            if ds_test is None:
++            if ds_test is None and ds_train is not None:
+                 # Fallback for datasets that only provide a 'train' split
+                 if jax.process_index() == 0:
+                     print(
+@@ -220,6 +220,11 @@ def main():
+                 ds_train, ds_test = split_ds["train"], split_ds["test"]
+         except ValueError:
+             # Extremely defensive fallback
++            if ds_train is None:
++                raise RuntimeError(
++                    "Failed to load 'qwedsacf/competition_math' and no train split available. "
++                    "Check your internet connection or provide a local dataset."
++                )
+             split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+             ds_train, ds_test = split_ds["train"], split_ds["test"]
+ 
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index 81c6819c..5ee0c549 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -141,6 +141,21 @@ def main():
+         "You are a competitive math solver. Solve the problem inside <think>...</think>, then present ONLY the final result inside <answer>...</answer>. "
+     )
+ 
++    # Helpers and Dataset builders
++    def _normalize_pct(rate_value) -> int:
++        """Normalize dataset_use_pct to an integer percent in [1, 100].
++        Accepts either fraction (<=1.0) or percent (>1.0)."""
++        try:
++            r = float(rate_value)
++        except Exception:
++            r = 1.0
++        pct = int(round(r * 100)) if r <= 1.0 else int(round(r))
++        if pct < 1:
++            pct = 1
++        if pct > 100:
++            pct = 100
++        return pct
++
+     # Dataset builders
+     def build_gsm8k():
+         def extract_hash_answer(text: str):
+@@ -152,8 +167,14 @@ def main():
+                 return m[-1] if m else ""
+             return text.split("####")[-1].strip()
+ 
+-        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
+-        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
++        rate = float(runtime.dataset_use_pct)
++        pct = _normalize_pct(rate)
++        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
++        test_split = "test" if pct >= 100 else f"test[:{pct}%]"
++        if jax.process_index() == 0:
++            print(f"DEBUG: GSM8K split strings -> train='{train_split}', test='{test_split}'")
++        ds_train = safe_call("load gsm8k train", load_dataset, "openai/gsm8k", "main", split=train_split)
++        ds_test = safe_call("load gsm8k test", load_dataset, "openai/gsm8k", "main", split=test_split, default=None)
+ 
+         def map_ex(x):
+             return {
+@@ -170,14 +191,32 @@ def main():
+ 
+     def build_math():
+         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
+-        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_pct * 100)}%]")
++        rate = float(runtime.dataset_use_pct)
++        pct = _normalize_pct(rate)
++        train_split = "train" if pct >= 100 else f"train[:{pct}%]"
++        if jax.process_index() == 0:
++            print(f"DEBUG: MATH split string -> train='{train_split}' (rate={rate}, pct={pct}%)")
++        ds_train = safe_call("load competition_math train", load_dataset, "qwedsacf/competition_math", split=train_split)
+         # Attempt test split; if missing, create split from train deterministically
+-        ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_pct * 100)}%]", default=None)
+-        if ds_test is None:
++        try:
++            test_split = "test" if pct >= 100 else f"test[:{pct}%]"
+             if jax.process_index() == 0:
+-                print(
+-                    "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
+-                    "Using 10% of 'train' as validation (deterministic split, seed=17)."
++                print(f"DEBUG: MATH split string -> test='{test_split}'")
++            ds_test = safe_call("load competition_math test", load_dataset, "qwedsacf/competition_math", split=test_split, default=None)
++            if ds_test is None and ds_train is not None:
++                if jax.process_index() == 0:
++                    print(
++                        "WARNING: 'test' split not found in 'qwedsacf/competition_math'. "
++                        "Using 10% of 'train' as validation (deterministic split, seed=17)."
++                    )
++                split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
++                ds_train, ds_test = split_ds["train"], split_ds["test"]
++        except ValueError:
++            # Extremely defensive fallback when only train split exists
++            if ds_train is None:
++                raise RuntimeError(
++                    "Failed to load 'qwedsacf/competition_math' and no train split available. "
++                    "Check your internet connection or provide a local dataset."
+                 )
+             split_ds = ds_train.train_test_split(test_size=0.1, seed=17)
+             ds_train, ds_test = split_ds["train"], split_ds["test"]
+@@ -440,4 +479,3 @@ def main():
+ 
+ if __name__ == "__main__":
+     main()
+-
+diff --git a/easydel/trainers/prompt_utils.py b/easydel/trainers/prompt_utils.py
+index ce47d162..566b57de 100644
+--- a/easydel/trainers/prompt_utils.py
++++ b/easydel/trainers/prompt_utils.py
+@@ -385,11 +385,33 @@ def maybe_apply_chat_template(
+     tools: list[dict | tp.Callable] | None = None,
+ ) -> dict[str, str]:
+     """
+-    If the example is in a conversational format, apply a chat template to it.
++    If the example is conversational, apply tokenizer chat template.
++    Otherwise, if the example contains prompt/completion or chosen/rejected fields,
++    still apply the chat template using the non-conversational branches to ensure
++    chat models (e.g., Qwen) receive proper role markers and can produce EOS tokens.
+     """
+-    if is_conversational(example):
+-        return apply_chat_template(example, tokenizer, tools)
+-    else:
++    try:
++        if is_conversational(example):
++            print("[prompt_utils:chat] Applying chat template (conversational example).")
++            return apply_chat_template(example, tokenizer, tools)
++
++        # Non-conversational fallback: apply template for known field patterns
++        example_keys = set(example.keys())
++        known_keys = {"prompt", "completion", "chosen", "rejected", "label"}
++        if example_keys & known_keys:
++            print(f"[prompt_utils:chat] Applying chat template (non-conversational fallback). keys={sorted(example_keys)}")
++            try:
++                return apply_chat_template(example, tokenizer, tools)
++            except Exception as e:
++                print(f"[prompt_utils:chat] Fallback chat templating failed: {e}; returning example unchanged.")
++                return example
++        return example
++    except Exception as _e:
++        # Best effort: never break dataset processing
++        try:
++            print(f"[prompt_utils:chat] maybe_apply_chat_template error: {_e}; returning example unchanged.")
++        except Exception:
++            ...
+         return example
+ 
+ 
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 28af1185..30c8c7a7 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -1,5 +1,5 @@
+ #!/bin/bash
+-# GSPO Training Script with TPU Optimizations
++# GSPO Training Script with TPU Optimizations (8-worker metrics support)
+ #
+ # Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
+ # 
+@@ -44,7 +44,15 @@ CURRICULUM_MATH="${2:-false}"
+ echo "Using dataset: ${DATASET}"
+ echo "Curriculum math: ${CURRICULUM_MATH}"
+ 
+-python easydel/scripts/finetune/gsm8k_math_gspo.py \
++# Metrics and logging: ensure correct aggregation for 8 workers
++# Set log_global to true for correct global logging aggregation
++LOG_GLOBAL_VAL=${LOG_GLOBAL:-true}
++echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
++
++# Set force_data_parallel to 8 for 8-worker setup
++FORCE_DATA_PARALLEL=8
++
++python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --repo_id "Qwen/Qwen3-0.6B" \
+   --dataset ${DATASET} \
+   --curriculum_math ${CURRICULUM_MATH} \
+@@ -53,24 +61,22 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --rollout_chunk_size 4 \
+   --num_train_epochs 2 \
+   --max_prompt_length 512 \
+-  --max_completion_length 5632 \
++  --max_completion_length 5120 \
+   --learning_rate 2e-6 \
+   --dataset_use_pct 10 \
+   --force_tensor_parallel 4 \
+   --force_data_parallel 8 \
+   --log_logprobs_metrics false \
+-  --log_global true \
++  --log_global ${LOG_GLOBAL_VAL} \
+   --log_steps 1 \
+   --save_steps 100 \
+   --do_eval false \
+   --weight_decay 0.01 \
+-  --gradient_accumulation_steps 1 \
++  --gradient_accumulation_steps 8 \
+   --beta 0.04 \
+   --temperature 0.7 \
+   --top_p 0.95 \
+   --top_k 50 \
+   --advantage_epsilon 1e-6
+ 
+-#   --force_data_parallel 1 \
+-
+ echo "Training completed!"

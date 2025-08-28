@@ -1,0 +1,171 @@
+commit 804add6fca222c8bd095e73f2cb3b553982287f6
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 01:08:52 2025 +0200
+
+    Multihost barriers: gate warmup/curriculum by sync_multihost_phases; run script sets --sync_multihost_phases=false
+
+diff --git a/easydel/scripts/finetune/gsm8k_math_gspo.py b/easydel/scripts/finetune/gsm8k_math_gspo.py
+index 23836c59..96c311a6 100644
+--- a/easydel/scripts/finetune/gsm8k_math_gspo.py
++++ b/easydel/scripts/finetune/gsm8k_math_gspo.py
+@@ -552,10 +552,10 @@ def main():
+                 # Only adjust mini_batch_size to accommodate small levels.
+                 args.mini_batch_size = mini_batch_size_override
+ 
+-            # In multi-host runs, synchronize before creating the second trainer to avoid
++            # In multi-host runs, optionally synchronize before creating the second trainer to avoid
+             # launch-group divergence if hosts arrive here at slightly different times.
+             try:
+-                if jax.process_count() > 1:
++                if jax.process_count() > 1 and getattr(args, "sync_multihost_phases", True):
+                     from jax.experimental.multihost_utils import sync_global_devices as _sync
+                     _sync("pre_curriculum_trainer_init")
+             except Exception:
+@@ -573,9 +573,9 @@ def main():
+             )
+             out = new_tr.train()
+ 
+-            # Synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
++            # Optionally synchronize after curriculum phase to keep hosts in lockstep before teardown/next phases
+             try:
+-                if jax.process_count() > 1:
++                if jax.process_count() > 1 and getattr(args, "sync_multihost_phases", True):
+                     from jax.experimental.multihost_utils import sync_global_devices as _sync
+                     _sync("post_curriculum_trainer_train")
+             except Exception:
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 962daf40..6522e0bb 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -1018,8 +1018,10 @@ class GRPOTrainer(Trainer):
+                         _ = jax.block_until_ready(jnp.asarray(0, dtype=jnp.int32))
+ 
+                 # Cross-host barrier so all workers enter the real loop in sync
++                # Now gated by sync_multihost_phases for full opt-out when desired
+                 try:
+-                    jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
++                    if jax.process_count() > 1 and getattr(self.arguments, "sync_multihost_phases", True):
++                        jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
+                 except Exception:
+                     pass
+         except Exception as e:
+diff --git a/easydel/utils/jax_safety.py b/easydel/utils/jax_safety.py
+new file mode 100644
+index 00000000..3dd85ed5
+--- /dev/null
++++ b/easydel/utils/jax_safety.py
+@@ -0,0 +1,87 @@
++from __future__ import annotations
++
++import numbers
++import typing as tp
++
++import jax
++import numpy as np
++
++
++def _is_scalar_like(x: tp.Any) -> bool:
++    try:
++        # numpy / jax arrays
++        size = int(np.size(x))  # np.size handles jax.Array shape metadata without fetching
++        return size == 1
++    except Exception:
++        return isinstance(x, numbers.Number)
++
++
++def safe_device_get_local(x) -> tp.Any | None:
++    """Best-effort local-only device_get for jax.Array.
++
++    Returns host value for fully-addressable arrays or the first addressable shard's data.
++    Returns None if local retrieval is not possible without a cross-host collective.
++    """
++    if not isinstance(x, jax.Array):
++        return x
++
++    # Case 1: fully addressable (replicated or single-host) — safe to device_get
++    try:
++        if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:  # type: ignore[attr-defined]
++            return jax.device_get(x)
++    except Exception:
++        pass
++
++    # Case 2: only fetch local shard data
++    try:
++        shards = getattr(x, "addressable_shards", None)
++        if shards and len(shards) > 0:
++            return jax.device_get(shards[0].data)
++    except Exception:
++        pass
++
++    # Case 3: no safe local access
++    return None
++
++
++def safe_to_float(x: tp.Any, default: float = 0.0) -> tp.Any:
++    """Convert scalar-like values to float without cross-host collectives.
++
++    - Python numbers -> float
++    - NumPy scalars -> float
++    - jax.Array/np.ndarray with size==1 -> local-only fetch to float
++    - Non-scalar arrays/structures -> returned unchanged
++    - On failure to safely fetch scalar -> return default
++    """
++    # Fast path for plain numbers
++    if isinstance(x, numbers.Number):
++        return float(x)
++
++    # NumPy scalar
++    if isinstance(x, np.generic):
++        try:
++            return float(x.item())
++        except Exception:
++            return default
++
++    # Arrays: only attempt conversion if truly scalar-like
++    if _is_scalar_like(x):
++        if isinstance(x, jax.Array):
++            host_val = safe_device_get_local(x)
++            if host_val is None:
++                return default
++            try:
++                arr = np.asarray(host_val).reshape(-1)
++                return float(arr[0]) if arr.size > 0 else default
++            except Exception:
++                return default
++        try:
++            # numpy.ndarray or other scalar-likes
++            arr = np.asarray(x).reshape(-1)
++            return float(arr[0]) if arr.size > 0 else default
++        except Exception:
++            return default
++
++    # Non-scalar: leave as-is for histogram/structured logging paths
++    return x
++
+diff --git a/progress.txt b/progress.txt
+index a87efb8e..fd0f78a1 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -225,3 +225,10 @@ Reference Trainer Streamlining
+   - 
+   - 
+ - Purpose: prevent ModuleNotFoundError in environments lacking the utility module, while retaining safety semantics.
++
++[2025-08-27T23:02:52Z] Explanation: logprob_analysis vs ref sync and multihost barriers
++-  disables caching/diagnostics and post-update analysis only; it does not affect reference sync.
++- Reference–policy syncing is driven by , , and  in .
++- Multi-worker barriers (, default True) wrap  and preprocess phases to keep controllers in lockstep; required regardless of logprob analysis.
++-  disables the optional single-host alignment check; it’s independent and skipped on multi-host anyway.
++[] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index 57115043..cd9703cb 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -80,6 +80,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --sync_ref_model_on_step_start true \
+   --ref_sync_copy_graphother true \
+   --logprob_alignment_check_on_sync false \
++  --sync_multihost_phases false \
+   --cap_rollout_chunk_to_tp true \
+   --verbose true \
+   --debug_enable true \

@@ -1,0 +1,138 @@
+commit 1172e636fc418c7bec28cf91ec2586f42ce766eb
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 16:57:40 2025 +0000
+
+    fix(train): deterministic Grain shuffling across workers; add GRPO multi-host JIT warmup\n\n- base_trainer: remove per-process seed offsets; use same shuffle_seed_train for all processes (Iterable + Map datasets).\n- grpo_trainer: pre-compile eval-path with a synthetic batch and sync barrier to avoid first-step race conditions.\n- progress: append summary of changes and rationale.
+
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index 2b4c9c08..b6d28376 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -653,8 +653,8 @@ class BaseTrainer(BaseTrainerProtocol):
+ 
+             if isinstance(dataset, IterableDataset):
+                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
+-                # Per-process shuffle seed to decorrelate streams
+-                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
++                # Use a consistent shuffle seed across processes to ensure identical shuffling
++                seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
+                 sampler = grain.IndexSampler(
+                     num_records=len(data_source),
+                     shard_options=shard_options,
+@@ -665,9 +665,8 @@ class BaseTrainer(BaseTrainerProtocol):
+             else:
+                 data_source = grain.MapDataset.source(dataset)
+                 base_seed = self.arguments.shuffle_seed_train or 0
+-                process_offset = jax.process_index()
+-                # Ensure seed is always positive and within 32-bit range
+-                seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
++                # Use the same base seed across processes to keep shuffling identical
++                seed = int(base_seed) if is_train else 0
+                 # Ensure seed is at least 1 (grain requires positive integer)
+                 seed = max(1, seed) if is_train else 0
+                 sampler = grain.IndexSampler(
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 9a47cbec..665de737 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -930,6 +930,76 @@ class GRPOTrainer(Trainer):
+         
+         return rebuilt_batch
+ 
++    def train(self) -> TrainerOutput:
++        """Run training with a pre-step compilation warmup for multi-host stability.
++
++        Performs an explicit JIT warmup on a synthetic batch (eval path) so that all
++        hosts compile the core step ahead of time, then synchronizes with a barrier
++        before entering the real training loop.
++        """
++        self.start_training_hook()
++        state = self.model_state
++        metrics_tracker = MetricsTracker()
++        step_metrics = StepMetrics(self.arguments)
++        self._setup_initial_metrics(state)
++
++        # Explicit compilation warmup to harden multi-host startup
++        try:
++            if jax.process_count() > 1:
++                B = int(self.training_batch_size)
++                G = int(self.num_generations)
++                # Lengths: prefer explicit prompt/completion limits, fall back conservatively
++                PL = int(getattr(self.arguments, "max_prompt_length", 64) or 64)
++                CL = int(getattr(self.arguments, "max_completion_length", 64) or 64)
++                PL = max(1, PL)
++                CL = max(1, CL)
++
++                pad_id = int(self.pad_token_id)
++
++                # Build a minimal, shape-correct batch for GRPO step (eval path)
++                dummy_batch = {
++                    "prompt_ids": jnp.full((B, PL), pad_id, dtype=jnp.int32),
++                    "prompt_mask": jnp.ones((B, PL), dtype=jnp.int32),
++                    "completion_ids": jnp.full((B * G, CL), pad_id, dtype=jnp.int32),
++                    "completion_mask": jnp.ones((B * G, CL), dtype=jnp.int32),
++                    "advantages": jnp.zeros((B * G,), dtype=jnp.float32),
++                    "ref_per_token_logps": jnp.zeros((B * G, CL), dtype=jnp.float32),
++                }
++
++                # Compile eval path to avoid donating/altering training state
++                with self.mesh:
++                    metrics = self.sharded_evaluation_step_function(
++                        state,
++                        dummy_batch,
++                        *self._eval_shared_fn_extra_args,
++                        *self._eval_shared_fn_static_args,
++                    )
++                    # Ensure compilation completes
++                    try:
++                        _ = jax.block_until_ready(metrics.loss)
++                    except Exception:
++                        _ = jax.block_until_ready(jnp.asarray(0, dtype=jnp.int32))
++
++                # Cross-host barrier so all workers enter the real loop in sync
++                try:
++                    jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")
++                except Exception:
++                    pass
++        except Exception as e:
++            # Best-effort warmup; continue even if warmup fails
++            try:
++                if jax.process_index() == 0:
++                    logger.debug(f"Warmup compilation skipped due to: {e!s}")
++            except Exception:
++                pass
++
++        output, run_exception = self._run_training_loop(
++            state=self.model_state,
++            metrics_tracker=metrics_tracker,
++            step_metrics=step_metrics,
++        )
++        return self._finalize_training(output, run_exception)
++
+     def _preprocess_batch_input(
+         self,
+         state: EasyDeLState,
+diff --git a/progress.txt b/progress.txt
+index dc30416b..4e1f66ac 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -124,3 +124,19 @@ Use this script to get rich per‑step host and JIT logs without destabilizing m
+ [2025-08-27T16:08:26Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
+ [2025-08-27T16:14:01Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.
+ [2025-08-27T16:22:15Z] Removed ref_model_skip_first_sync from config and trainer; using interval-based sync only.
++---
++Deterministic Dataloader Seeding Fix
++
++- Change: Removed per-process seed offset in `easydel/trainers/base_trainer.py` so all workers use the same `shuffle_seed_train`.
++- IterableDataset: `seed = int(self.arguments.shuffle_seed_train or 0)`.
++- MapDataset: `seed = int(base_seed)` and enforce `seed = max(1, seed)`; removed `jax.process_index()` offset logic.
++- Why: Prevents divergent data streams that lead to different JAX compilations across workers and the resulting multi-host "launch id mismatch" failures.
++- Effect: All workers see the same global shuffle and then shard via `grain.ShardOptions`, ensuring identical program shapes, deterministic compilation, and stable first-step execution without needing to skip syncs.
++- Next: Run a multi-host step-0 sanity check; ensure `shuffle_seed_train` is set; remove any prior workaround that skipped initial sync if still present in configs/scripts.
++---
++GRPO Warmup Compilation
++
++- Change: Added explicit JIT warmup in `easydel/trainers/group_relative_policy_optimization/grpo_trainer.py::GRPOTrainer.train`.
++- What: Builds a shape-correct synthetic batch (based on `training_batch_size`, `num_return_sequences`, `max_prompt_length`, `max_completion_length`), compiles the eval step, blocks until ready, then performs a cross-host barrier via `jax.experimental.multihost_utils.sync_global_devices("compilation_warmup")`.
++- Why: Hardens multi-host startup by ensuring all workers complete initial compilation before the real loop, avoiding first-step race conditions; complementary to deterministic dataloader seeding.
++- Notes: Uses eval-path compilation to avoid donating/updating the real training state; no functional change to training loop afterward.

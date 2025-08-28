@@ -1,0 +1,27 @@
+commit 2aeb68f5abc9ecd2aba62280353865901d80560a
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 12:55:22 2025 +0000
+
+    fix(utils/helpers): add missing imports (logging, datetime, wraps) to resolve NameError and formatting
+
+diff --git a/easydel/utils/helpers.py b/easydel/utils/helpers.py
+index 303d92c5..866f1065 100644
+--- a/easydel/utils/helpers.py
++++ b/easydel/utils/helpers.py
+@@ -49,6 +49,8 @@ Example:
+ from __future__ import annotations
+ 
+ import contextlib
++import datetime
++import logging
+ import os
+ import sys
+ import time
+@@ -56,6 +58,7 @@ import typing as tp
+ import warnings
+ from contextlib import contextmanager
+ from pathlib import Path
++from functools import wraps
+ 
+ from eformer.loggings import get_logger
+ 

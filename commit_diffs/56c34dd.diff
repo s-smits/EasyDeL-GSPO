@@ -1,0 +1,16 @@
+commit 56c34dd59b08d44b4d23d78323839eff9117d7b0
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 02:08:52 2025 +0200
+
+    Progress: debug-hardening and root-cause updates appended
+
+diff --git a/progress.txt b/progress.txt
+index 1b677965..5a9749e5 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -302,3 +302,5 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
+ - Test with sys import fix to see if this was the primary blocker
+ - Consider relaxing the device/mesh assertions or making them warnings instead of hard failures
+ - Validate hardware configuration matches the strict new requirements
++
++[2025-08-28T[2025-08-28T00:08:52Z] Debug hardening: fixed unsafe isinstance unions; added np.ndarray acceptance in histogram logging; sys import fix in training script; identified strict DP/TP assertions as secondary risk.

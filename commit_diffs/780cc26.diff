@@ -1,0 +1,113 @@
+commit 780cc26181a999b4c0bbd847dda67c76bdfe4291
+Author: EasyDeL-GSPO CLI <cli@local>
+Date:   Wed Aug 27 16:08:26 2025 +0000
+
+    stability: revert skip-first-sync; add deterministic_generation_across_hosts (default True); unify jitted debug flag across hosts; remove CLI skip flag
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_config.py b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+index a96da748..a895841e 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_config.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_config.py
+@@ -84,6 +84,23 @@ class GRPOConfig(TrainingArguments):
+         default=64,
+         metadata={"help": "The number of steps between syncing the reference model."},
+     )
++    # Skip reference sync at the very first step (step==0).
++    # Default False; we prefer consistent behavior and will handle divergence elsewhere.
++    ref_model_skip_first_sync: bool = field(
++        default=False,
++        metadata={
++            "help": "If True, do not perform reference sync at step 0 even if step%ref_model_sync_steps==0.",
++        },
++    )
++
++    # Deterministic generation across hosts: avoid folding replica/axis indices into PRNG
++    # seeds so multi-controller runs produce identical sampling schedules during compile.
++    deterministic_generation_across_hosts: bool = field(
++        default=True,
++        metadata={
++            "help": "If True, do not fold replica indices into generation PRNG; improves multi-host determinism.",
++        },
++    )
+     tools: list[dict | tp.Callable] | None = field(
+         default=None,
+         metadata={"help": "Additional tools for training."},
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index a2f95223..b56c9677 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -695,19 +695,20 @@ class GRPOTrainer(Trainer):
+                 except Exception:
+                     prng_key = base_key
+                 
+-                # Add per-replica diversity using mesh axis indices (safe within SPMD context)
++                # Optional per-replica diversity; off by default to improve multi-host determinism
+                 try:
+-                    replica_mix = 0
+-                    for axis_name in ["dp", "fsdp", "tp"]:
+-                        try:
+-                            axis_idx = jax.lax.axis_index(axis_name)
+-                            replica_mix = replica_mix ^ (axis_idx * 97)  # Simple mixing
+-                        except (NameError, ValueError):
+-                            pass  # Axis doesn't exist in this mesh
+-                    if replica_mix > 0:
+-                        prng_key = jax.random.fold_in(prng_key, replica_mix)
++                    if not bool(getattr(self.arguments, "deterministic_generation_across_hosts", True)):
++                        replica_mix = 0
++                        for axis_name in ["dp", "fsdp", "tp"]:
++                            try:
++                                axis_idx = jax.lax.axis_index(axis_name)
++                                replica_mix = replica_mix ^ (axis_idx * 97)  # Simple mixing
++                            except (NameError, ValueError):
++                                pass  # Axis doesn't exist in this mesh
++                        if replica_mix > 0:
++                            prng_key = jax.random.fold_in(prng_key, replica_mix)
+                 except Exception:
+-                    pass  # Fallback: use prompt-only diversity
++                    pass  # Fallback: use prompt-only determinism
+ 
+                 sequences = module.generate(
+                     input_ids=input_ids,
+@@ -1867,7 +1868,8 @@ class GRPOTrainer(Trainer):
+             proc_idx = int(jax.process_index())
+         except Exception:
+             proc_idx = 0
+-        debug_active = 1 if (dbg_enable and dbg_every > 0 and (cur_step_int % dbg_every == 0) and (not dbg_rank0 or proc_idx == 0)) else 0
++        # Make the debug flag uniform across hosts to avoid any chance of path divergence in the jitted step.
++        debug_active = 1 if (dbg_enable and dbg_every > 0 and (cur_step_int % dbg_every == 0)) else 0
+ 
+         # Optional: dump key shapes before pjit step (host-side only)
+         try:
+@@ -2222,12 +2224,18 @@ class GRPOTrainer(Trainer):
+                     jax.experimental.multihost_utils.sync_global_devices("before_ref_sync_on_step_start")
+             except Exception:
+                 ...
+-            if (
+-                getattr(self.arguments, "sync_ref_model", False)
+-                and getattr(self.arguments, "sync_ref_model_on_step_start", True)
++            sync_enabled = getattr(self.arguments, "sync_ref_model", False)
++            sync_on_start = getattr(self.arguments, "sync_ref_model_on_step_start", True)
++            skip_first = getattr(self.arguments, "ref_model_skip_first_sync", True)
++            interval = int(getattr(self.arguments, "ref_model_sync_steps", 64))
++            should_sync = (
++                sync_enabled
++                and sync_on_start
+                 and self.ref_state is not None
+-                and (step % int(getattr(self.arguments, "ref_model_sync_steps", 64)) == 0)
+-            ):
++                and (step % max(1, interval) == 0)
++                and (not skip_first or step > 0)
++            )
++            if should_sync:
+                 try:
+                     logger.debug("[GRPOTrainer:on_step_start] triggering reference sync")
+                 except Exception:
+diff --git a/progress.txt b/progress.txt
+index b7652202..587f8bc1 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -121,3 +121,4 @@ Use this script to get rich per‑step host and JIT logs without destabilizing m
+ [2025-08-27T15:49:18Z] Silenced JAX/absl DEBUG logs via per-module log levels in gsm8k_math_gspo.py; kept EasyDeL at DEBUG.
+ [2025-08-27T15:49:56Z] Preparing commit: enable debug flags, add JIT/host logs, quiet JAX noise, and update run script.
+ [2025-08-27T15:59:34Z] Added per-run log tee to file in gsm8k_math_gspo.py (logs/gspo_<TS>/*_p<proc>.log); kept flags in run script.
++[2025-08-27T16:08:26Z] Reverted first-step sync skip; added deterministic_generation_across_hosts option (default True); made jitted debug flag uniform across hosts; removed CLI flag from run script.

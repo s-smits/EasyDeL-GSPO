@@ -1,16 +1,16 @@
 #!/bin/bash
-# GSPO Training Script with TPU Optimizations
+# GRPO Training Script with TPU Optimizations
 #
-# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
+# Usage: ./run_grpo_training.sh [DATASET] [CURRICULUM_MATH]
 # 
 # Arguments:
 #   DATASET        - Dataset to use: 'math-ds' or 'gsm8k-ds' (default: math-ds)
 #   CURRICULUM_MATH - Enable curriculum learning: 'true' or 'false' (default: false)
 #
 # Examples:
-#   ./run_gspo_training.sh math-ds true    # Enable curriculum learning on math dataset
-#   ./run_gspo_training.sh math-ds false   # Disable curriculum learning
-#   ./run_gspo_training.sh gsm8k-ds        # Use GSM8K dataset (curriculum learning has no effect)
+#   ./run_grpo_training.sh math-ds true    # Enable curriculum learning on math dataset
+#   ./run_grpo_training.sh math-ds false   # Disable curriculum learning
+#   ./run_grpo_training.sh gsm8k-ds        # Use GSM8K dataset (curriculum learning has no effect)
 
 # Set environment variables for TPU
 export JAX_PLATFORMS=tpu
@@ -25,7 +25,7 @@ uv pip install "math-verify[antlr4_13_2]" --quiet || true
 # Navigate to project directory
 cd /home/air/EasyDeL-GSPO
 
-echo "Starting GSPO training with optimized configuration..."
+echo "Starting GRPO training with optimized configuration..."
 
 # Parse command line arguments
 DATASET="${1:-math-ds}"
@@ -33,7 +33,7 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-python easydel/scripts/finetune/gsm8k_math_gspo.py \
+python easydel/scripts/finetune/gsm8k_math_grpo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
@@ -42,7 +42,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 4096 \
+  --max_completion_length 3072 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
@@ -59,7 +59,5 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6
-
-#   --force_data_parallel 1 \
 
 echo "Training completed!"

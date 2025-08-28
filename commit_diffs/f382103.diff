@@ -1,0 +1,92 @@
+commit f38210368f9bf4fc9394d9b5fc273ca1722876c7
+Author: air <air@localhost>
+Date:   Mon Aug 25 19:03:05 2025 +0000
+
+    trainer: grain dataloader stability on TPU -> single-worker, small buffers; add configurable grain knobs and best-effort dataloader cleanup to avoid shared-memory FileNotFound errors
+
+diff --git a/easydel/trainers/base_trainer.py b/easydel/trainers/base_trainer.py
+index af522522..40f69591 100644
+--- a/easydel/trainers/base_trainer.py
++++ b/easydel/trainers/base_trainer.py
+@@ -372,6 +372,29 @@ class BaseTrainer(BaseTrainerProtocol):
+                 wandb.finish()
+             except Exception:
+                 ...
++        # Best-effort dataloader cleanup to release shared-memory/semaphores
++        try:
++            dl_train = getattr(BaseTrainer, "dataloader_train", None)
++            if dl_train is None:
++                dl_train = getattr(self, "dataloader_train", None)  # type: ignore[name-defined]
++            if hasattr(dl_train, "close") and callable(getattr(dl_train, "close")):
++                try:
++                    dl_train.close()  # type: ignore[attr-defined]
++                except Exception:
++                    ...
++        except Exception:
++            ...
++        try:
++            dl_eval = getattr(BaseTrainer, "dataloader_eval", None)
++            if dl_eval is None:
++                dl_eval = getattr(self, "dataloader_eval", None)  # type: ignore[name-defined]
++            if hasattr(dl_eval, "close") and callable(getattr(dl_eval, "close")):
++                try:
++                    dl_eval.close()  # type: ignore[attr-defined]
++                except Exception:
++                    ...
++        except Exception:
++            ...
+ 
+     def on_step_start(
+         self,
+@@ -698,9 +721,12 @@ class BaseTrainer(BaseTrainerProtocol):
+                     CollateMapTransform(collate_fn=collate_fn),
+                     grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
+                 ],
+-                worker_count=1,
+-                worker_buffer_size=1,
+-                read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=128),
++                worker_count=int(self.arguments.grain_worker_count),
++                worker_buffer_size=int(self.arguments.grain_worker_buffer_size),
++                read_options=grain.ReadOptions(
++                    num_threads=int(self.arguments.grain_read_threads),
++                    prefetch_buffer_size=int(self.arguments.grain_prefetch_buffer_size),
++                ),
+             )
+ 
+         def calculate_steps(dataset, is_train: bool) -> int:
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index 1d2a34ba..82a532f7 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -437,6 +437,31 @@ class TrainingArguments:
+         default=True,
+         metadata={"help": "Whether to use grain instead of `tensorflow-datasets`."},
+     )
++    # Grain fine-tuning knobs to avoid multiprocessing shared-memory issues
++    grain_worker_count: int = field(
++        default=1,
++        metadata={
++            "help": "Grain DataLoader worker processes per host. Set to 1 to avoid shared-memory races on TPU."
++        },
++    )
++    grain_worker_buffer_size: int = field(
++        default=1,
++        metadata={
++            "help": "Per-worker in-flight buffer size. Keep small to reduce SHM footprint."
++        },
++    )
++    grain_prefetch_buffer_size: int = field(
++        default=64,
++        metadata={
++            "help": "Host prefetch buffer size. Lower values reduce shared memory usage."
++        },
++    )
++    grain_read_threads: int = field(
++        default=1,
++        metadata={
++            "help": "Threads used by Grain ReadOptions. Keep 1 to avoid contention."
++        },
++    )
+     use_wandb: bool = field(
+         default=True,
+         metadata={"help": "Whether to use Weights & Biases for logging."},

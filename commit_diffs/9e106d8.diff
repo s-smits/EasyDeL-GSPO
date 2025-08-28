@@ -1,0 +1,60 @@
+commit 9e106d86e18ace16276ded47f254b8bdeb98bb09
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 02:08:30 2025 +0200
+
+    Debug-hardening: fix unsafe isinstance unions and broaden array acceptance in logging paths\n\n- Replace isinstance unions (float|int etc.) with tuple forms to avoid TypeError\n- Accept np.ndarray in wandb/tensorboard histogram branches\n- No functional changes; safer debug mode\n
+
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index 04faa2a1..e28f28ec 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -1027,7 +1027,7 @@ class TrainingArguments:
+                     try:
+                         if isinstance(value, tuple) and len(value) == 2:
+                             bin_counts, bin_edges = value
+-                            if isinstance(bin_counts, list | jax.Array) and isinstance(bin_edges, list | jax.Array):
++                            if isinstance(bin_counts, (list, jax.Array, np.ndarray)) and isinstance(bin_edges, (list, jax.Array, np.ndarray)):
+                                 bin_counts = np.array(bin_counts).reshape(-1)
+                                 bin_edges = np.array(bin_edges).reshape(-1)
+                                 np_histogram = (bin_counts, bin_edges)
+@@ -1037,7 +1037,7 @@ class TrainingArguments:
+ 
+                         wandb_metrics[key] = (
+                             self._create_wandb_histogram(value)
+-                            if isinstance(value, float | int | list | tuple | np.generic | jax.Array)
++                            if isinstance(value, (float, int, list, tuple, np.generic, np.ndarray, jax.Array))
+                             else value
+                         )
+ 
+@@ -1069,11 +1069,11 @@ class TrainingArguments:
+         if summary_writer is not None:
+             for key, value in metrics.items():
+                 try:
+-                    if isinstance(value, float | int):
++                    if isinstance(value, (float, int)):
+                         summary_writer.scalar(key, value, step)
+                     elif isinstance(value, tuple) and len(value) == 2:
+                         bin_counts, bin_edges = value
+-                        if isinstance(bin_counts, list | jax.Array) and isinstance(bin_edges, list | jax.Array):
++                        if isinstance(bin_counts, (list, jax.Array, np.ndarray)) and isinstance(bin_edges, (list, jax.Array, np.ndarray)):
+                             bin_counts = np.array(bin_counts)
+                             bin_edges = np.array(bin_edges)
+                             values = []
+@@ -1084,7 +1084,7 @@ class TrainingArguments:
+ 
+                             if values:
+                                 summary_writer.histogram(key, np.array(values), step)
+-                    elif isinstance(value, list | np.ndarray | jnp.ndarray):
++                    elif isinstance(value, (list, np.ndarray, jax.Array)):
+                         summary_writer.histogram(key, np.array(value), step)
+                 except Exception as e:
+                     warnings.warn(f"Failed to log metric {key} to TensorBoard: {e}", stacklevel=1)
+@@ -1102,7 +1102,7 @@ class TrainingArguments:
+             wandb.Histogram or None: A wandb.Histogram object if successful, None if an error occurs
+         """
+         try:
+-            if isinstance(value, jax.Array | np.generic):
++            if isinstance(value, (jax.Array, np.generic, np.ndarray)):
+                 value = np.array(jax.device_get(value))
+                 if value.dtype in [np.bfloat16]:
+                     value = value.astype(np.float32)

@@ -1,0 +1,78 @@
+commit 56210f5bc1093f03da54f5b0c006f4b1ab86797e
+Author: s-smits <sjssmits@gmail.com>
+Date:   Thu Aug 28 01:14:14 2025 +0200
+
+    Run script: add SYNC_MODE (ref|barriers); make ref-sync and multihost barrier flags mutually exclusive
+
+diff --git a/progress.txt b/progress.txt
+index fd0f78a1..34c75478 100644
+--- a/progress.txt
++++ b/progress.txt
+@@ -232,3 +232,4 @@ Reference Trainer Streamlining
+ - Multi-worker barriers (, default True) wrap  and preprocess phases to keep controllers in lockstep; required regardless of logprob analysis.
+ -  disables the optional single-host alignment check; it’s independent and skipped on multi-host anyway.
+ [] Disable multihost barriers: gate warmup+curriculum by sync_multihost_phases; set run script to pass --sync_multihost_phases=false for full opt-out (user requested temporary disable).
++[] Run script: added SYNC_MODE (ref|barriers) to select either reference sync or multihost barriers; flags are mutually exclusive and inferred automatically.
+diff --git a/run_gspo_training.sh b/run_gspo_training.sh
+index cd9703cb..d504551e 100755
+--- a/run_gspo_training.sh
++++ b/run_gspo_training.sh
+@@ -1,11 +1,13 @@
+ #!/bin/bash
+ # GSPO Training Script with TPU Optimizations (8-worker metrics support)
+ #
+-# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH]
++# Usage: ./run_gspo_training.sh [DATASET] [CURRICULUM_MATH] [SYNC_MODE]
+ # 
+ # Arguments:
+ #   DATASET        - Dataset to use: 'math-ds' or 'gsm8k-ds' (default: math-ds)
+ #   CURRICULUM_MATH - Enable curriculum learning: 'true' or 'false' (default: false)
++#   SYNC_MODE      - 'ref' (default): enable reference sync, disable barriers
++#                    'barriers': enable multihost barriers, omit ref-sync flags
+ #
+ # Examples:
+ #   ./run_gspo_training.sh math-ds true    # Enable curriculum learning on math dataset
+@@ -32,6 +34,7 @@ echo "Starting GSPO training with optimized configuration..."
+ # Parse command line arguments
+ DATASET="${1:-math-ds}"
+ CURRICULUM_MATH="${2:-false}"
++SYNC_MODE="${3:-ref}"
+ 
+ # If DATASET is math-ds, enable curriculum learning (mirrors GFSPO script behavior)
+ if [ "$DATASET" = "math-ds" ]; then
+@@ -40,6 +43,7 @@ fi
+ 
+ echo "Using dataset: ${DATASET}"
+ echo "Curriculum math: ${CURRICULUM_MATH}"
++echo "Sync mode: ${SYNC_MODE}"
+ 
+ # Metrics and logging: ensure correct aggregation for 8 workers
+ # Set log_global to true for correct global logging aggregation
+@@ -48,6 +52,13 @@ echo "LOG_GLOBAL: ${LOG_GLOBAL_VAL}"
+ 
+ #!/usr/bin/env bash
+ 
++# Compute sync flags based on SYNC_MODE (mutually exclusive)
++if [ "$SYNC_MODE" = "barriers" ]; then
++  SYNC_FLAGS="--sync_multihost_phases true"
++else
++  SYNC_FLAGS="--sync_ref_model true --ref_model_sync_steps 16 --sync_ref_model_on_step_start true --ref_sync_copy_graphother true --logprob_alignment_check_on_sync false --sync_multihost_phases false"
++fi
++
+ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --repo_id "Qwen/Qwen3-1.7B" \
+   --dataset ${DATASET} \
+@@ -75,12 +86,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
+   --top_k 50 \
+   --advantage_epsilon 1e-6 \
+   --logprob_analysis_enable false \
+-  --sync_ref_model true \
+-  --ref_model_sync_steps 16 \
+-  --sync_ref_model_on_step_start true \
+-  --ref_sync_copy_graphother true \
+-  --logprob_alignment_check_on_sync false \
+-  --sync_multihost_phases false \
++  ${SYNC_FLAGS} \
+   --cap_rollout_chunk_to_tp true \
+   --verbose true \
+   --debug_enable true \

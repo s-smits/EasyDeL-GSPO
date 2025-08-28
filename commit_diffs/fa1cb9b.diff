@@ -1,0 +1,68 @@
+commit fa1cb9b464fccc76dda19a208e09bdf769bf589b
+Author: s-smits <sjssmits@gmail.com>
+Date:   Tue Aug 26 14:40:48 2025 +0000
+
+    Minibatching robustness: broadcast 0-D/singleton leaves (epsilon_scale/beta_scale) before reshape; vectorize runtime scales in GFSPO preprocessing to avoid reshape errors.
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py b/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
+index 8b6a04f0..aaa3f0b1 100644
+--- a/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/gfspo_trainer.py
+@@ -178,18 +178,23 @@ class GFSPOTrainer(GFPOFilterMixin, GSPOTrainer):
+         # Runtime knobs to avoid recompiles in step
+         # epsilon_scale: prefer dynamic ESS-based if enabled and available; else fallback to k/G
+         try:
++            # Broadcast runtime epsilon scale to vector matching batch (for minibatching reshape)
+             if bool(getattr(self.arguments, "use_ess_epsilon", False)) and (self._epsilon_scale is not None):
+-                grpo_batch["epsilon_scale"] = jnp.asarray(float(self._epsilon_scale), dtype=jnp.float32)
++                _scale = float(self._epsilon_scale)
+             else:
+                 k = float(self.arguments.gfpo_retain_count)
+                 g = float(self.arguments.gfpo_group_size)
+-                grpo_batch["epsilon_scale"] = jnp.asarray(k / max(g, 1.0), dtype=jnp.float32)
++                _scale = k / max(g, 1.0)
++            # Use completion_mask leading dim as canonical batch length
++            _n = int(grpo_batch["completion_mask"].shape[0])
++            grpo_batch["epsilon_scale"] = jnp.full((_n,), _scale, dtype=jnp.float32)
+         except Exception:
+             pass
+ 
+         # beta_scale: multiplicative controller on top of static beta
+         try:
+-            grpo_batch["beta_scale"] = jnp.asarray(float(self._beta_scale), dtype=jnp.float32)
++            _n = int(grpo_batch["completion_mask"].shape[0])
++            grpo_batch["beta_scale"] = jnp.full((_n,), float(self._beta_scale), dtype=jnp.float32)
+         except Exception:
+             pass
+ 
+diff --git a/easydel/trainers/training_utils.py b/easydel/trainers/training_utils.py
+index 8abc1bf2..cd2e096e 100644
+--- a/easydel/trainers/training_utils.py
++++ b/easydel/trainers/training_utils.py
+@@ -152,9 +152,23 @@ def minibatch_call(
+     if num_accum_steps > 1:
+ 
+         def reshape_to_minibatches(arr):
+-            """Reshape the batch into minibatches for accumulation."""
+-            batch_shape = (num_accum_steps, minibatch_size, *arr.shape[1:])
+-            return jnp.reshape(arr, batch_shape)
++            """Reshape the batch into minibatches for accumulation.
++
++            Handles 0-D or singleton leading-dimension arrays by broadcasting them
++            across the total batch length before reshaping. This lets runtime
++            scalars (e.g., epsilon_scale, beta_scale) participate in minibatching
++            without causing reshape errors.
++            """
++            total = num_accum_steps * minibatch_size
++            a = arr
++            # Broadcast 0-D runtime scalars
++            if a.ndim == 0:
++                a = jnp.broadcast_to(a, (total,))
++            # Broadcast singleton leading dim when needed
++            elif a.ndim >= 1 and int(a.shape[0]) == 1 and total > 1:
++                a = jnp.broadcast_to(a, (total, *a.shape[1:]))
++            batch_shape = (num_accum_steps, minibatch_size, *a.shape[1:])
++            return jnp.reshape(a, batch_shape)
+ 
+         batch = jax.tree_util.tree_map(reshape_to_minibatches, batch)
+ 

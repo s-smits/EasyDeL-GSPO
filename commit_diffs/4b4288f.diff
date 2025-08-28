@@ -1,0 +1,37 @@
+commit 4b4288ffa367408d2ce65ddf4e32bd852258b9d2
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 09:35:15 2025 +0000
+
+    GSPO: fix diagnostics indent; keep DP constant in curriculum; add multi-host sync barriers
+    
+    - Fix IndentationError in GRPOTrainer.on_step_end diagnostics block
+    - Avoid mutating total_batch_size during curriculum (preserve DP); adjust only mini_batch_size
+    - Add sync_global_devices barriers before/after curriculum trainer to prevent launch-group divergence
+
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 8807fe32..9f7abcab 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -1816,14 +1816,14 @@ class GRPOTrainer(Trainer):
+         except Exception:
+             do_diag, every = True, 1
+ 
+-                if (
+-                    do_diag
+-                    and (every > 0)
+-                    and (step % every == 0)
+-                    and hasattr(self, "_last_logprob_diag")
+-                    and self._last_logprob_diag is not None
+-                    and jax.process_count() == 1
+-                ):
++        if (
++            do_diag
++            and (every > 0)
++            and (step % every == 0)
++            and hasattr(self, "_last_logprob_diag")
++            and self._last_logprob_diag is not None
++            and jax.process_count() == 1
++        ):
+             try:
+                 ids = self._last_logprob_diag.get("ids")
+                 full_mask = self._last_logprob_diag.get("full_mask")

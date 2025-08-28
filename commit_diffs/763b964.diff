@@ -1,0 +1,18 @@
+commit 763b964d2dc7f7c6ffc1ab89e6f63bda99fba8c8
+Author: s-smits <sjssmits@gmail.com>
+Date:   Wed Aug 27 11:49:36 2025 +0000
+
+    Fix duplicate keyword in numinamath_grpo: remove repeated gradient_checkpointing to satisfy compileall
+
+diff --git a/easydel/scripts/finetune/numinamath_grpo.py b/easydel/scripts/finetune/numinamath_grpo.py
+index 927c96db..9b38a1a2 100644
+--- a/easydel/scripts/finetune/numinamath_grpo.py
++++ b/easydel/scripts/finetune/numinamath_grpo.py
+@@ -128,7 +128,6 @@ def main():
+             use_sliding_window=False,
+             # sliding_window=max(4096, max_sequence_length),  # Safe window size
+             # max_window_layers=0,  # Apply sliding window from layer 0 onwards
+-            gradient_checkpointing=ed.EasyDeLGradientCheckPointers.NONE,  # change this if u go OOM
+         ),
+         quantization_method=ed.EasyDeLQuantizationMethods.NONE,
+         param_dtype=runtime_config.param_dtype,
