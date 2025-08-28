@@ -96,7 +96,6 @@ except ImportError:
     wandb = None
 
 if tp.TYPE_CHECKING:
-    from flax.metrics.tensorboard import SummaryWriter  # type:ignore
     from jax import Array  # type:ignore
     from torch import Tensor  # type:ignore
 else:
@@ -859,26 +858,12 @@ class TrainingArguments:
 
     @functools.cached_property
     def _tensorboard(self):
-        from flax.metrics.tensorboard import SummaryWriter  # type:ignore
+        # TensorBoard disabled: return None and avoid importing flax
+        return None
 
-        path = self._get_save_directory(create=True)
-        if path is None:
-            return None
-        if str(path).startswith("gs://"):
-            return None
-        return SummaryWriter(log_dir=str(path))
-
-    def get_tensorboard(self) -> SummaryWriter | None:
-        """
-        Returns the TensorBoard SummaryWriter, used for logging metrics.
-
-        Returns:
-            flax.metrics.tensorboard.SummaryWriter: The TensorBoard SummaryWriter.
-        """
-        try:
-            return self._tensorboard
-        except ModuleNotFoundError:
-            return None
+    def get_tensorboard(self) -> None:
+        """TensorBoard is disabled; return None."""
+        return None
 
     def get_wandb_init(self):
         """
@@ -927,7 +912,7 @@ class TrainingArguments:
         log_as: tp.Literal["summary", "config"] | None = None,
     ):
         """
-        Logs training metrics to Weights & Biases and/or TensorBoard.
+        Logs training metrics to Weights & Biases.
 
         Args:
           metrics (tp.Dict[str, tp.Union[float, tp.List, tp.Tuple, np.ndarray, 'jnp.ndarray', 'torch.Tensor']]):
@@ -939,7 +924,6 @@ class TrainingArguments:
             filtered_metrics = {k: v for k, v in metrics.items() if v is not None}
             metrics = {self._restructure_metric_name(k): get_safe_arr(v) for k, v in filtered_metrics.items()}
             self._log_to_wandb(metrics, step, log_as)
-            self._log_to_tensorboard(metrics, step, log_as)
 
     def _restructure_metric_name(self, metric_name: str) -> str:
         """
@@ -1050,46 +1034,6 @@ class TrainingArguments:
                     wandb.log(wandb_metrics, step=step)
                 except Exception as e:
                     warnings.warn(f"Failed to log metrics to wandb: {e}", stacklevel=3)
-
-    def _log_to_tensorboard(
-        self,
-        metrics: dict[str, tp.Any],
-        step: int,
-        log_as: tp.Literal["summary", "config"] | None = None,
-    ):
-        """
-        Log metrics to TensorBoard.
-
-        Args:
-            metrics: A dictionary of metrics to log
-            step: The current step or iteration number
-            log_as: Currently not used for TensorBoard
-        """
-        summary_writer = self.get_tensorboard()
-        if summary_writer is not None:
-            for key, value in metrics.items():
-                try:
-                    if isinstance(value, (float, int)):
-                        summary_writer.scalar(key, value, step)
-                    elif isinstance(value, tuple) and len(value) == 2:
-                        bin_counts, bin_edges = value
-                        if isinstance(bin_counts, (list, jax.Array, np.ndarray)) and isinstance(bin_edges, (list, jax.Array, np.ndarray)):
-                            bin_counts = np.array(bin_counts)
-                            bin_edges = np.array(bin_edges)
-                            values = []
-                            for i, count in enumerate(bin_counts):
-                                if i < len(bin_edges) - 1:
-                                    bin_center = (bin_edges[i] + bin_edges[i + 1]) / 2
-                                    values.extend([bin_center] * int(count))
-
-                            if values:
-                                summary_writer.histogram(key, np.array(values), step)
-                    elif isinstance(value, (list, np.ndarray, jax.Array)):
-                        summary_writer.histogram(key, np.array(value), step)
-                except Exception as e:
-                    warnings.warn(f"Failed to log metric {key} to TensorBoard: {e}", stacklevel=1)
-                finally:
-                    summary_writer.flush()
 
     def _create_wandb_histogram(self, value):
         """
