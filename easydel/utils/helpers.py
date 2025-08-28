@@ -183,6 +183,23 @@ def set_loggers_level(level: int = logging.WARNING):
     for handler in logging.root.handlers:
         handler.setLevel(level)
 
+
+def set_module_log_levels(levels: dict[str, int]) -> None:
+    """Set logging levels for specific modules without changing the root logger.
+
+    Args:
+        levels: Mapping of logger names to desired logging levels
+            (e.g., {"jax": logging.WARNING, "datasets": logging.ERROR}).
+    """
+    if not isinstance(levels, dict):
+        raise TypeError("levels must be a dict mapping logger names to levels")
+    for module_name, level in levels.items():
+        try:
+            logging.getLogger(module_name).setLevel(level)
+        except Exception:
+            # Best-effort; ignore modules that cannot be configured
+            pass
+
 if tp.TYPE_CHECKING:
     from flax.metrics.tensorboard import SummaryWriter
 try:
