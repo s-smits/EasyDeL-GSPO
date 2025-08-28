@@ -18,7 +18,8 @@ export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin working || true
+git config pull.rebase true 2>/dev/null || true
+git pull origin working --rebase || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
