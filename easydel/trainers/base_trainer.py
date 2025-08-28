@@ -109,6 +109,7 @@ class BaseTrainer(BaseTrainerProtocol):
         if self.arguments.track_memory and self.arguments.track_memory > 0:
             self._initialize_memory_tracking()
 
+    @classmethod
     def load_trainer_state(
         cls,
         load_directory: str | os.PathLike,
@@ -559,66 +560,31 @@ class BaseTrainer(BaseTrainerProtocol):
                 batch_size = self.evaluation_batch_size
                 shuffle = False
                 num_epochs = 1
-            # Normalize shard indices
-            shard_index = int(self.arguments.grain_shard_index or 0)
-            shard_count = int(self.arguments.grain_shard_count or 1)
             shard_options = grain.ShardOptions(
-                shard_index=shard_index,
-                shard_count=shard_count,
+                shard_index=self.arguments.grain_shard_index or 0,
+                shard_count=self.arguments.grain_shard_count or 1,
                 drop_remainder=True,
             )
             from datasets import IterableDataset
 
             if isinstance(dataset, IterableDataset):
-                # Pre-shard streaming datasets to guarantee non-overlapping data across workers
-                if shard_count > 1:
-                    try:
-                        dataset = dataset.shard(num_shards=shard_count, index=shard_index)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to pre-shard IterableDataset (index={shard_index}, count={shard_count}): {e!s}. "
-                            "Proceeding without dataset-level shard; Grain may duplicate streams."
-                        )
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
-                # Deterministic seed across processes; ensure positive for Grain when training
-                seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
-                seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
-                    seed=seed,
+                    seed=self.arguments.shuffle_seed_train if is_train else 0,
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
-                # Verbose per-worker data loader configuration (helps multi-host debugging)
-                try:
-                    if jax.process_count() > 1 and (jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False)):
-                        logger.info(
-                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} shard=({shard_index}/{shard_count}) "
-                            f"shuffle={shuffle} epochs={num_epochs} batch_size={batch_size}"
-                        )
-                except Exception:
-                    pass
             else:
                 data_source = grain.MapDataset.source(dataset)
-                base_seed = self.arguments.shuffle_seed_train or 0
-                seed = int(base_seed) if is_train else 0
-                seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
-                    seed=seed,
+                    seed=self.arguments.shuffle_seed_train if is_train else 0,
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
-                try:
-                    if jax.process_count() > 1 and (jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False)):
-                        logger.info(
-                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} shard=({shard_index}/{shard_count}) "
-                            f"shuffle={shuffle} epochs={num_epochs} batch_size={batch_size}"
-                        )
-                except Exception:
-                    pass
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,
                 truncation_mode=self.arguments.truncation_mode,
@@ -637,46 +603,27 @@ class BaseTrainer(BaseTrainerProtocol):
             )
 
         def calculate_steps(dataset, is_train: bool) -> int:
-            """Estimate steps to align with Grain DataLoader behavior and sharding.
-
-            - Uses Batch(drop_remainder=True) semantics
-            - Accounts for per-process sharding by using a uniform per-shard base length
-            """
-            # 1) Determine dataset length or required steps for streaming
             if hasattr(dataset, "__len__"):
-                total_data_len = int(len(dataset))
+                total_data_len = len(dataset)
             else:
                 total_data_len = (
                     self.arguments.per_epoch_training_steps if is_train else self.arguments.per_epoch_evaluation_steps
                 )
                 if total_data_len is None:
                     raise ValueError(
-                        f"Specify the number of per epoch {'training' if is_train else 'evaluation'} steps for a generator/streaming dataset."
+                        f"Specify the number of per epoch {'training' if is_train else 'evaluation'} "
+                        "steps for a generator/streaming dataset."
                     )
-
-            # 2) Uniform per-shard base length (ignore remainder differences across shards)
-            shard_count = int(self.arguments.grain_shard_count or 1)
-            per_shard_len_base = total_data_len // max(1, shard_count)
-
-            # 3) Effective batch size and floor semantics due to drop_remainder
-            batch_size = int(self.training_batch_size if is_train else self.evaluation_batch_size)
-            steps_per_epoch = per_shard_len_base // max(1, batch_size)
-
-            # 4) Fail fast if batch cannot fit per-host shard
-            if is_train:
-                assert steps_per_epoch > 0, (
-                    "Training batch size exceeds the smallest per-worker shard. "
-                    f"batch_size={batch_size}, per_shard_len_base={per_shard_len_base}. "
-                    "Reduce --total_batch_size or increase dataset size."
-                )
-
-            num_epochs = int(self.arguments.num_train_epochs if is_train else 1)
-            num_steps = steps_per_epoch * num_epochs
-
-            # 5) Respect optional max steps overrides
+            batch_size = self.arguments.total_batch_size if is_train else self.evaluation_batch_size
+            num_steps = (
+                (total_data_len + batch_size - 1) // batch_size * (self.arguments.num_train_epochs if is_train else 1)
+            )
             forced_steps = self.arguments.max_training_steps if is_train else self.arguments.max_evaluation_steps
-            steps = int(forced_steps) if forced_steps is not None else int(num_steps)
-            return max(0, steps)
+            steps = forced_steps if forced_steps is not None else num_steps
+
+            if is_train:
+                steps = steps // self.arguments.gradient_accumulation_steps
+            return steps
 
         max_training_steps = calculate_steps(self.dataset_train, is_train=True)
         dataloader_train = _create_grain_dataloader(self.dataset_train, is_train=True)
@@ -959,7 +906,7 @@ class BaseTrainer(BaseTrainerProtocol):
                 if self.arguments.save_total_limit == 0:
                     _do_dele = checkpoint_files
                 else:
-                    _do_dele = checkpoint_files[: -self.arguments.save_total_limit]
+                    _do_dele = checkpoint_files[: -int(self.arguments.save_total_limit)]
                 for old_save_directory in _do_dele:
                     try:
                         _remove_directory_recursive(old_save_directory)
@@ -1122,10 +1069,10 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         save_directory: str | None = None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None = None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None = None,
         to_torch: bool = False,
-        easystate_to_huggingface_model_kwargs: dict | None = None,
-        torch_save_pretrained_kwargs: dict | None = None,
+        easystate_to_huggingface_model_kwargs: dict[str, tp.Any] | None = None,
+        torch_save_pretrained_kwargs: dict[str, tp.Any] | None = None,
     ):
         save_directory = save_directory or self.arguments.get_path()
         save_directory = ePath(save_directory)
@@ -1295,8 +1242,8 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         exception: Exception,
-        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
+        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
     ):
         """Handle training interruption gracefully."""
         if isinstance(exception, KeyboardInterrupt):
@@ -1340,7 +1287,7 @@ class BaseTrainer(BaseTrainerProtocol):
             batch = next(data_iter)
 
         # Remove specified ids from batch if needed
-        for id_to_pop in self.arguments.ids_to_pop_from_dataset:
+        for id_to_pop in (self.arguments.ids_to_pop_from_dataset or []):
             _ = batch.pop(id_to_pop, None)
 
         return batch, data_iter
