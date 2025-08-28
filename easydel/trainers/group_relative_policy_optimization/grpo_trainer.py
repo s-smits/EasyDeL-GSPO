@@ -881,9 +881,15 @@ class GRPOTrainer(Trainer):
 
                 # Extract completions for this chunk and build masks
                 prompt_completion_ids_chunk = seq_chunk
-                completion_ids_chunk = prompt_completion_ids_chunk[..., base_prompt_len:]
-                completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
+                # Use true prompt lengths per sample to avoid slicing by padded length
                 ridmask_chunk = prompt_mask.repeat(cur_nrs, 0)
+                true_prompt_lengths = ridmask_chunk.sum(-1)
+                max_comp = int(self.arguments.max_completion_length)
+                total_len = int(prompt_completion_ids_chunk.shape[-1])
+                gather_idx = (true_prompt_lengths[:, None] + jnp.arange(max_comp)[None, :]).astype(jnp.int32)
+                gather_idx = jnp.clip(gather_idx, 0, max(0, total_len - 1))
+                completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
+                completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
