@@ -60,16 +60,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from functools import wraps
 
-from eformer.loggings import get_logger
-
-if tp.TYPE_CHECKING:
-    from flax.metrics.tensorboard import SummaryWriter
-try:
-    import wandb  # type: ignore
-except ModuleNotFoundError:
-    wandb = None
-
-
 COLORS: dict[str, str] = {
     "PURPLE": "\033[95m",
     "BLUE": "\033[94m",
@@ -115,63 +105,22 @@ _LOGGING_LEVELS: dict[str, int] = {
 
 
 class ColorFormatter(logging.Formatter):
-    """Custom formatter that adds colors to log messages.
-
-    Formats log messages with colored level names and timestamps.
-    Colors are based on the log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-
-    Example:
-        >>> handler = logging.StreamHandler()
-        >>> handler.setFormatter(ColorFormatter())
-        >>> logger.addHandler(handler)
-    """
+    """Custom formatter that adds colors to log messages."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record with colors.
-
-        Args:
-            record: Log record to format.
-
-        Returns:
-            Formatted log message with ANSI color codes.
-        """
-        orig_levelname = record.levelname
         color = LEVEL_COLORS.get(record.levelname, COLORS["RESET"])
-        record.levelname = f"{color}{record.levelname:<8}{COLORS['RESET']}"
         current_time = datetime.datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
         formatted_name = f"{color}({current_time} {record.name}){COLORS['RESET']}"
         message = f"{formatted_name} {record.getMessage()}"
-        record.levelname = orig_levelname
         return message
 
 
 class LazyLogger:
-    """Logger that initializes only when first used.
-
-    Defers logger initialization until the first logging call,
-    reducing startup overhead. Automatically adjusts log level
-    for non-primary JAX processes.
-
-    Attributes:
-        _name: Logger name.
-        _level: Logging level.
-        _logger: Underlying logger (initialized on first use).
-
-    Example:
-        >>> logger = LazyLogger(__name__)
-        >>> # Logger not initialized yet
-        >>> logger.info("First message")  # Initializes here
-    """
+    """Logger that initializes only when first used."""
 
     def __init__(self, name: str, level: int | None = None):
-        """Initialize LazyLogger.
-
-        Args:
-            name: Logger name.
-            level: Optional logging level, defaults to LOGGING_LEVEL_ED env var.
-        """
         self._name = name
-        self._level = level or _LOGGING_LEVELS[os.getenv("LOGGING_LEVEL_ED", "INFO")]
+        self._level = level or _LOGGING_LEVELS.get(os.getenv("LOGGING_LEVEL_ED", "INFO"), logging.INFO)
         self._logger: logging.Logger | None = None
 
     def _ensure_initialized(self) -> None:
@@ -187,27 +136,24 @@ class LazyLogger:
             except Exception:
                 pass
         else:
+            # Best-effort: check jax.process_index if available without importing globally
             try:
-                if jax.process_index() > 0:
+                import jax as _jax  # type: ignore
+                if _jax.process_index() > 0:
                     self._level = logging.WARNING
             except Exception:
-                # Avoid initializing JAX backends in processes where TPU is unavailable
                 pass
 
         logger = logging.getLogger(self._name)
         logger.propagate = False
-
-        # Set the logging level
         logger.setLevel(self._level)
 
-        # Create a console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(self._level)
-
-        # Use our custom color formatter
-        formatter = ColorFormatter()
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
+        console_handler.setFormatter(ColorFormatter())
+        # Avoid duplicate handlers when reusing the same logger name
+        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+            logger.addHandler(console_handler)
 
         self._logger = logger
 
@@ -217,7 +163,7 @@ class LazyLogger:
             @wraps(getattr(logging.Logger, name))
             def wrapped_log_method(*args: tp.Any, **kwargs: tp.Any) -> tp.Any:
                 self._ensure_initialized()
-                return getattr(self._logger, name)(*args, **kwargs)
+                return getattr(self._logger, name)(*args, **kwargs)  # type: ignore[arg-type]
 
             return wrapped_log_method
         raise AttributeError(f"'LazyLogger' object has no attribute '{name}'")
@@ -227,38 +173,23 @@ def get_logger(
     name: str,
     level: int | None = None,
 ) -> LazyLogger:
-    """Create a lazy logger that only initializes when first used.
-
-    Args:
-        name: The name of the logger.
-        level: The logging level. Defaults to environment
-            variable LOGGING_LEVEL_ED or "INFO".
-
-    Returns:
-        A lazy logger instance that initializes on first use.
-
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Process started")
-        >>> logger.debug("Debug information")
-    """
+    """Create a lazy logger that only initializes when first used."""
     return LazyLogger(name, level)
 
 
 def set_loggers_level(level: int = logging.WARNING):
-    """Set the logging level of all loggers globally.
-
-    Args:
-        level: The logging level to set. Defaults to logging.WARNING.
-
-    Example:
-        >>> import logging
-        >>> set_loggers_level(logging.DEBUG)  # Enable debug logging
-        >>> set_loggers_level(logging.ERROR)  # Only show errors
-    """
+    """Set the logging level of all loggers globally."""
     logging.root.setLevel(level)
     for handler in logging.root.handlers:
         handler.setLevel(level)
+
+if tp.TYPE_CHECKING:
+    from flax.metrics.tensorboard import SummaryWriter
+try:
+    import wandb  # type: ignore
+except ModuleNotFoundError:
+    wandb = None
+
 logger = get_logger(__name__)
 
 
