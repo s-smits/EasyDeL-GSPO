@@ -96,40 +96,17 @@ if _check_bool_flag("EASYDEL_AUTO", True):
         _os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 if _check_bool_flag("AUTO_INIT_JAX", True):
-    # Avoid initializing JAX distributed in worker subprocesses (e.g., Grain, pytest-xdist)
     import multiprocessing as _mp
     import jax
 
-    def _is_main_process() -> bool:
-        try:
-            return _mp.current_process().name == "MainProcess"
-        except Exception:
-            return True
-
-    def _in_worker_like_env() -> bool:
-        try:
-            env = _os.environ
-            # Heuristics: presence of common worker envs
-            if env.get("PYTEST_XDIST_WORKER") is not None:
-                return True
-            # Any Grain-related env markers
-            for _k in env.keys():
-                if _k.startswith("GRAIN_") or _k.startswith("PYGRAIN"):
-                    return True
-        except Exception:
-            ...
-        return False
-
-    if _is_main_process() and not _in_worker_like_env():
-        try:
+    try:
+        # Only initialize in the main process to avoid worker subprocess reincarnation issues
+        if _mp.current_process().name == "MainProcess":
             jax.distributed.initialize()
-        except RuntimeError:
-            _logger.warn(
-                "Failed to initialize jax-dist if you have initialized that manually you can ignore this warning"
-            )
-        except Exception:
-            # Single-process or already initialized
-            pass
+    except RuntimeError:
+        _logger.warn("Failed to initialize jax-dist if you have initialized that manually you can ignore this warning")
+    except Exception:  # maybe it's a single process
+        pass
 _import_structure = {
     "utils": [
         "ejit",
