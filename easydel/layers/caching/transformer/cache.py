@@ -310,12 +310,46 @@ class TransformerCacheView(BaseCacheView):
             if causal_mask.shape[0] != query.shape[0]:
                 causal_mask = jnp.broadcast_to(causal_mask, (query.shape[0], *causal_mask.shape[1:]))
 
+            # Ensure the provided causal_mask has enough key length to slice.
+            # If it's shorter than required, rebuild a fresh mask with correct kv length.
+            def _ensure_causal_mask_shape(mask: cx.Array) -> cx.Array:
+                expected_kv = self.maximum_sequence_length
+                cur_q = num_updated_cache_vectors
+                # mask shape is expected [1, 1, q_len, kv_len] or [B, H, q_len, kv_len]
+                kv_len = mask.shape[-1]
+                q_len = mask.shape[-2]
+                # If kv_len is too small, recreate with correct size
+                def _rebuild():
+                    from easydel.infra.base_config import EasyDeLBaseConfig
+                    # Build a lower-triangular causal mask of shape [1,1,q_len,expected_kv]
+                    # Always allow attention up to existing positions
+                    q = cur_q
+                    kv = expected_kv
+                    base = jnp.arange(q)[:, None]
+                    cols = jnp.arange(kv)[None, :]
+                    rebuilt = (cols <= base).astype("b1")[None, None, :, :]
+                    # Broadcast batch/heads if needed
+                    if mask.ndim == 4 and mask.shape[0] > 1:
+                        rebuilt = jnp.broadcast_to(rebuilt, (mask.shape[0], 1, q, kv))
+                    if mask.ndim == 4 and mask.shape[1] > 1:
+                        rebuilt = jnp.broadcast_to(rebuilt, (rebuilt.shape[0], mask.shape[1], q, kv))
+                    return rebuilt
+
+                return lax.cond(kv_len < expected_kv, _rebuild, lambda: mask)
+
+            causal_mask = _ensure_causal_mask_shape(causal_mask)
+
             @partial(jax.vmap, in_axes=(0, 0), out_axes=0)
             def _mask_slice(mask, slot):
+                # Clamp slice size by available kv length to avoid out-of-range
+                kv_len = mask.shape[-1]
+                q_len = mask.shape[-2]
+                q_take = jnp.minimum(num_updated_cache_vectors, q_len)
+                kv_take = jnp.minimum(self.maximum_sequence_length, kv_len)
                 return lax.dynamic_slice(
                     mask,
                     (0, slot, 0),
-                    (1, num_updated_cache_vectors, self.maximum_sequence_length),
+                    (1, q_take, kv_take),
                 )
 
             causal_mask = _mask_slice(causal_mask, self.indexs)
