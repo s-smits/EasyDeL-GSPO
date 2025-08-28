@@ -103,7 +103,7 @@ if _check_bool_flag("AUTO_INIT_JAX", True):
     except RuntimeError:
         _logger.warn("Failed to initialize jax-dist if you have initialized that manually you can ignore this warning")
     except Exception:  # maybe it's a single process
-        ...
+        pass
 _import_structure = {
     "utils": [
         "ejit",
@@ -766,8 +766,8 @@ else:
     from eformer import __version__ as _eform_version
 
     assert _version(_eform_version) in [_version(_targeted_version) for _targeted_version in _targeted_versions], (
-        f"this version of EasyDeL is only compatible with eformer {', '.join(_targeted_versions)},"
-        f" but found eformer {_eform_version}"
+        "this version of EasyDeL is only compatible with eformer " + ', '.join(_targeted_versions) + ", "
+        "but found eformer " + _eform_version
     )
 
     if not _is_package_available("torch"):
