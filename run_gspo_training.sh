@@ -38,7 +38,20 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-python -u easydel/scripts/finetune/gsm8k_math_gspo.py \
+PY_BIN="${PY_BIN:-${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}python3}" # prefer venv python, else python3
+if [ -x "$VIRTUAL_ENV/bin/python" ]; then
+  PY_BIN="$VIRTUAL_ENV/bin/python"
+elif command -v python3.11 >/dev/null 2>&1; then
+  PY_BIN="$(command -v python3.11)"
+elif command -v python3.10 >/dev/null 2>&1; then
+  PY_BIN="$(command -v python3.10)"
+elif command -v python3 >/dev/null 2>&1; then
+  PY_BIN="$(command -v python3)"
+fi
+
+echo "Using interpreter: ${PY_BIN} ($($PY_BIN --version 2>&1))"
+
+$PY_BIN -u easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
