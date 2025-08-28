@@ -304,3 +304,4 @@ Verdict: Functionally correct. Minor: could add explicit ref_model_sync_steps to
 - Validate hardware configuration matches the strict new requirements
 
 [2025-08-28T[2025-08-28T00:08:52Z] Debug hardening: fixed unsafe isinstance unions; added np.ndarray acceptance in histogram logging; sys import fix in training script; identified strict DP/TP assertions as secondary risk.
+[fix] Import TrainerOutput properly in grpo_trainer to resolve pyright error; confirm advantages are computed and logged post-GFPO filtering (zeros reflect early-phase equal rewards).

@@ -69,6 +69,7 @@ from ._jit_utils import compile_step_pair
 from ..prompt_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, maybe_extract_prompt
 from ..trainer.trainer import Trainer
 from ..trainer_protocol import TrainerConfigureFunctionOutput, MetricsTracker, StepMetrics
+from ..trainer.modeling_output import TrainerOutput
 from ..training_configurations import MetricsType
 from ._fn import get_per_token_logps, grpo_step
 from .grpo_config import GRPOConfig
