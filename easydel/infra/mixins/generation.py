@@ -456,6 +456,10 @@ class EasyGenerationMixin:
                 This dictionary is then passed through `prepare_inputs_for_call`.
         """
         batch_size, seq_length = input_ids.shape
+        # Clamp requested max_length against mask capacity to avoid cache/mask mismatch
+        mask_cap = getattr(self.config, "granted_mask_max_position_embedding", None)
+        if mask_cap is not None:
+            max_length = int(min(int(max_length), int(mask_cap)))
         if starts is None:
             if attention_mask is not None:
                 starts = self.compute_prefill_length_from_mask(attention_mask)
@@ -473,10 +477,12 @@ class EasyGenerationMixin:
         if attention_mask is not None:
             if attention_mask.dtype != jnp.bool:
                 attention_mask = attention_mask.astype("b1")
-            position_ids = attention_mask.cumsum(axis=-1) - 1
+            # Ensure we don't write past the allocated max_length
+            attn_to_write = attention_mask[..., :max_length]
+            position_ids = attn_to_write.cumsum(axis=-1) - 1
             extended_attention_mask = lax.dynamic_update_slice(
                 extended_attention_mask,
-                attention_mask,
+                attn_to_write,
                 (0, 0),
             )
         else:
@@ -484,7 +490,7 @@ class EasyGenerationMixin:
         if token_type_ids is not None:
             token_type_ids = lax.dynamic_update_slice(
                 jnp.zeros((batch_size, max_length), dtype="i4"),
-                token_type_ids,
+                token_type_ids[..., :max_length],
                 (0, 0),
             )
             token_type_ids = jax.device_put(token_type_ids, device=sharding)
