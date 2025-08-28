@@ -18,8 +18,7 @@ export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git config pull.rebase true 2>/dev/null || true
-git pull origin working --rebase || true
+git pull origin working || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -39,11 +38,11 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
-  --num_return_sequences 2 \
-  --rollout_chunk_size 2 \
+  --num_return_sequences 8 \
+  --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 4096 \
+  --max_completion_length 5120 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
