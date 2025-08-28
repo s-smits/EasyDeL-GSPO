@@ -34,6 +34,7 @@ import numpy as np
 from eformer.loggings import get_logger
 from eformer.optimizers import OptimizerFactory, SchedulerConfig
 from eformer.paths import ePath, ePathLike
+from eformer.paths import ePath as EasyPath, ePathLike as EasyPathLike
 from eformer.pytree import auto_pytree
 from jax.sharding import PartitionSpec
 
@@ -64,12 +65,12 @@ else:
     Array, Tensor = [tp.Any] * 2
 
 
-MetricsType = dict[str, float | list | tuple | np.ndarray | Array | Tensor]
+MetricsType = dict[str, tp.Union[float, list] | tp.Union[tuple, np.ndarray] | tp.Union[Array, Tensor]]
 logger = get_logger(__name__)
 
 
 def get_safe_arr(xs):
-    if isinstance(xs, np.generic | jax.Array):
+    if isinstance(xs, np.tp.Union[generic, jax.Array]):
         if xs.size == 1:  # Only try .item() on size-1 arrays
             return xs.item()
         return xs
@@ -81,7 +82,7 @@ AVAILABLE_BACKENDS: list[str] = ["cpu", "gpu", "tpu", None]
 
 
 # --- Safe JAX helpers to avoid initializing TPU in child processes ---
-def _safe_int_from_env(var_name: str, default: int | None) -> int | None:
+def _safe_int_from_env(var_name: str, default: tp.Union[int, None]) -> tp.Union[int, None]:
     val = os.getenv(var_name)
     if val is None:
         return default
@@ -135,23 +136,23 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Whether to enable the auxiliary loss."},
     )
-    backend: str | None = field(
+    backend: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "The JAX backend to use (e.g., 'cpu', 'gpu', 'tpu').  If None, JAX will choose."},
     )
-    clip_grad: float | None = field(
+    clip_grad: tp.Union[float, None] = field(
         default=None,
         metadata={"help": "The value at which to clip the gradients."},
     )
-    custom_scheduler: tp.Callable[[int], tp.Any] | None = field(
+    custom_scheduler: tp.Union[tp.Callable[[int], tp.Any], None] = field(
         default=None,
         metadata={"help": "A custom scheduler function that takes the current step as input."},
     )
-    dataloader_num_workers: int | None = field(
+    dataloader_num_workers: tp.Union[int, None] = field(
         default=0,
         metadata={"help": "The number of workers to use for the dataloader."},
     )
-    dataloader_pin_memory: bool | None = field(
+    dataloader_pin_memory: tp.Union[bool, None] = field(
         default=False,
         metadata={"help": "Whether to pin memory for the dataloader."},
     )
@@ -167,11 +168,11 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to run training."},
     )
-    eval_batch_size: int | None = field(
+    eval_batch_size: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The batch size to use for evaluation."},
     )
-    evaluation_steps: int | None = field(
+    evaluation_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "Run evaluation every X steps."},
     )
@@ -179,15 +180,15 @@ class TrainingArguments:
         default_factory=dict,
         metadata={"help": "Additional keyword arguments to pass to the optimizer."},
     )
-    frozen_parameters: str | None = field(
+    frozen_parameters: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "A regex pattern of parameters to freeze (not train)."},
     )
-    grain_shard_index: int | None = field(
+    grain_shard_index: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "sharding index to be used for grain dataloaders in both train and eval steps. If None, auto-detects from jax.process_index()."},
     )
-    grain_shard_count: int | None = field(
+    grain_shard_count: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "sharding count to be used for grain dataloaders in both train and eval steps. If None, auto-detects from jax.process_count()."},
     )
@@ -195,7 +196,7 @@ class TrainingArguments:
         default=1,
         metadata={"help": "The number of steps to accumulate gradients over."},
     )
-    ids_to_pop_from_dataset: list[str] | None = field(
+    ids_to_pop_from_dataset: tp.Union[list[str], None] = field(
         default_factory=list,
         metadata={"help": "A list of dataset columns to remove before training."},
     )
@@ -207,7 +208,7 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to initialize the training state."},
     )
-    jax_distributed_config: dict | None = field(
+    jax_distributed_config: tp.Union[dict, None] = field(
         default=None,
         metadata={"help": "Configuration for JAX distributed training."},
     )
@@ -215,7 +216,7 @@ class TrainingArguments:
         default=5e-5,
         metadata={"help": "The learning rate."},
     )
-    learning_rate_end: float | None = field(
+    learning_rate_end: tp.Union[float, None] = field(
         default=None,
         metadata={"help": "The final learning rate for linear decay schedulers."},
     )
@@ -265,7 +266,7 @@ class TrainingArguments:
             "help": "If True, filter duplicate prompts in each batch to ensure training quality."
         },
     )
-    loss_config: LossConfig | None = field(
+    loss_config: tp.Union[LossConfig, None] = field(
         default=None,
         metadata={"help": "Configuration for the loss function."},
     )
@@ -273,35 +274,35 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to try to minimize memory usage."},
     )
-    max_evaluation_steps: int | None = field(
+    max_evaluation_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "Maximum number of evaluation steps."},
     )
-    max_sequence_length: int | None = field(
+    max_sequence_length: tp.Union[int, None] = field(
         default=4096,
         metadata={"help": "The maximum sequence length."},
     )
-    max_training_steps: int | None = field(
+    max_training_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The maximum number of training steps."},
     )
-    per_epoch_training_steps: int | None = field(
+    per_epoch_training_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The maximum number of training step per each epoch."},
     )
-    per_epoch_evaluation_steps: int | None = field(
+    per_epoch_evaluation_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The maximum number of evaluation step per each epoch."},
     )
-    model_name: str | None = field(
+    model_name: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "The name of the model."},
     )
-    model_parameters: dict | None = field(
+    model_parameters: tp.Union[dict, None] = field(
         default=None,
         metadata={"help": "Model architecture config"},
     )
-    metrics_to_show_in_rich_pbar: list[str] | None = field(
+    metrics_to_show_in_rich_pbar: tp.Union[list[str], None] = field(
         default=None,
         metadata={"help": "Metrics to display in the rich progress bar."},
     )
@@ -361,11 +362,11 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Whether to save the optimizer state along with the model."},
     )
-    save_steps: int | None = field(
+    save_steps: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "Save a checkpoint every X steps."},
     )
-    save_total_limit: int | None = field(
+    save_total_limit: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The maximum number of checkpoints to keep."},
     )
@@ -385,7 +386,7 @@ class TrainingArguments:
         default="bcoo",
         metadata={"help": "The type of sparse module to use."},
     )
-    state_apply_fn_kwarguments_to_model: dict | None = field(
+    state_apply_fn_kwarguments_to_model: tp.Union[dict, None] = field(
         default=None,
         metadata={"help": "Keyword arguments to pass to the state apply function."},
     )
@@ -393,7 +394,7 @@ class TrainingArguments:
         default=PartitionSpec(("dp", "fsdp"), "sp"),
         metadata={"help": "The partition specification for the training step."},
     )
-    step_start_point: int | None = field(
+    step_start_point: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "The step to start training from (for resuming)."},
     )
@@ -405,7 +406,7 @@ class TrainingArguments:
         default=32,
         metadata={"help": "The total batch size."},
     )
-    training_time_limit: str | None = field(
+    training_time_limit: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "The maximum training time (e.g., '1d', '2h30m')."},
     )
@@ -413,7 +414,7 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to train on the input data."},
     )
-    trainer_prefix: str | None = field(
+    trainer_prefix: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "default prefix name for trainer."},
     )
@@ -421,13 +422,13 @@ class TrainingArguments:
         default="keep_end",
         metadata={"help": "The truncation mode to use."},
     )
-    tx_mu_dtype: jnp.dtype | None = field(
+    tx_mu_dtype: tp.Union[jnp.dtype, None] = field(
         default=None,
         metadata={"help": "The dtype to use for the `tx.mu` variable."},
     )
-    track_memory: bool | float = field(
-        default=False,
-        metadata={"help": "Whether to track memory usage. If a float, it sets the memory tracking interval in seconds."},
+    track_memory: float = field(
+        default=0.0,
+        metadata={"help": "Memory tracking interval in seconds. Use 0.0 to disable, positive values enable with that interval."},
     )
     use_data_collactor: bool = field(
         default=True,
@@ -445,20 +446,20 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to print verbose output."},
     )
-    wandb_entity: str | None = field(
+    wandb_entity: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "The Weights & Biases entity."},
     )
-    wandb_project: str | None = field(
+    wandb_project: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "Optional Weights & Biases project name. If unset, defaults to EasyDeL-<trainer_prefix>-<model_name>."},
     )
-    wandb_name: str | None = field(
+    wandb_name: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "The Weights & Biases run name."},
     )
     # --- Hugging Face Hub integration ---
-    hub_repo_id: str | None = field(
+    hub_repo_id: tp.Union[str, None] = field(
         default=None,
         metadata={"help": "Hugging Face Hub repository id to upload checkpoints to. If None, uses model_name."},
     )
@@ -466,7 +467,7 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Create/upload to a private repository on Hugging Face Hub."},
     )
-    push_checkpoints_to_hub: bool | None = field(
+    push_checkpoints_to_hub: tp.Union[bool, None] = field(
         default=None,
         metadata={"help": "If True, upload every checkpoint to Hugging Face Hub. If None, auto-enable when HF_TOKEN is set."},
     )
@@ -478,7 +479,7 @@ class TrainingArguments:
         default="checkpoints",
         metadata={"help": "Path prefix inside the HF repo where checkpoints are uploaded."},
     )
-    hub_keep_n_checkpoints: int | None = field(
+    hub_keep_n_checkpoints: tp.Union[int, None] = field(
         default=None,
         metadata={"help": "If set, keep only the most recent N checkpoints in the remote HF repo (best-effort)."},
     )
@@ -503,7 +504,7 @@ class TrainingArguments:
         metadata={"help": "log weight distribution every X steps."},
     )
 
-    _can_log_metrics: bool | None = None
+    _can_log_metrics: tp.Union[bool, None] = None
 
     @property
     def can_log_metrics(self):
@@ -522,7 +523,7 @@ class TrainingArguments:
         return jax.devices(self.offload_device_type)[self.offload_device_index]
 
     @property
-    def training_time_seconds(self) -> int | None:
+    def training_time_seconds(self) -> tp.Union[int, None]:
         if self.training_time_limit is None:
             return None
         return self._time_to_seconds(self.training_time_limit)
@@ -702,7 +703,7 @@ class TrainingArguments:
             path = self.get_path()
             path.mkdir(parents=True, exist_ok=True)
 
-    def get_optimizer_and_scheduler(self, steps: int | None = None):
+    def get_optimizer_and_scheduler(self, steps: tp.Union[int, None] = None):
         """
         Returns the configured optimizer and learning rate scheduler.
 
@@ -763,7 +764,7 @@ class TrainingArguments:
             return None
         return SummaryWriter(log_dir=str(path))
 
-    def get_tensorboard(self) -> SummaryWriter | None:
+    def get_tensorboard(self) -> tp.Union[SummaryWriter, None]:
         """
         Returns the TensorBoard SummaryWriter, used for logging metrics.
 
@@ -922,7 +923,7 @@ class TrainingArguments:
                     try:
                         if isinstance(value, tuple) and len(value) == 2:
                             bin_counts, bin_edges = value
-                            if isinstance(bin_counts, list | jax.Array) and isinstance(bin_edges, list | jax.Array):
+                            if isinstance(bin_counts, tp.Union[list, jax.Array]) and isinstance(bin_edges, tp.Union[list, jax.Array]):
                                 bin_counts = np.array(bin_counts).reshape(-1)
                                 bin_edges = np.array(bin_edges).reshape(-1)
                                 np_histogram = (bin_counts, bin_edges)
@@ -932,7 +933,7 @@ class TrainingArguments:
 
                         wandb_metrics[key] = (
                             self._create_wandb_histogram(value)
-                            if isinstance(value, float | int | list | tuple | np.generic | jax.Array)
+                            if isinstance(value, tp.Union[float, int] | tp.Union[list, tuple] | np.tp.Union[generic, jax.Array])
                             else value
                         )
 
@@ -964,11 +965,11 @@ class TrainingArguments:
         if summary_writer is not None:
             for key, value in metrics.items():
                 try:
-                    if isinstance(value, float | int):
+                    if isinstance(value, tp.Union[float, int]):
                         summary_writer.scalar(key, value, step)
                     elif isinstance(value, tuple) and len(value) == 2:
                         bin_counts, bin_edges = value
-                        if isinstance(bin_counts, list | jax.Array) and isinstance(bin_edges, list | jax.Array):
+                        if isinstance(bin_counts, tp.Union[list, jax.Array]) and isinstance(bin_edges, tp.Union[list, jax.Array]):
                             bin_counts = np.array(bin_counts)
                             bin_edges = np.array(bin_edges)
                             values = []
@@ -979,7 +980,7 @@ class TrainingArguments:
 
                             if values:
                                 summary_writer.histogram(key, np.array(values), step)
-                    elif isinstance(value, list | np.ndarray | jnp.ndarray):
+                    elif isinstance(value, tp.Union[list, np.ndarray] | jnp.ndarray):
                         summary_writer.histogram(key, np.array(value), step)
                 except Exception as e:
                     warnings.warn(f"Failed to log metric {key} to TensorBoard: {e}", stacklevel=1)
@@ -997,7 +998,7 @@ class TrainingArguments:
             wandb.Histogram or None: A wandb.Histogram object if successful, None if an error occurs
         """
         try:
-            if isinstance(value, jax.Array | np.generic):
+            if isinstance(value, jax.tp.Union[Array, np.generic]):
                 value = np.array(jax.device_get(value))
                 if value.dtype in [np.bfloat16]:
                     value = value.astype(np.float32)
@@ -1009,7 +1010,7 @@ class TrainingArguments:
             return None
 
     @classmethod
-    def _dict_from_json_file(cls, json_file: str | os.PathLike):
+    def _dict_from_json_file(cls, json_file: tp.Union[str, os.PathLike]):
         return json.loads(ePath(json_file).read_text())
 
     def to_json_string(self) -> str:
@@ -1024,7 +1025,7 @@ class TrainingArguments:
         return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
 
     @classmethod
-    def load_arguments(cls, json_file: str | os.PathLike):
+    def load_arguments(cls, json_file: tp.Union[str, os.PathLike]):
         """
         Instantiates a [`PretrainedConfig`] from the path to a JSON file of parameters.
 
@@ -1049,7 +1050,7 @@ class TrainingArguments:
             assert cls is not None, "We couldn't clearify the trainer config class from provided json."
         return cls(**config_dict)
 
-    def save_arguments(self, json_file_path: str | os.PathLike | ePathLike):
+    def save_arguments(self, json_file_path: tp.Union[str, os.PathLike] | ePathLike):
         """
         Save this instance to a JSON file.
 
@@ -1059,7 +1060,7 @@ class TrainingArguments:
         """
         ePath(json_file_path).write_text(self.to_json_string())
 
-    def _get_save_directory(self, create: bool = True) -> EasyPathLike | None:
+    def _get_save_directory(self, create: bool = True) -> tp.Union[EasyPathLike, None]:
         if self.process_zero_is_admin and not self.is_process_zero:
             return None
         if create:
