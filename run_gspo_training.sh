@@ -20,6 +20,8 @@ export GRAIN_DISABLE_FORK=1
 export GRAIN_USE_SUBPROCESS=0
 export GRAIN_WORKER_COUNT=1
 export AUTO_INIT_JAX=0
+export JAX_PROCESS_COUNT=${JAX_PROCESS_COUNT:-1}
+export JAX_PROCESS_INDEX=${JAX_PROCESS_INDEX:-0}
 
 # Pull latest changes and install
 echo "Setting up environment..."
