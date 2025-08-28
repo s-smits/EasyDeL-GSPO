@@ -21,21 +21,24 @@ fi
 } >"${REPORT}"
 
 # Commit range: everything on gfspo-wshrink that is not reachable from current HEAD
-COMMITS=$(git rev-list --reverse HEAD..origin/gfspo-wshrink || true)
+# Exclude merge commits and upstream leveling commits by subject.
+SKIP_RE=${SKIP_RE:-"merge upstream|upstream/main|upstream main|rebase|integrate best-of-both|adopt upstream|upstream perf|merge remote-tracking|merge pull|merge branch"}
+COMMIT_LINES=$(git log --no-merges --reverse --format='%H	%s' HEAD..origin/gfspo-wshrink || true)
+FILTERED_SHAS=$(printf "%s\n" "${COMMIT_LINES}" | awk -F '\t' -v re="$SKIP_RE" -v IGNORECASE=1 'NF>=1 { if ($2 !~ re) print $1 }')
 
-COUNT=$(printf "%s\n" "${COMMITS}" | sed '/^$/d' | wc -l || true)
-echo "Total commits: ${COUNT}" | tee -a "${REPORT}"
-
-printf "\n" >>"${REPORT}"
+COUNT=$(printf "%s\n" "${FILTERED_SHAS}" | sed '/^$/d' | wc -l || true)
+echo "Total commits: ${COUNT}" 1>&2
+printf "Total commits: %s\n\n" "${COUNT}" >>"${REPORT}"
 
 if [[ "${COUNT}" -eq 0 ]]; then
-  echo "No commits to analyze." | tee -a "${REPORT}"
+  echo "No commits to analyze." 1>&2
+  echo "No commits to analyze." >>"${REPORT}"
   echo "${REPORT}"
   exit 0
 fi
 
 idx=0
-printf "%s\n" "${COMMITS}" | sed '/^$/d' | while IFS= read -r SHA; do
+printf "%s\n" "${FILTERED_SHAS}" | sed '/^$/d' | while IFS= read -r SHA; do
   idx=$((idx+1))
   SUBJECT=$(git show -s --format=%s "${SHA}")
   AUTHOR=$(git show -s --format=%an "${SHA}")
