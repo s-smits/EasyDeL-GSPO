@@ -23,6 +23,14 @@ export AUTO_INIT_JAX=0
 export JAX_PROCESS_COUNT=${JAX_PROCESS_COUNT:-1}
 export JAX_PROCESS_INDEX=${JAX_PROCESS_INDEX:-0}
 
+# Normalize envs that may be set to string 'None' by upstream tools
+if [ "${JAX_PROCESS_COUNT:-}" = "None" ] || [ -z "${JAX_PROCESS_COUNT:-}" ]; then
+  export JAX_PROCESS_COUNT=1
+fi
+if [ "${JAX_PROCESS_INDEX:-}" = "None" ] || [ -z "${JAX_PROCESS_INDEX:-}" ]; then
+  export JAX_PROCESS_INDEX=0
+fi
+
 # Pull latest changes and install
 echo "Setting up environment..."
 git pull origin working
