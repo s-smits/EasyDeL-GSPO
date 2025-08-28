@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import re
 from dataclasses import field
 import os
@@ -11,7 +12,7 @@ from easydel.utils.safe_ops import safe_call
 
 import easydel as ed
 from easydel.infra.factory import registry
-from easydel.modules import *  # noqa: F401,F403 — ensure kernels are registered
+from easydel.modules import *  # noqa: F401,F403 - ensure kernels are registered
 
 
 @auto_pytree
@@ -205,7 +206,7 @@ def main():
         return ds_train_m, ds_test_m
 
     def build_math():
-        # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
+        # Hendrycks MATH - problems include LaTeX; solutions contain \\boxed{...}
         rate = float(runtime.dataset_use_pct)
         pct = _normalize_pct(rate)
         train_split = "train" if pct >= 100 else f"train[:{pct}%]"
