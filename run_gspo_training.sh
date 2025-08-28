@@ -18,22 +18,11 @@ export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin main 2>/dev/null || true
+git pull origin working || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
 # Navigate to project directory
-cd /home/air/EasyDeL-GSPO
-
-echo "Starting GSPO training with optimized configuration..."
-
-git pull origin math-only-improved || true
-uv pip install -e . --quiet
-uv pip install "math-verify[antlr4_13_2]" --quiet || true
-
-export JAX_PLATFORMS=tpu
-export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
-
 cd /home/air/EasyDeL-GSPO
 
 echo "Starting GSPO training with optimized configuration..."
@@ -45,19 +34,19 @@ echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
-  --repo_id "Qwen/Qwen3-0.6B" \
+  --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 2 \
   --num_return_sequences 2 \
-  --rollout_chunk_size 4 \
+  --rollout_chunk_size 2 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 5632 \
+  --max_completion_length 4096 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 8 \
+  --force_data_parallel 4 \
   --log_logprobs_metrics false \
   --log_global true \
   --log_steps 1 \
