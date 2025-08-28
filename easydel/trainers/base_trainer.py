@@ -43,11 +43,7 @@ from easydel.infra.base_config import EasyDeLBaseConfigDict
 from easydel.infra.base_module import EasyDeLBaseModule
 from easydel.infra.base_state import EasyDeLState
 from easydel.infra.errors import EasyDeLBreakRequest, EasyDeLTimerError
-from easydel.infra.etils import (
-    EasyDeLBackends,
-    EasyDeLPlatforms,
-    EasyDeLQuantizationMethods,
-)
+from easydel.infra.etils import EasyDeLBackends, EasyDeLPlatforms, EasyDeLQuantizationMethods
 from easydel.infra.factory import TaskType
 from easydel.infra.loss_utils import LossMetrics
 from easydel.infra.utils import CompilationTracker
@@ -65,13 +61,6 @@ from .trainer_protocol import (
 )
 from .training_configurations import MetricsType, TrainingArguments
 from .utils import CollateMapTransform, HFDataSource, ToNumpy
-from easydel.utils.hf_hub_utils import (
-    download_latest_checkpoint,
-    get_hf_token,
-    resolve_repo_id,
-    should_push_to_hub,
-    upload_checkpoint_folder,
-)
 
 try:
     import wandb  # type:ignore
@@ -114,35 +103,12 @@ class BaseTrainer(BaseTrainerProtocol):
         self.dataset_eval = dataset_eval
         self.data_collator = data_collator
         self.finetune = finetune
-        # If requested, resume from the latest HF checkpoint
-        try:
-            if getattr(self.arguments, "continue_from_hf", False):
-                token = get_hf_token(self.arguments.hub_token_env)
-                if token is not None:
-                    repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
-                    local_ckpt_dir = download_latest_checkpoint(
-                        repo_id=repo,
-                        token=token,
-                        path_in_repo_prefix=self.arguments.hub_path_in_repo_prefix,
-                        local_root=str(self.arguments._get_save_directory(create=True)),
-                    )
-                    if local_ckpt_dir is not None:
-                        logger.info(f"Resuming from HF checkpoint at {local_ckpt_dir}")
-                        self.model_state = EasyDeLState.load_state(load_directory=str(local_ckpt_dir))
-                        self._model = flax.nnx.eval_shape(lambda: self.model_state.model)
-                    else:
-                        logger.info("continue_from_hf requested but no remote checkpoint found; starting fresh.")
-                else:
-                    logger.info("continue_from_hf requested but no HF token available; starting fresh.")
-        except Exception as e:
-            logger.warning(f"Failed to resume from HF Hub: {e!s}. Proceeding without remote resume.")
         self._initialize_attributes()
         self.initialize_trainer_utils()
 
         if self.arguments.track_memory and self.arguments.track_memory > 0:
             self._initialize_memory_tracking()
 
-    @classmethod
     def load_trainer_state(
         cls,
         load_directory: str | os.PathLike,
@@ -358,7 +324,7 @@ class BaseTrainer(BaseTrainerProtocol):
         if not self.arguments.performance_mode:
             import easydel
 
-            interval = float(self.arguments.track_memory)
+            interval = 1.0 if self.arguments.track_memory is True else self.arguments.track_memory
             self.memory_monitor = easydel.utils.analyze_memory.SMPMemoryMonitor(interval)
 
     def __repr__(self):
@@ -373,29 +339,6 @@ class BaseTrainer(BaseTrainerProtocol):
                 wandb.finish()
             except Exception:
                 ...
-        # Best-effort dataloader cleanup to release shared-memory/semaphores
-        try:
-            dl_train = getattr(BaseTrainer, "dataloader_train", None)
-            if dl_train is None:
-                dl_train = getattr(self, "dataloader_train", None)  # type: ignore[name-defined]
-            if hasattr(dl_train, "close") and callable(getattr(dl_train, "close")):
-                try:
-                    dl_train.close()  # type: ignore[attr-defined]
-                except Exception:
-                    ...
-        except Exception:
-            ...
-        try:
-            dl_eval = getattr(BaseTrainer, "dataloader_eval", None)
-            if dl_eval is None:
-                dl_eval = getattr(self, "dataloader_eval", None)  # type: ignore[name-defined]
-            if hasattr(dl_eval, "close") and callable(getattr(dl_eval, "close")):
-                try:
-                    dl_eval.close()  # type: ignore[attr-defined]
-                except Exception:
-                    ...
-        except Exception:
-            ...
 
     def on_step_start(
         self,
@@ -616,56 +559,29 @@ class BaseTrainer(BaseTrainerProtocol):
                 batch_size = self.evaluation_batch_size
                 shuffle = False
                 num_epochs = 1
-            # Validate/normalize shard indices
+            # Normalize shard indices
             shard_index = int(self.arguments.grain_shard_index or 0)
             shard_count = int(self.arguments.grain_shard_count or 1)
-            if shard_count <= 0:
-                shard_count = 1
-            if shard_index < 0 or shard_index >= shard_count:
-                # Clamp and warn
-                old_idx = shard_index
-                shard_index = shard_index % shard_count
-                logger.warning(
-                    f"Adjusted invalid shard_index={old_idx} to {shard_index} within [0,{shard_count})"
-                )
             shard_options = grain.ShardOptions(
                 shard_index=shard_index,
                 shard_count=shard_count,
                 drop_remainder=True,
             )
-            
-            # Log dataset sharding configuration for multi-worker setups
-            if jax.process_count() > 1:
-                if jax.process_index() == 0:
-                    logger.info(
-                        f"Dataset sharding configured for {self.arguments.grain_shard_count} workers: "
-                        f"shard_index={self.arguments.grain_shard_index}, "
-                        f"shard_count={self.arguments.grain_shard_count}, "
-                        f"batch_size={'train' if is_train else 'eval'}={batch_size}"
-                    )
-                elif getattr(self.arguments, "log_all_workers", False):
-                    logger.info(
-                        f"Worker {jax.process_index()}: shard_index={self.arguments.grain_shard_index}, "
-                        f"shard_count={self.arguments.grain_shard_count}, "
-                        f"batch_size={'train' if is_train else 'eval'}={batch_size}"
-                    )
             from datasets import IterableDataset
 
             if isinstance(dataset, IterableDataset):
-                # Pre-shard streaming datasets to guarantee non-overlapping data across workers.
-                # This avoids redundant processing and potential OOM from duplicated work.
+                # Pre-shard streaming datasets to guarantee non-overlapping data across workers
                 if shard_count > 1:
                     try:
                         dataset = dataset.shard(num_shards=shard_count, index=shard_index)
                     except Exception as e:
                         logger.warning(
                             f"Failed to pre-shard IterableDataset (index={shard_index}, count={shard_count}): {e!s}. "
-                            "Proceeding without dataset-level shard; relying on Grain may duplicate streams."
+                            "Proceeding without dataset-level shard; Grain may duplicate streams."
                         )
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
-                # Use a consistent shuffle seed across processes to ensure identical shuffling
+                # Deterministic seed across processes; ensure positive for Grain when training
                 seed = int(self.arguments.shuffle_seed_train or 0) if is_train else 0
-                # Ensure positive seed for Grain when training
                 seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
@@ -674,23 +590,19 @@ class BaseTrainer(BaseTrainerProtocol):
                     num_epochs=num_epochs,
                     shuffle=shuffle,
                 )
-                # Verbose logging of data loading configuration per worker
+                # Verbose per-worker data loader configuration (helps multi-host debugging)
                 try:
-                    if jax.process_count() > 1:
-                        msg = (
-                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} "
-                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                    if jax.process_count() > 1 and (jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False)):
+                        logger.info(
+                            f"[DataLoader] p{jax.process_index()} IterableDataset seed={seed} shard=({shard_index}/{shard_count}) "
+                            f"shuffle={shuffle} epochs={num_epochs} batch_size={batch_size}"
                         )
-                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
-                            logger.info(msg)
                 except Exception:
                     pass
             else:
                 data_source = grain.MapDataset.source(dataset)
                 base_seed = self.arguments.shuffle_seed_train or 0
-                # Use the same base seed across processes to keep shuffling identical
                 seed = int(base_seed) if is_train else 0
-                # Ensure seed is at least 1 (grain requires positive integer)
                 seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
@@ -700,74 +612,13 @@ class BaseTrainer(BaseTrainerProtocol):
                     shuffle=shuffle,
                 )
                 try:
-                    if jax.process_count() > 1:
-                        msg = (
-                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} "
-                            f"shard=({shard_index}/{shard_count}) shuffle={shuffle} epochs={num_epochs}"
+                    if jax.process_count() > 1 and (jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False)):
+                        logger.info(
+                            f"[DataLoader] p{jax.process_index()} MapDataset seed={seed} shard=({shard_index}/{shard_count}) "
+                            f"shuffle={shuffle} epochs={num_epochs} batch_size={batch_size}"
                         )
-                        if jax.process_index() == 0 or getattr(self.arguments, "log_all_workers", False):
-                            logger.info(msg)
                 except Exception:
                     pass
-            # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
-            try:
-                num_records = int(len(data_source))
-            except Exception:
-                try:
-                    num_records = int(len(dataset))  # type: ignore[arg-type]
-                except Exception:
-                    num_records = 0
-            per_shard_base = num_records // max(1, shard_count)
-            remainder = num_records % max(1, shard_count)
-            per_shard_len = per_shard_base + (1 if shard_index < remainder else 0)
-            # IMPORTANT: Use uniform per_shard_base (not per_shard_len) to derive effective batch size,
-            # so all hosts choose the SAME batch size even when remainder differs.
-            base_eff = max(1, min(int(batch_size), int(per_shard_base)))
-            if base_eff < int(batch_size):
-                logger.warning(
-                    f"Batch size {int(batch_size)} reduced to {base_eff} for shard {shard_index}/{shard_count} "
-                    f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
-                )
-            # Align batch size to a multiple of per-host DP to satisfy pjit sharding requirements
-            # Compute dp_per_host from the model mesh: dp_global / process_count when divisible; else 1
-            try:
-                mesh_shape = getattr(self.model.mesh, "shape", {})
-                dp_global = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
-            except Exception:
-                dp_global = 1
-            try:
-                pc = int(jax.process_count())
-            except Exception:
-                pc = 1
-            if dp_global >= pc and (dp_global % max(1, pc) == 0):
-                dp_per_host = max(1, dp_global // max(1, pc))
-            else:
-                dp_per_host = 1
-            # Also ensure divisibility by gradient_accumulation_steps to avoid scan reshape mismatches
-            try:
-                gas = int(self.arguments.gradient_accumulation_steps or 1)
-            except Exception:
-                gas = 1
-            mult = max(1, int(dp_per_host)) * max(1, gas)
-            aligned_eff = (base_eff // mult) * mult
-            if aligned_eff == 0:
-                # Fallback: try DP-only alignment
-                aligned_eff = (base_eff // max(1, dp_per_host)) * max(1, dp_per_host)
-                if aligned_eff == 0:
-                    # Cannot form any DP-aligned batch on this shard; keep base_eff to let drop_remainder yield 0 steps
-                    effective_batch_size = base_eff
-                else:
-                    effective_batch_size = aligned_eff
-                logger.warning(
-                    f"Batch size not divisible by dp_per_host*GAS; relaxed to dp alignment only: base={base_eff} -> {effective_batch_size} "
-                    f"(dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
-                )
-            else:
-                effective_batch_size = aligned_eff
-                if effective_batch_size != base_eff:
-                    logger.warning(
-                        f"Batch size aligned to per-host DP * GAS: {base_eff} -> {effective_batch_size} (dp_per_host={dp_per_host}, gas={gas}, dp_global={dp_global}, processes={pc})"
-                    )
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,
                 truncation_mode=self.arguments.truncation_mode,
@@ -778,25 +629,20 @@ class BaseTrainer(BaseTrainerProtocol):
                 operations=[
                     ToNumpy(),
                     CollateMapTransform(collate_fn=collate_fn),
-                    grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
+                    grain.Batch(batch_size=batch_size, drop_remainder=True),
                 ],
-                worker_count=int(self.arguments.grain_worker_count),
-                worker_buffer_size=int(self.arguments.grain_worker_buffer_size),
-                read_options=grain.ReadOptions(
-                    num_threads=int(self.arguments.grain_read_threads),
-                    prefetch_buffer_size=int(self.arguments.grain_prefetch_buffer_size),
-                ),
+                worker_count=1,
+                worker_buffer_size=1,
+                read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=128),
             )
 
         def calculate_steps(dataset, is_train: bool) -> int:
-            """Estimate steps to align with Grain DataLoader behavior.
+            """Estimate steps to align with Grain DataLoader behavior and sharding.
 
-            Notes:
-            - DataLoader uses Batch(drop_remainder=True) and per-process sharding.
-            - Training batch size passed to Grain equals training_batch_size (includes gradient accumulation).
-            - Therefore, compute steps with FLOOR division on per-shard length.
+            - Uses Batch(drop_remainder=True) semantics
+            - Accounts for per-process sharding by using a uniform per-shard base length
             """
-            # 1) Determine dataset length
+            # 1) Determine dataset length or required steps for streaming
             if hasattr(dataset, "__len__"):
                 total_data_len = int(len(dataset))
             else:
@@ -805,35 +651,26 @@ class BaseTrainer(BaseTrainerProtocol):
                 )
                 if total_data_len is None:
                     raise ValueError(
-                        f"Specify the number of per epoch {'training' if is_train else 'evaluation'} "
-                        "steps for a generator/streaming dataset."
+                        f"Specify the number of per epoch {'training' if is_train else 'evaluation'} steps for a generator/streaming dataset."
                     )
 
-            # 2) Account for per-process sharding with a UNIFORM floor across all shards
-            #    Do NOT add the remainder for earlier shards here; that leads to different
-            #    steps_per_epoch on different workers and causes TPU multi-host divergence.
+            # 2) Uniform per-shard base length (ignore remainder differences across shards)
             shard_count = int(self.arguments.grain_shard_count or 1)
-            shard_index = int(self.arguments.grain_shard_index or 0)
             per_shard_len_base = total_data_len // max(1, shard_count)
 
-            # 3) Use the actual batch size each worker sees
-            try:
-                batch_size_val = int(self.training_batch_size if is_train else self.evaluation_batch_size)
-            except Exception:
-                batch_size_val = int(self.arguments.total_batch_size) if is_train else int(self.evaluation_batch_size)
-            batch_size = max(1, batch_size_val)
+            # 3) Effective batch size and floor semantics due to drop_remainder
+            batch_size = int(self.training_batch_size if is_train else self.evaluation_batch_size)
+            steps_per_epoch = per_shard_len_base // max(1, batch_size)
 
-            # 4) Grain drops remainder, so use floor.
-            #    Use the base per-shard length for a uniform step count across all workers.
-            steps_per_epoch = per_shard_len_base // batch_size
-            # Assertion: ensure at least one train step is possible per epoch on every worker
+            # 4) Fail fast if batch cannot fit per-host shard
             if is_train:
                 assert steps_per_epoch > 0, (
                     "Training batch size exceeds the smallest per-worker shard. "
                     f"batch_size={batch_size}, per_shard_len_base={per_shard_len_base}. "
-                    "Reduce --total_batch_size or increase dataset size to avoid idle workers."
+                    "Reduce --total_batch_size or increase dataset size."
                 )
-            num_epochs = self.arguments.num_train_epochs if is_train else 1
+
+            num_epochs = int(self.arguments.num_train_epochs if is_train else 1)
             num_steps = steps_per_epoch * num_epochs
 
             # 5) Respect optional max steps overrides
@@ -1075,22 +912,6 @@ class BaseTrainer(BaseTrainerProtocol):
             enable=self.is_enable,
         )
 
-        # Optionally upload to Hugging Face Hub
-        try:
-            token = get_hf_token(self.arguments.hub_token_env)
-            if should_push_to_hub(self.arguments.push_checkpoints_to_hub, token):
-                repo = resolve_repo_id(self.arguments.hub_repo_id, self.arguments.model_name)
-                upload_checkpoint_folder(
-                    local_ckpt_dir=directory_name,
-                    repo_id=repo,
-                    token=tp.cast(str, token),
-                    private=self.arguments.hub_private,
-                    path_in_repo_prefix=self.arguments.hub_path_in_repo_prefix,
-                    keep_n=self.arguments.hub_keep_n_checkpoints,
-                )
-        except Exception as e:
-            logger.warning(f"HF upload failed (ignored): {e!s}")
-
         return str(directory_name)
 
     def _get_current_step(self, state):
@@ -1138,7 +959,7 @@ class BaseTrainer(BaseTrainerProtocol):
                 if self.arguments.save_total_limit == 0:
                     _do_dele = checkpoint_files
                 else:
-                    _do_dele = checkpoint_files[: -int(self.arguments.save_total_limit)]
+                    _do_dele = checkpoint_files[: -self.arguments.save_total_limit]
                 for old_save_directory in _do_dele:
                     try:
                         _remove_directory_recursive(old_save_directory)
@@ -1301,10 +1122,10 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         save_directory: str | None = None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None = None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None = None,
         to_torch: bool = False,
-        easystate_to_huggingface_model_kwargs: dict[str, tp.Any] | None = None,
-        torch_save_pretrained_kwargs: dict[str, tp.Any] | None = None,
+        easystate_to_huggingface_model_kwargs: dict | None = None,
+        torch_save_pretrained_kwargs: dict | None = None,
     ):
         save_directory = save_directory or self.arguments.get_path()
         save_directory = ePath(save_directory)
@@ -1326,8 +1147,8 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         save_directory: str | os.PathLike,
-        easystate_to_huggingface_model_kwargs: dict[str, tp.Any] | None = None,
-        torch_save_pretrained_kwargs: dict[str, tp.Any] | None = None,
+        easystate_to_huggingface_model_kwargs: dict | None = None,
+        torch_save_pretrained_kwargs: dict | None = None,
     ):
         easystate_to_huggingface_model_kwargs = easystate_to_huggingface_model_kwargs or {}
         torch_save_pretrained_kwargs = torch_save_pretrained_kwargs or {}
@@ -1474,8 +1295,8 @@ class BaseTrainer(BaseTrainerProtocol):
         self,
         state: EasyDeLState,
         exception: Exception,
-        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
-        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[str, tp.Callable] | None,
+        shard_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
+        gather_fns: tp.Any | tp.Mapping[str, tp.Callable] | dict[tp.Callable] | None,
     ):
         """Handle training interruption gracefully."""
         if isinstance(exception, KeyboardInterrupt):
@@ -1519,7 +1340,7 @@ class BaseTrainer(BaseTrainerProtocol):
             batch = next(data_iter)
 
         # Remove specified ids from batch if needed
-        for id_to_pop in (self.arguments.ids_to_pop_from_dataset or []):
+        for id_to_pop in self.arguments.ids_to_pop_from_dataset:
             _ = batch.pop(id_to_pop, None)
 
         return batch, data_iter
@@ -1550,13 +1371,7 @@ class BaseTrainer(BaseTrainerProtocol):
             if hasattr(self, "_hidden_rich_pbar"):
                 progress = self._hidden_rich_pbar
             else:
-                from rich.progress import (
-                    BarColumn,
-                    Progress,
-                    SpinnerColumn,
-                    TextColumn,
-                    TimeRemainingColumn,
-                )
+                from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
                 from .trainer_protocol import MetricsColumn
 
@@ -1610,25 +1425,5 @@ class BaseTrainer(BaseTrainerProtocol):
             pbar.set_postfix(**display_metrics)
             update_size = 0 if step == 0 else self.arguments.log_steps
             pbar.update(update_size)
-        if step % self.arguments.report_steps == 0 and self.arguments.can_log_metrics:
-            # Minimal logging path; when log_logprobs_metrics is False, drop any logprob diagnostics
-            # We filter keys that are distribution/logprob heavy by prefix convention
-            if getattr(self.arguments, "log_logprobs_metrics", True):
-                self.arguments.log_metrics(metrics=metrics, step=step)
-            else:
-                filtered = {
-                    k: v
-                    for k, v in metrics.items()
-                    if not (
-                        k.startswith("dist/")
-                        or k.startswith("train/dist/")
-                        or k.startswith("eval/dist/")
-                        or "logprob" in k.lower()
-                        or "logp" in k.lower()
-                        or "log_ratio" in k.lower()
-                        or "per_token" in k.lower()
-                        or k.lower().endswith("_logps")
-                        or k.lower().startswith("ref_")
-                    )
-                }
-                self.arguments.log_metrics(metrics=filtered, step=step)
+        if step % self.arguments.report_steps == 0:
+            self.arguments.log_metrics(metrics=metrics, step=step)

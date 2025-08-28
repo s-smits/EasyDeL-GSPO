@@ -614,6 +614,137 @@ class GRPOTrainer(Trainer):
             "advantages": NamedSharding(mesh=mesh, spec=spec_1d),
         }
 
+    def create_grain_collect_function(
+        self,
+        max_sequence_length: int,
+        truncation_mode: tp.Literal["keep_end", "keep_start"],
+    ) -> tp.Callable:
+        """
+        Collate function for Grain that ensures numeric arrays are properly typed and
+        length-correct for GRPO pre-processing. Operates per-element (pre-Batch).
+
+        - Casts `input_ids` and `attention_mask` to np.int32
+        - Truncates or pads to `max_sequence_length` using left padding for prompts
+        - Preserves any auxiliary fields (e.g., answers) untouched
+        """
+
+        pad_id = int(self.pad_token_id)
+
+        def _truncate_or_pad(arr: np.ndarray, pad_value: int, keep_end: bool) -> np.ndarray:
+            if arr.ndim > 1:
+                arr = arr.reshape(-1)
+            L = arr.shape[0]
+            # Truncate
+            if L > max_sequence_length:
+                if keep_end:
+                    arr = arr[-max_sequence_length:]
+                else:
+                    arr = arr[:max_sequence_length]
+                return arr
+            # Pad (left for prompts)
+            if L < max_sequence_length:
+                pad_len = max_sequence_length - L
+                if keep_end:  # keep_end implies left-pad for prompts
+                    pad_block = np.full((pad_len,), pad_value, dtype=arr.dtype)
+                    arr = np.concatenate([pad_block, arr], axis=0)
+                else:  # keep_start -> right-pad
+                    pad_block = np.full((pad_len,), pad_value, dtype=arr.dtype)
+                    arr = np.concatenate([arr, pad_block], axis=0)
+            return arr
+
+        keep_end = truncation_mode == "keep_end"
+
+        def collate_fn(example: dict[str, tp.Any]) -> dict[str, tp.Any]:
+            out: dict[str, tp.Any] = {}
+            # Pass through unknown keys as-is; cast known numeric fields
+            for k, v in example.items():
+                if k in ("input_ids", "attention_mask"):
+                    try:
+                        arr = np.asarray(v, dtype=np.int32)
+                        if k == "input_ids":
+                            arr = _truncate_or_pad(arr, pad_value=pad_id, keep_end=keep_end)
+                        elif k == "attention_mask":
+                            # Attention mask pads with 0
+                            arr = _truncate_or_pad(arr, pad_value=0, keep_end=keep_end)
+                        out[k] = arr
+                    except Exception:
+                        # Fall back to raw value if conversion fails
+                        out[k] = v
+                else:
+                    out[k] = v
+            return out
+
+        return collate_fn
+
+    def create_tfds_collect_function(
+        self,
+        max_sequence_length: int,
+        truncation_mode: tp.Literal["keep_end", "keep_start"],
+    ) -> tp.Callable:
+        """
+        Collate function for TFDS path (HF Dataset -> tf.data) operating on a list of
+        feature dicts. Stacks and length-corrects `input_ids` and `attention_mask`.
+        Non-numeric keys are ignored for batching (kept out of the returned batch).
+        """
+
+        pad_id = int(self.pad_token_id)
+        keep_end = truncation_mode == "keep_end"
+
+        def _truncate_or_pad(arr: np.ndarray, pad_value: int) -> np.ndarray:
+            if arr.ndim > 1:
+                arr = arr.reshape(-1)
+            L = arr.shape[0]
+            if L > max_sequence_length:
+                return arr[-max_sequence_length:] if keep_end else arr[:max_sequence_length]
+            if L < max_sequence_length:
+                pad_len = max_sequence_length - L
+                pad_block = np.full((pad_len,), pad_value, dtype=arr.dtype)
+                return np.concatenate([pad_block, arr], axis=0) if keep_end else np.concatenate([arr, pad_block], axis=0)
+            return arr
+
+        def collate_fn(batch: list[dict[str, tp.Any]]) -> dict[str, tp.Any]:
+            results: dict[str, tp.Any] = {}
+
+            # Only handle numeric token fields for batching
+            ids = []
+            ams = []
+            for sample in batch:
+                try:
+                    ids_np = _truncate_or_pad(np.asarray(sample["input_ids"], dtype=np.int32), pad_value=pad_id)
+                    am_np = _truncate_or_pad(np.asarray(sample["attention_mask"], dtype=np.int32), pad_value=0)
+                    ids.append(ids_np)
+                    ams.append(am_np)
+                except Exception:
+                    # Skip samples that do not have the required keys
+                    continue
+            if len(ids) > 0:
+                results["input_ids"] = jnp.stack([jnp.asarray(x) for x in ids], axis=0)
+            if len(ams) > 0:
+                results["attention_mask"] = jnp.stack([jnp.asarray(x) for x in ams], axis=0)
+            return results
+
+        return collate_fn
+
+    def create_collect_function(
+        self,
+        max_sequence_length: int,
+        truncation_mode: tp.Literal["keep_end", "keep_start"],
+    ) -> tp.Callable:
+        """
+        Dispatch to Grain/TFDS collate depending on configuration.
+        """
+        return (
+            self.create_grain_collect_function(
+                max_sequence_length=max_sequence_length,
+                truncation_mode=truncation_mode,
+            )
+            if self.arguments.use_grain
+            else self.create_tfds_collect_function(
+                max_sequence_length=max_sequence_length,
+                truncation_mode=truncation_mode,
+            )
+        )
+
     def configure_functions(self) -> TrainerConfigureFunctionOutput:
         """
         Configures and JIT-compiles the training and evaluation step functions.
