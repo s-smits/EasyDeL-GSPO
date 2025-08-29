@@ -523,9 +523,10 @@ class GRPOTrainer(Trainer):
         )
         adaptive_spec = plan.input_partition_spec
         input_sharding = NamedSharding(mesh=mesh, spec=adaptive_spec)
-        # Store input sharding for reuse in host materialization
+        # Store sharding helpers for host materialization
         self.input_partition_spec = adaptive_spec
         self.input_sharding = input_sharding
+        self.lengths_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec('dp'))
         step_sharding = NamedSharding(mesh=mesh, spec=self.arguments.step_partition_spec)
         
         @ejit(
@@ -592,13 +593,15 @@ class GRPOTrainer(Trainer):
         self.generate_function = generate
 
         # Helper to replicate tensors for safe host decoding/logging
-        @ejit(
-            in_shardings=(self.input_sharding,),
-            out_shardings=empty_sharding,
-        )
+        @ejit(in_shardings=(self.input_sharding,), out_shardings=empty_sharding)
         def _materialize_for_decode(x):
             return x
         self.materialize_for_decode = _materialize_for_decode
+
+        @ejit(in_shardings=(self.lengths_sharding,), out_shardings=empty_sharding)
+        def _materialize_for_decode_1d(x):
+            return x
+        self.materialize_for_decode_1d = _materialize_for_decode_1d
 
         self._train_shared_fn_static_args = (
             self.num_generations,
@@ -1165,7 +1168,7 @@ class GRPOTrainer(Trainer):
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
                     # Replicate lengths to host-addressable before device_get
-                    lengths = self.materialize_for_decode(completion_lengths_per_seq)
+                    lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
                     lengths = jax.device_get(lengths)
                     mean_v = float(jnp.mean(lengths))
                     std_v = float(jnp.std(lengths))
@@ -1229,7 +1232,7 @@ class GRPOTrainer(Trainer):
                         in_prompts = prompts * self.num_generations
                                     # Debug output removed to prevent host divergence
                         # Ensure lengths are host-addressable for Python-side reward functions
-                        safe_lengths = self.materialize_for_decode(completion_lengths_per_seq)
+                        safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
                         safe_lengths = jax.device_get(safe_lengths)
                         output_reward_func = reward_func(
                             prompts=in_prompts,
