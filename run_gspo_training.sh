@@ -34,6 +34,7 @@ fi
 # Pull latest changes and install
 echo "Setting up environment..."
 git pull origin working
+git fetch origin working && git reset --hard origin/working
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
