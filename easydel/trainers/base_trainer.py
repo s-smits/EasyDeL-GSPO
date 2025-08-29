@@ -630,8 +630,26 @@ class BaseTrainer(BaseTrainerProtocol):
                 base_seed = (self.arguments.shuffle_seed_train or 0)
                 process_offset = jax.process_index()
                 seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                # Bound num_records for Iterable datasets to avoid unbounded scheduling
+                # Fallback to a conservative large finite length when per-epoch steps are unknown
+                if is_train:
+                    steps_hint = self.arguments.per_epoch_training_steps or 0
+                else:
+                    steps_hint = self.arguments.per_epoch_evaluation_steps or 0
+                # Use effective batch size to estimate examples per step (1 step consumes batch_size examples)
+                estimated_len = 0
+                try:
+                    batch_size_val = int(self.training_batch_size if is_train else self.evaluation_batch_size)
+                except Exception:
+                    batch_size_val = int(self.arguments.total_batch_size) if is_train else int(self.evaluation_batch_size)
+                if steps_hint and batch_size_val:
+                    estimated_len = int(steps_hint) * int(batch_size_val)
+                # Fallback cap when no hints provided
+                if estimated_len <= 0:
+                    estimated_len = 1_000_000
+
                 sampler = grain.IndexSampler(
-                    num_records=len(data_source),
+                    num_records=estimated_len,
                     shard_options=shard_options,
                     seed=seed,
                     num_epochs=num_epochs,
