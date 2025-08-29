@@ -81,7 +81,9 @@ def plan_adaptive_mesh(
     if num_devices is None:
         try:
             num_devices = jax.device_count()
-        except Exception:
+            print(f"DEBUG: adaptive_mesh.num_devices={num_devices}")
+        except Exception as e:
+            print(f"DEBUG: adaptive_mesh.num_devices fallback due to {e}")
             num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
 
     # Note: rollouts_per_step is passed through but not used in mesh planning
@@ -91,31 +93,40 @@ def plan_adaptive_mesh(
     # - Snap forced values to the nearest feasible divisors when possible
     # - Ensure dp * fsdp * tp == num_devices
     # - Keep dp <= total_batch_size
-    desired_tp = int(force_tensor_parallel) if force_tensor_parallel else 1
-    desired_tp = max(1, desired_tp)
-    if num_devices % desired_tp != 0:
-        # Snap TP down to largest divisor of num_devices not exceeding desired_tp
-        snapped_tp = _largest_divisor_not_exceeding(num_devices, desired_tp)
-        if snapped_tp != desired_tp:
-            logger.warning(
-                f"Snapping tp from {desired_tp} to feasible {snapped_tp} for num_devices={num_devices}"
-            )
-        desired_tp = snapped_tp
-    tp = desired_tp
+    try:
+        desired_tp = int(force_tensor_parallel) if force_tensor_parallel else 1
+        desired_tp = max(1, desired_tp)
+        if num_devices % desired_tp != 0:
+            snapped_tp = _largest_divisor_not_exceeding(num_devices, desired_tp)
+            if snapped_tp != desired_tp:
+                logger.warning(
+                    f"Snapping tp from {desired_tp} to feasible {snapped_tp} for num_devices={num_devices}"
+                )
+            desired_tp = snapped_tp
+        tp = desired_tp
+        print(f"DEBUG: adaptive_mesh.tp={tp}")
+    except Exception as e:
+        print(f"DEBUG: adaptive_mesh.tp failed: {e}")
+        tp = 1
 
     remaining_after_tp = max(1, num_devices // tp)
+    print(f"DEBUG: adaptive_mesh.remaining_after_tp={remaining_after_tp}")
 
     if force_data_parallel:
-        desired_dp = max(1, int(force_data_parallel))
-        # Respect only device feasibility after TP; do NOT cap by total_batch_size
-        desired_dp = min(desired_dp, remaining_after_tp)
-        # Snap DP to a divisor of remaining_after_tp if needed
-        dp = _largest_divisor_not_exceeding(remaining_after_tp, desired_dp)
-        if dp != desired_dp:
-            logger.warning(
-                f"Snapping dp from {desired_dp} to feasible {dp} for num_devices={num_devices}, tp={tp}"
-            )
-        fsdp = max(1, remaining_after_tp // dp)
+        try:
+            desired_dp = max(1, int(force_data_parallel))
+            desired_dp = min(desired_dp, remaining_after_tp)
+            dp = _largest_divisor_not_exceeding(remaining_after_tp, desired_dp)
+            if dp != desired_dp:
+                logger.warning(
+                    f"Snapping dp from {desired_dp} to feasible {dp} for num_devices={num_devices}, tp={tp}"
+                )
+            fsdp = max(1, remaining_after_tp // dp)
+            print(f"DEBUG: adaptive_mesh.forced dp={dp}, fsdp={fsdp}")
+        except Exception as e:
+            print(f"DEBUG: adaptive_mesh.dp failed: {e}")
+            dp = 1
+            fsdp = max(1, remaining_after_tp // dp)
     else:
         # Auto DP: prefer as large as possible up to batch size while dividing remaining_after_tp
         # If rollouts_per_step is provided, try to meet the target by increasing DP (within limits)
@@ -137,14 +148,24 @@ def plan_adaptive_mesh(
         step_batch_parts.append("dp")
     step_batch = None if not step_batch_parts else (step_batch_parts[0] if len(step_batch_parts) == 1 else tuple(step_batch_parts))
     step_seq = "tp" if tp > 1 else None
-    step_spec = PartitionSpec(step_batch, step_seq)
+    try:
+        step_spec = PartitionSpec(step_batch, step_seq)
+        print(f"DEBUG: adaptive_mesh.step_spec={step_spec}")
+    except Exception as e:
+        print(f"DEBUG: adaptive_mesh.step_spec failed: {e}")
+        step_spec = PartitionSpec(None, None)
 
     # Input spec: avoid TP; keep only DP on batch. Replicate across FSDP.
     in_batch_parts = []
     if dp > 1 and (total_batch_size % dp == 0):
         in_batch_parts.append("dp")
     in_batch = None if not in_batch_parts else (in_batch_parts[0] if len(in_batch_parts) == 1 else tuple(in_batch_parts))
-    in_spec = PartitionSpec(in_batch, None)
+    try:
+        in_spec = PartitionSpec(in_batch, None)
+        print(f"DEBUG: adaptive_mesh.input_spec={in_spec}")
+    except Exception as e:
+        print(f"DEBUG: adaptive_mesh.input_spec failed: {e}")
+        in_spec = PartitionSpec(None, None)
 
     # Warn if DP does not divide total_batch_size (layout will replicate batch over DP in that case)
     if dp > 1 and (total_batch_size % dp != 0):
@@ -156,6 +177,7 @@ def plan_adaptive_mesh(
     # Derived metadata
     total_workers = int(dp) * int(fsdp) * int(tp)
     data_parallel_workers = int(dp) * int(fsdp)
+    print(f"DEBUG: adaptive_mesh.final dp={dp}, fsdp={fsdp}, tp={tp}, total_workers={total_workers}")
     per_process_rollouts_capacity = int(total_batch_size) * max(1, int(num_return_sequences))
     global_rollouts_capacity = data_parallel_workers * per_process_rollouts_capacity
 

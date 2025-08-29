@@ -573,12 +573,18 @@ class GRPOTrainer(Trainer):
                     proc_offset = 0
                 prng_key = jax.random.fold_in(base_key, int(proc_offset))
 
-                sequences = module.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    generation_config=generation_config,
-                    prng_key=prng_key,
-                ).sequences
+                try:
+                    print("DEBUG: generate() starting")
+                    sequences = module.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        generation_config=generation_config,
+                        prng_key=prng_key,
+                    ).sequences
+                    print("DEBUG: generate() done")
+                except Exception as e:
+                    print(f"DEBUG: generate() failed: {e}")
+                    raise
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
@@ -639,10 +645,14 @@ class GRPOTrainer(Trainer):
         def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
             apply = flax.nnx.merge(graphdef, graphtree, graphother)
             with apply.mesh:
-                # Ensure token arrays conform to the step partitioning spec before compute
-                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
-                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
-                return get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+                try:
+                    ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+                    mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+                    out = get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+                    return out
+                except Exception as e:
+                    print(f"DEBUG: compute_refmodel_logps failed: {e}")
+                    raise
 
         # Allow input sharding of token ids and masks to pass through (we re-constrain inside the fn)
         # This avoids mismatches like: pjit expects replicated but arg is sharded as ('dp','tp')

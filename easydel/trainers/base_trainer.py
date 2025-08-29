@@ -436,7 +436,13 @@ class BaseTrainer(BaseTrainerProtocol):
                 else contextlib2.nullcontext()
             )
             with manager:
-                dataset_configurations = self.configure_dataloaders()
+                try:
+                    print("DEBUG: configure_dataloaders.start")
+                    dataset_configurations = self.configure_dataloaders()
+                    print("DEBUG: configure_dataloaders.end")
+                except Exception as e:
+                    print(f"DEBUG: configure_dataloaders.failed: {e}")
+                    raise
                 self.dataloader_train = dataset_configurations.dataloader_train
                 self.max_training_steps = dataset_configurations.max_training_steps
                 self.dataloader_eval = dataset_configurations.dataloader_eval
@@ -622,7 +628,12 @@ class BaseTrainer(BaseTrainerProtocol):
                         f"shard_count={self.arguments.grain_shard_count}, "
                         f"batch_size={'train' if is_train else 'eval'}={batch_size}"
                     )
-            from datasets import IterableDataset
+            try:
+                from datasets import IterableDataset
+                print("DEBUG: grain.setup IterableDataset import ok")
+            except Exception as e:
+                print(f"DEBUG: grain.setup IterableDataset import failed: {e}")
+                raise
 
             if isinstance(dataset, IterableDataset):
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
@@ -648,35 +659,71 @@ class BaseTrainer(BaseTrainerProtocol):
                 if estimated_len <= 0:
                     estimated_len = 1_000_000
 
-                sampler = grain.IndexSampler(
-                    num_records=estimated_len,
-                    shard_options=shard_options,
-                    seed=seed,
-                    num_epochs=num_epochs,
-                    shuffle=shuffle,
-                )
+                try:
+                    print(f"DEBUG: grain.iterable sampler estimated_len={estimated_len}")
+                    sampler = grain.IndexSampler(
+                        num_records=estimated_len,
+                        shard_options=shard_options,
+                        seed=seed,
+                        num_epochs=num_epochs,
+                        shuffle=shuffle,
+                    )
+                except Exception as e:
+                    print(f"DEBUG: grain.iterable sampler failed: {e}, falling back to num_records=100000")
+                    sampler = grain.IndexSampler(
+                        num_records=100000,
+                        shard_options=shard_options,
+                        seed=seed,
+                        num_epochs=num_epochs,
+                        shuffle=shuffle,
+                    )
             else:
                 data_source = grain.MapDataset.source(dataset)
                 base_seed = self.arguments.shuffle_seed_train or 0
                 process_offset = jax.process_index()
-                seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                try:
+                    seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                except Exception as e:
+                    print(f"DEBUG: grain.map seed compute failed: {e}")
+                    seed = 1 if is_train else 0
                 # Ensure seed is always positive and within 32-bit range
                 # Ensure seed is at least 1 (grain requires positive integer)
                 seed = max(1, seed) if is_train else 0
-                sampler = grain.IndexSampler(
-                    num_records=len(data_source),
-                    shard_options=shard_options,
-                    seed=seed,
-                    num_epochs=num_epochs,
-                    shuffle=shuffle,
-                )
+                try:
+                    _map_len = len(data_source)
+                except Exception as e:
+                    print(f"DEBUG: grain.map len(data_source) failed: {e}, using dataset len fallback")
+                    try:
+                        _map_len = len(dataset)  # type: ignore[arg-type]
+                    except Exception as ee:
+                        print(f"DEBUG: grain.map len(dataset) failed: {ee}, defaulting to 100000")
+                        _map_len = 100000
+                try:
+                    sampler = grain.IndexSampler(
+                        num_records=_map_len,
+                        shard_options=shard_options,
+                        seed=seed,
+                        num_epochs=num_epochs,
+                        shuffle=shuffle,
+                    )
+                except Exception as e:
+                    print(f"DEBUG: grain.map sampler failed: {e}, falling back to 100000")
+                    sampler = grain.IndexSampler(
+                        num_records=100000,
+                        shard_options=shard_options,
+                        seed=seed,
+                        num_epochs=num_epochs,
+                        shuffle=shuffle,
+                    )
             # Compute effective per-shard length and adapt batch size to avoid 0-step epochs
             try:
                 num_records = int(len(data_source))
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG: grain.num_records len(data_source) failed: {e}")
                 try:
                     num_records = int(len(dataset))  # type: ignore[arg-type]
-                except Exception:
+                except Exception as ee:
+                    print(f"DEBUG: grain.num_records len(dataset) failed: {ee}")
                     num_records = 0
             per_shard_base = num_records // max(1, shard_count)
             remainder = num_records % max(1, shard_count)
@@ -689,14 +736,13 @@ class BaseTrainer(BaseTrainerProtocol):
                 )
             # Align batch size to a multiple of mesh DP to satisfy pjit sharding requirements
             try:
-                # Prefer mesh dims from arguments if present
                 if hasattr(self.arguments, "mesh_dims") and self.arguments.mesh_dims:
                     dp_axis = int(self.arguments.mesh_dims[0] or 1)
                 else:
-                    # Fallback to model mesh shape
                     mesh_shape = getattr(self.model.mesh, "shape", {})
                     dp_axis = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG: grain.dp_axis detect failed: {e}, using shard_count")
                 dp_axis = int(self.arguments.grain_shard_count or 1)
             aligned_eff = (base_eff // max(1, dp_axis)) * max(1, dp_axis)
             if aligned_eff == 0:
@@ -723,6 +769,7 @@ class BaseTrainer(BaseTrainerProtocol):
             prefetch_size = int(getattr(self.arguments, "grain_prefetch_buffer_size", 128) or 128)
 
             try:
+                print("DEBUG: grain.DataLoader primary path")
                 return grain.DataLoader(
                     data_source=data_source,
                     sampler=sampler,
@@ -735,8 +782,8 @@ class BaseTrainer(BaseTrainerProtocol):
                     worker_buffer_size=worker_buffer_size,
                     read_options=grain.ReadOptions(num_threads=read_threads, prefetch_buffer_size=prefetch_size),
                 )
-            except Exception:
-                # Fallback for Grain versions that do not support worker_count=0
+            except Exception as e:
+                print(f"DEBUG: grain.DataLoader primary failed: {e}, using fallback worker_count=1")
                 return grain.DataLoader(
                     data_source=data_source,
                     sampler=sampler,
