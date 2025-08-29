@@ -192,6 +192,24 @@ class TrainingArguments:
         default=None,
         metadata={"help": "sharding count to be used for grain dataloaders in both train and eval steps. If None, auto-detects from jax.process_count()."},
     )
+    grain_worker_count: int = field(
+        default=0,
+        metadata={
+            "help": "Number of Grain worker processes. Keep 0 on TPU for stability. If a Grain version requires >=1, set 1 and rely on threads (no subprocess) via environment."  # noqa: E501
+        },
+    )
+    grain_worker_buffer_size: int = field(
+        default=0,
+        metadata={"help": "Grain worker buffer size. Keep small (0-1) when worker_count>0; ignored when worker_count=0."},
+    )
+    grain_read_threads: int = field(
+        default=1,
+        metadata={"help": "Read threads within the single-process Grain pipeline. Increases host-side parallel reads without new processes."},
+    )
+    grain_prefetch_buffer_size: int = field(
+        default=128,
+        metadata={"help": "Prefetch buffer size inside Grain read pipeline. Buffers reads but not CPU transforms when single-process."},
+    )
     gradient_accumulation_steps: int = field(
         default=1,
         metadata={"help": "The number of steps to accumulate gradients over."},

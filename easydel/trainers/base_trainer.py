@@ -687,19 +687,39 @@ class BaseTrainer(BaseTrainerProtocol):
                 max_sequence_length=self.arguments.max_sequence_length,
                 truncation_mode=self.arguments.truncation_mode,
             )
-            return grain.DataLoader(
-                data_source=data_source,
-                sampler=sampler,
-                operations=[
-                    ToNumpy(),
-                    CollateMapTransform(collate_fn=collate_fn),
-                    grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
-                ],
-                # Use main process only on TPU to avoid controller flapping
-                worker_count=0,
-                worker_buffer_size=0,
-                read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=128),
-            )
+            # Configure single-process Grain pipeline with tunables and safe fallback
+            worker_count = int(getattr(self.arguments, "grain_worker_count", 0) or 0)
+            worker_buffer_size = int(getattr(self.arguments, "grain_worker_buffer_size", 0) or 0)
+            read_threads = int(getattr(self.arguments, "grain_read_threads", 1) or 1)
+            prefetch_size = int(getattr(self.arguments, "grain_prefetch_buffer_size", 128) or 128)
+
+            try:
+                return grain.DataLoader(
+                    data_source=data_source,
+                    sampler=sampler,
+                    operations=[
+                        ToNumpy(),
+                        CollateMapTransform(collate_fn=collate_fn),
+                        grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
+                    ],
+                    worker_count=worker_count,
+                    worker_buffer_size=worker_buffer_size,
+                    read_options=grain.ReadOptions(num_threads=read_threads, prefetch_buffer_size=prefetch_size),
+                )
+            except Exception:
+                # Fallback for Grain versions that do not support worker_count=0
+                return grain.DataLoader(
+                    data_source=data_source,
+                    sampler=sampler,
+                    operations=[
+                        ToNumpy(),
+                        CollateMapTransform(collate_fn=collate_fn),
+                        grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
+                    ],
+                    worker_count=1,
+                    worker_buffer_size=max(1, worker_buffer_size),
+                    read_options=grain.ReadOptions(num_threads=max(1, read_threads), prefetch_buffer_size=prefetch_size),
+                )
 
         def calculate_steps(dataset, is_train: bool) -> int:
             """Estimate steps to align with Grain DataLoader behavior.
