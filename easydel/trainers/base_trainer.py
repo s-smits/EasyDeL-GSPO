@@ -667,21 +667,30 @@ class BaseTrainer(BaseTrainerProtocol):
                     f"Batch size {int(batch_size)} reduced to {base_eff} for shard {shard_index}/{shard_count} "
                     f"(per-shard records={per_shard_len}). Consider lowering total_batch_size or grad_accumulation."
                 )
-            # Align batch size to a multiple of DP axis to satisfy pjit sharding requirements
-            dp_axis = int(self.arguments.grain_shard_count or 1)
+            # Align batch size to a multiple of mesh DP to satisfy pjit sharding requirements
+            try:
+                # Prefer mesh dims from arguments if present
+                if hasattr(self.arguments, "mesh_dims") and self.arguments.mesh_dims:
+                    dp_axis = int(self.arguments.mesh_dims[0] or 1)
+                else:
+                    # Fallback to model mesh shape
+                    mesh_shape = getattr(self.model.mesh, "shape", {})
+                    dp_axis = int(mesh_shape.get("dp", 1)) if hasattr(mesh_shape, "get") else 1
+            except Exception:
+                dp_axis = int(self.arguments.grain_shard_count or 1)
             aligned_eff = (base_eff // max(1, dp_axis)) * max(1, dp_axis)
             if aligned_eff == 0:
                 # Cannot form any DP-consistent batch on this shard; keep base_eff to let drop_remainder yield 0 steps
                 effective_batch_size = base_eff
                 logger.warning(
-                    f"No DP-aligned batch can be formed on shard {shard_index}/{shard_count} (per-shard={per_shard_len}, dp={dp_axis}). "
+                    f"No DP-aligned batch can be formed on shard {shard_index}/{shard_count} (per-shard={per_shard_len}, mesh_dp={dp_axis}). "
                     f"This shard will likely yield 0 steps due to drop_remainder."
                 )
             else:
                 effective_batch_size = aligned_eff
                 if effective_batch_size != base_eff:
                     logger.warning(
-                        f"Batch size aligned to DP multiple: {base_eff} -> {effective_batch_size} (dp={dp_axis})"
+                        f"Batch size aligned to DP multiple: {base_eff} -> {effective_batch_size} (mesh_dp={dp_axis})"
                     )
             collate_fn = self.create_grain_collect_function(
                 max_sequence_length=self.arguments.max_sequence_length,
