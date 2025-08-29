@@ -22,6 +22,7 @@ export GRAIN_WORKER_COUNT=1
 export AUTO_INIT_JAX=0
 export JAX_PROCESS_COUNT=${JAX_PROCESS_COUNT:-1}
 export JAX_PROCESS_INDEX=${JAX_PROCESS_INDEX:-0}
+export WANDB_MODE=disabled
 
 # Normalize envs that may be set to string 'None' by upstream tools
 if [ "${JAX_PROCESS_COUNT:-}" = "None" ] || [ -z "${JAX_PROCESS_COUNT:-}" ]; then
@@ -79,6 +80,7 @@ $PY_BIN -u easydel/scripts/finetune/gsm8k_math_gspo.py \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
   --force_data_parallel 4 \
+  --use_wandb false \
   --log_logprobs_metrics false \
   --log_global true \
   --log_steps 1 \
