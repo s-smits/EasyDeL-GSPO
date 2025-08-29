@@ -565,22 +565,13 @@ class GRPOTrainer(Trainer):
                     use_cache=False,
                 )
                 
-                # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
-                def _hash_u32(ids):
-                    h = jnp.uint32(2166136261)
-                    def body(hh, x):
-                        hh = jnp.uint32((hh ^ jnp.uint32(x)) * jnp.uint32(16777619))
-                        return hh, None
-                    hh, _ = jax.lax.scan(body, h, ids.astype(jnp.uint32))
-                    return hh
-
+                # Simple, stable PRNG per process to avoid cross-host divergence
                 base_key = jax.random.PRNGKey(prng_seed)
                 try:
-                    prompt_slice = input_ids[:, : self.arguments.max_prompt_length]
-                    ph = jax.vmap(_hash_u32)(prompt_slice)
-                    prng_key = jax.random.fold_in(base_key, int(jnp.bitwise_xor.reduce(ph.astype(jnp.uint32))))
+                    proc_offset = jax.process_index()
                 except Exception:
-                    prng_key = base_key
+                    proc_offset = 0
+                prng_key = jax.random.fold_in(base_key, int(proc_offset))
 
                 sequences = module.generate(
                     input_ids=input_ids,
@@ -851,9 +842,9 @@ class GRPOTrainer(Trainer):
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
-            # Default to generating all num_return_sequences at once when not set
+            # Default to a small chunk to reduce peak memory if not set
             if rollout_chunk_size is None or rollout_chunk_size <= 0:
-                rollout_chunk_size = int(self.num_generations)
+                rollout_chunk_size = int(min(2, int(self.num_generations)))
             # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
             rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
             # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
@@ -1256,6 +1247,13 @@ class GRPOTrainer(Trainer):
                                 print(f"DEBUG: Failed to log reward {i}: {e}")
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
+            # Optional cross-process sync to stabilize host-side reward paths
+            try:
+                if jax.process_count() > 1:
+                    from jax.experimental import multihost_utils as _mhu
+                    _mhu.sync_global_devices("after_reward_compute")
+            except Exception:
+                pass
             
             with capture_time() as grouped_comp_time_fn:
                 rewards = rewards_per_func.sum(axis=1)
