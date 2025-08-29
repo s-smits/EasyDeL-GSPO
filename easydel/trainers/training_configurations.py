@@ -563,6 +563,14 @@ class TrainingArguments:
             JaxDistributedConfig.initialize(self.jax_distributed_config)
         except Exception as e:
             logger.info(f"Skipping JAX distributed initialization in this process: {e}")
+        # Ensure distributed is initialized when multiple processes are detected to satisfy downstream tools
+        try:
+            if jax.process_count() > 1:
+                from jax.distributed import is_initialized as _jd_is_init, initialize as _jd_init
+                if not _jd_is_init():
+                    _jd_init()
+        except Exception:
+            ...
         
         # Auto-configure dataset sharding:
         # - If mesh dims exist, shard by effective DP (min(mesh dp, process_count)) only (replicate across FSDP)
