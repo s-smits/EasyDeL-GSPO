@@ -526,7 +526,6 @@ class GRPOTrainer(Trainer):
         # Store input sharding for reuse in host materialization
         self.input_partition_spec = adaptive_spec
         self.input_sharding = input_sharding
-        self.replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
         step_sharding = NamedSharding(mesh=mesh, spec=self.arguments.step_partition_spec)
         
         @ejit(
@@ -595,7 +594,7 @@ class GRPOTrainer(Trainer):
         # Helper to replicate tensors for safe host decoding/logging
         @ejit(
             in_shardings=(self.input_sharding,),
-            out_shardings=self.replicated_sharding,
+            out_shardings=empty_sharding,
         )
         def _materialize_for_decode(x):
             return x
