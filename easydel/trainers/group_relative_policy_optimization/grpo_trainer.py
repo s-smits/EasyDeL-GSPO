@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import typing as tp
 from functools import cached_property, partial
-import inspect
 
 import flax
 import flax.nnx
@@ -596,11 +595,8 @@ class GRPOTrainer(Trainer):
         )
 
         # Derive static arg indices robustly based on grpo_step signature
-        import inspect as _inspect
-        _sig = _inspect.signature(grpo_step)
-        _max_pos_index = len(_sig.parameters) - 1  # zero-based last positional index
-        _end = min(2 + len(self._train_shared_fn_static_args), _max_pos_index + 1)
-        static_argnames = tuple(range(2, _end))
+        # Static args: start after (state, batch), then the fixed shared block
+        static_argnames = tuple(range(2, 2 + len(self._train_shared_fn_static_args)))
         
         sharded_training_step_function = ejit(
             grpo_step,
