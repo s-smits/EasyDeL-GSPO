@@ -954,23 +954,9 @@ class GRPOTrainer(Trainer):
                 _local_prompt_count = 0
             prompts = [""] * _local_prompt_count
 
-            def _to_cpu_list(arr):
-                try:
-                    host = jax.device_get(arr)
-                except Exception:
-                    try:
-                        import numpy as _np  # local import to avoid top-level dependency
-                        host = _np.asarray(arr)
-                    except Exception:
-                        return arr
-                try:
-                    return host.tolist()
-                except Exception:
-                    return host
-
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
-                prompts = self.processing_class.batch_decode(_to_cpu_list(batch["input_ids"]), skip_special_tokens=True)
-            completions_text = self.processing_class.batch_decode(_to_cpu_list(completion_ids), skip_special_tokens=True)
+                prompts = self.processing_class.batch_decode(jax.device_get(batch["input_ids"]).tolist(), skip_special_tokens=True)
+            completions_text = self.processing_class.batch_decode(jax.device_get(completion_ids).tolist(), skip_special_tokens=True)
 
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
