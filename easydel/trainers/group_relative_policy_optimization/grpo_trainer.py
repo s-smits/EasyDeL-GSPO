@@ -1164,7 +1164,9 @@ class GRPOTrainer(Trainer):
             # Host-side concise summary for completion token lengths
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
-                    lengths = jax.device_get(completion_lengths_per_seq)
+                    # Replicate lengths to host-addressable before device_get
+                    lengths = self.materialize_for_decode(completion_lengths_per_seq)
+                    lengths = jax.device_get(lengths)
                     mean_v = float(jnp.mean(lengths))
                     std_v = float(jnp.std(lengths))
                     min_v = int(jnp.min(lengths))
@@ -1226,12 +1228,15 @@ class GRPOTrainer(Trainer):
                     else:
                         in_prompts = prompts * self.num_generations
                                     # Debug output removed to prevent host divergence
+                        # Ensure lengths are host-addressable for Python-side reward functions
+                        safe_lengths = self.materialize_for_decode(completion_lengths_per_seq)
+                        safe_lengths = jax.device_get(safe_lengths)
                         output_reward_func = reward_func(
                             prompts=in_prompts,
                             completions=completions,
                             max_length=self.arguments.max_sequence_length,
                             batch=batch,
-                            completion_lengths=jax.device_get(completion_lengths_per_seq),
+                            completion_lengths=safe_lengths,
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
                         # Debug: Log individual reward function values
