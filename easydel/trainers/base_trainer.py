@@ -695,8 +695,9 @@ class BaseTrainer(BaseTrainerProtocol):
                     CollateMapTransform(collate_fn=collate_fn),
                     grain.Batch(batch_size=effective_batch_size, drop_remainder=True),
                 ],
-                worker_count=1,
-                worker_buffer_size=1,
+                # Use main process only on TPU to avoid controller flapping
+                worker_count=0,
+                worker_buffer_size=0,
                 read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=128),
             )
 
