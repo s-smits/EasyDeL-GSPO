@@ -916,6 +916,14 @@ class GRPOTrainer(Trainer):
                 nrs_remaining -= cur_nrs
                 chunk_idx += 1
 
+            # Optional cross-process sync after generation loop to reduce controller flapping
+            try:
+                if jax.process_count() > 1:
+                    from jax.experimental import multihost_utils as _mhu
+                    _mhu.sync_global_devices("after_generation_loop")
+            except Exception:
+                pass
+
             # Concatenate accumulated chunks — for memory-opt mode keep concat minimal if only one chunk
             if len(sequences_chunks) == 1:
                 prompt_completion_ids = sequences_chunks[0]
