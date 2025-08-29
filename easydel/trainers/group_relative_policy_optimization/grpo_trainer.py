@@ -865,6 +865,9 @@ class GRPOTrainer(Trainer):
                 cur_step_int = int(jax.device_get(state.step))
             except Exception:
                 cur_step_int = 0
+            
+            # Track current step for shard rotation in single-process DP mode
+            self._current_step = cur_step_int
             chunk_idx = 0
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))

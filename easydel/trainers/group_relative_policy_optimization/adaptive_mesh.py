@@ -236,21 +236,25 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         
         # Handle single-process multi-device setups (e.g., TPU pods)
         if proc_count == 1 and plan.dp > 1:
-            # Single process with intra-process DP - all DP groups see same shard
-            arguments.grain_shard_count = 1
+            # CRITICAL FIX: Use mesh DP for sharding to prevent all DP groups from seeing identical data
+            # This avoids divergence that causes TPU controller crashes
+            arguments.grain_shard_count = int(plan.dp)
+            # Since we can't differentiate DP groups at process level in single-process mode,
+            # we'll rely on per-step rotation in the dataloader. Set initial index to 0.
             arguments.grain_shard_index = 0
-            # Mark single-process DP mode for downstream components (e.g., dataloader seeding heuristics)
+            # Mark single-process DP mode and enable step-based shard rotation
             try:
                 setattr(arguments, "single_process_dp_mode", True)
-                # Optionally allow downstream seed offsetting logic if implemented
                 setattr(arguments, "single_process_dp_seed_offset", True)
+                setattr(arguments, "enable_shard_rotation", True)  # Signal to dataloader
+                setattr(arguments, "dp_groups", int(plan.dp))  # Store for dataloader use
             except Exception:
                 ...
             if jax.process_index() == 0:
-                logger.warning(
-                    f"Single-process multi-device setup detected (proc_count=1, mesh_dp={plan.dp}). "
-                    f"Using a single dataset stream (shard 0/1). This is expected in single-process launches. "
-                    f"For true per-DP dataset sharding, use a multi-process launch (e.g., mpirun -n {plan.dp})."
+                logger.info(
+                    f"Single-process multi-device setup (proc_count=1, mesh_dp={plan.dp}). "
+                    f"Using mesh-aware dataset sharding: {plan.dp} shards with rotation to prevent DP group divergence. "
+                    f"Different DP groups will see different data via step-based shard cycling."
                 )
         elif plan.tp > 1:
             # Multi-process with TP

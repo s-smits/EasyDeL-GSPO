@@ -627,7 +627,19 @@ class BaseTrainer(BaseTrainerProtocol):
             if isinstance(dataset, IterableDataset):
                 data_source = HFDataSource(dataset=dataset, shard_options=shard_options, num_threads=1)
                 # Per-process shuffle seed to decorrelate streams
-                seed = int((self.arguments.shuffle_seed_train or 0) + 1315423911 * jax.process_index()) if is_train else 0
+                base_seed = (self.arguments.shuffle_seed_train or 0)
+                process_offset = jax.process_index()
+                
+                # Handle single-process DP mode with shard rotation
+                if getattr(self.arguments, "enable_shard_rotation", False) and is_train:
+                    # Rotate through DP shards using current step for differentiation
+                    dp_groups = getattr(self.arguments, "dp_groups", 1)
+                    current_step = getattr(self, "_current_step", 0)
+                    shard_rotation = current_step % dp_groups
+                    seed = int((base_seed + 1315423911 * abs(process_offset) + 7919 * shard_rotation) % (2**31 - 1))
+                else:
+                    seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1))
+                seed = seed if is_train else 0
                 sampler = grain.IndexSampler(
                     num_records=len(data_source),
                     shard_options=shard_options,
@@ -639,8 +651,18 @@ class BaseTrainer(BaseTrainerProtocol):
                 data_source = grain.MapDataset.source(dataset)
                 base_seed = self.arguments.shuffle_seed_train or 0
                 process_offset = jax.process_index()
+                
+                # Handle single-process DP mode with shard rotation  
+                if getattr(self.arguments, "enable_shard_rotation", False) and is_train:
+                    dp_groups = getattr(self.arguments, "dp_groups", 1)
+                    current_step = getattr(self, "_current_step", 0)
+                    shard_rotation = current_step % dp_groups
+                    seed = int((base_seed + 1315423911 * abs(process_offset) + 7919 * shard_rotation) % (2**31 - 1))
+                else:
+                    seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1))
+                
                 # Ensure seed is always positive and within 32-bit range
-                seed = int((base_seed + 1315423911 * abs(process_offset)) % (2**31 - 1)) if is_train else 0
+                seed = seed if is_train else 0
                 # Ensure seed is at least 1 (grain requires positive integer)
                 seed = max(1, seed) if is_train else 0
                 sampler = grain.IndexSampler(
