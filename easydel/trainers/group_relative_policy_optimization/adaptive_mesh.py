@@ -107,9 +107,9 @@ def plan_adaptive_mesh(
 
     if force_data_parallel:
         desired_dp = max(1, int(force_data_parallel))
-        # Respect batch cap and remaining slots after TP
-        desired_dp = min(desired_dp, max(1, total_batch_size), remaining_after_tp)
-        # Snap DP to a divisor of remaining_after_tp
+        # Respect only device feasibility after TP; do NOT cap by total_batch_size
+        desired_dp = min(desired_dp, remaining_after_tp)
+        # Snap DP to a divisor of remaining_after_tp if needed
         dp = _largest_divisor_not_exceeding(remaining_after_tp, desired_dp)
         if dp != desired_dp:
             logger.warning(
@@ -145,6 +145,13 @@ def plan_adaptive_mesh(
         in_batch_parts.append("dp")
     in_batch = None if not in_batch_parts else (in_batch_parts[0] if len(in_batch_parts) == 1 else tuple(in_batch_parts))
     in_spec = PartitionSpec(in_batch, None)
+
+    # Warn if DP does not divide total_batch_size (layout will replicate batch over DP in that case)
+    if dp > 1 and (total_batch_size % dp != 0):
+        logger.warning(
+            f"total_batch_size ({total_batch_size}) is not divisible by dp ({dp}); "
+            f"batch will be replicated over DP for step/input specs. Consider using total_batch_size=k*dp for best efficiency."
+        )
 
     # Derived metadata
     total_workers = int(dp) * int(fsdp) * int(tp)
