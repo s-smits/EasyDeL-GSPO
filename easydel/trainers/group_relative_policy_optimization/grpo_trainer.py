@@ -523,8 +523,10 @@ class GRPOTrainer(Trainer):
         )
         adaptive_spec = plan.input_partition_spec
         input_sharding = NamedSharding(mesh=mesh, spec=adaptive_spec)
-        # Store input spec for debugging/inspection
+        # Store input sharding for reuse in host materialization
         self.input_partition_spec = adaptive_spec
+        self.input_sharding = input_sharding
+        self.replicated_sharding = NamedSharding(mesh=mesh, spec=PartitionSpec())
         step_sharding = NamedSharding(mesh=mesh, spec=self.arguments.step_partition_spec)
         
         @ejit(
@@ -589,6 +591,15 @@ class GRPOTrainer(Trainer):
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
+
+        # Helper to replicate tensors for safe host decoding/logging
+        @ejit(
+            in_shardings=(self.input_sharding,),
+            out_shardings=self.replicated_sharding,
+        )
+        def _materialize_for_decode(x):
+            return x
+        self.materialize_for_decode = _materialize_for_decode
 
         self._train_shared_fn_static_args = (
             self.num_generations,
@@ -953,6 +964,12 @@ class GRPOTrainer(Trainer):
                 try:
                     return jax.device_get(arr).tolist()
                 except Exception:
+                    # Try to replicate to local host for safe decode
+                    try:
+                        arr = self.materialize_for_decode(arr)
+                        return jax.device_get(arr).tolist()
+                    except Exception:
+                        ...
                     # Prefer local shards; fallback to global allgather when requested
                     try:
                         shards = getattr(arr, "addressable_shards", None)
