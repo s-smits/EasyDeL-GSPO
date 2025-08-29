@@ -757,7 +757,36 @@ class TrainingArguments:
             AsyncCheckpointManager: The checkpoint manager.
         """
         from eformer.serialization import AsyncCheckpointManager
-        return AsyncCheckpointManager(max_workers=1)
+        try:
+            return AsyncCheckpointManager(max_workers=1)
+        except AssertionError:
+            # Fallback for environments where multi-process is detected but jax.distributed is not initialized yet
+            from eformer.serialization.base_manager import CheckpointManager as _BaseCM
+
+            class _SimpleCheckpointManager:
+                def save(self, tree, path, mesh, gather_fns=None, float_dtype=None, metadata=None, callback=None, prefix=None, do_all_gather=False, cpu_offload=False):  # noqa: E501
+                    return _BaseCM.save_checkpoint(
+                        tree=tree,
+                        path=path,
+                        mesh=mesh,
+                        gather_fns=gather_fns,
+                        float_dtype=float_dtype,
+                        verbose=False,
+                        mismatch_allowed=True,
+                        metadata=metadata,
+                    )
+
+                def load(self, path, mesh, shardings=None, mismatch_allowed=True, callback=None, partition_rules=None, dtype=None, validate=None, prefix=None, use_async=True):  # noqa: E501
+                    return _BaseCM.load_checkpoint(
+                        path=path,
+                        shard_fns=shardings,
+                        verbose=False,
+                        mismatch_allowed=mismatch_allowed,
+                        callback=callback,
+                        dtype=dtype,
+                    )
+
+            return _SimpleCheckpointManager()
 
     @functools.cached_property
     def _tensorboard(self):

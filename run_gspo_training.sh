@@ -95,5 +95,3 @@ $PY_BIN -u easydel/scripts/finetune/gsm8k_math_gspo.py \
   --advantage_epsilon 1e-6
 
 #   --force_data_parallel 1 \
-
-echo "Training completed!"
