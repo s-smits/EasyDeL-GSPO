@@ -949,9 +949,28 @@ class GRPOTrainer(Trainer):
                 _local_prompt_count = 0
             prompts = [""] * _local_prompt_count
 
+            def _host_rows(arr):
+                try:
+                    return jax.device_get(arr).tolist()
+                except Exception:
+                    # Prefer local shards; fallback to global allgather when requested
+                    try:
+                        shards = getattr(arr, "addressable_shards", None)
+                        if shards:
+                            return np.concatenate([np.asarray(s.data) for s in shards], axis=0).tolist()
+                    except Exception:
+                        ...
+                    try:
+                        if getattr(self.arguments, "log_global", False):
+                            from jax.experimental import multihost_utils as _mhu
+                            return np.asarray(_mhu.process_allgather(arr)).tolist()
+                    except Exception:
+                        ...
+                    return []
+
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
-                prompts = self.processing_class.batch_decode(jax.device_get(batch["input_ids"]).tolist(), skip_special_tokens=True)
-            completions_text = self.processing_class.batch_decode(jax.device_get(completion_ids).tolist(), skip_special_tokens=True)
+                prompts = self.processing_class.batch_decode(_host_rows(batch["input_ids"]), skip_special_tokens=True)
+            completions_text = self.processing_class.batch_decode(_host_rows(completion_ids), skip_special_tokens=True)
 
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
