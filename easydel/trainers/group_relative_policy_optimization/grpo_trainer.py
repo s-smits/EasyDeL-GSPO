@@ -552,14 +552,22 @@ class GRPOTrainer(Trainer):
                     mode=common_types.MODE_PREFILL,
                 )
                 # Proper generation config that relies on natural EOS stopping
+                # Reduce peak activation memory by capping generation if needed
+                max_new = int(self.arguments.max_completion_length)
+                try:
+                    # Optional runtime cap to mitigate halts; keep at least 256
+                    runtime_cap = int(getattr(self.arguments, "runtime_max_new_tokens_cap", max_new))
+                    runtime_cap = max(256, min(runtime_cap, max_new))
+                except Exception:
+                    runtime_cap = max_new
                 generation_config = GenerationConfig(
                     top_p=self.arguments.top_p,
                     top_k=self.arguments.top_k,
                     temperature=self.arguments.temperature,
                     pad_token_id=self.pad_token_id,
-                    eos_token_id=self.eos_token_id,  # EasyDeL will stop naturally when these tokens are generated
-                    max_new_tokens=self.arguments.max_completion_length,
-                    max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
+                    eos_token_id=self.eos_token_id,
+                    max_new_tokens=runtime_cap,
+                    max_length=runtime_cap + self.arguments.max_prompt_length,
                     num_return_sequences=num_return_sequences,
                     do_sample=True,
                     use_cache=False,
@@ -905,12 +913,49 @@ class GRPOTrainer(Trainer):
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
-                    ref_logps_chunk = self.compute_refmodel_logps(
-                        self.ref_state.graphstate,
-                        self.ref_state.graphother,
-                        prompt_completion_ids_chunk,
-                        full_mask_chunk,
-                    )
+                    # Microbatch the reference logps to reduce peak memory and avoid TPU halts
+                    total_bsz = int(prompt_completion_ids_chunk.shape[0])
+                    default_mb = int(min(max(1, int(getattr(self.arguments, "total_batch_size", 1))), total_bsz))
+                    ref_mb = int(getattr(self.arguments, "ref_logps_microbatch_size", default_mb))
+                    ref_mb = max(1, min(int(ref_mb), total_bsz))
+
+                    try:
+                        if ref_mb < total_bsz:
+                            print(f"DEBUG: ref_logps microbatching enabled: mb={ref_mb} total={total_bsz}")
+                        parts = []
+                        for start in range(0, total_bsz, ref_mb):
+                            end = min(total_bsz, start + ref_mb)
+                            ids_mb = prompt_completion_ids_chunk[start:end]
+                            msk_mb = full_mask_chunk[start:end]
+                            out_mb = self.compute_refmodel_logps(
+                                self.ref_state.graphstate,
+                                self.ref_state.graphother,
+                                ids_mb,
+                                msk_mb,
+                            )
+                            # Force device sync per microbatch to smooth memory usage
+                            out_mb = jax.block_until_ready(out_mb)
+                            parts.append(out_mb)
+                        ref_logps_chunk = jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
+                    except Exception as e:
+                        print(f"DEBUG: ref_logps microbatch path failed ({e}), retrying with mb=1")
+                        try:
+                            parts = []
+                            for i in range(total_bsz):
+                                ids_mb = prompt_completion_ids_chunk[i:i+1]
+                                msk_mb = full_mask_chunk[i:i+1]
+                                out_mb = self.compute_refmodel_logps(
+                                    self.ref_state.graphstate,
+                                    self.ref_state.graphother,
+                                    ids_mb,
+                                    msk_mb,
+                                )
+                                out_mb = jax.block_until_ready(out_mb)
+                                parts.append(out_mb)
+                            ref_logps_chunk = jnp.concatenate(parts, axis=0)
+                        except Exception as ee:
+                            print(f"DEBUG: ref_logps mb=1 fallback failed ({ee}); using zeros as last resort")
+                            ref_logps_chunk = jnp.zeros_like(jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1), dtype=jnp.float32)
                 token_logps_time += float(token_logps_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
