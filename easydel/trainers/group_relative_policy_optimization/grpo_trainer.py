@@ -506,22 +506,15 @@ class GRPOTrainer(Trainer):
                 logger.warning(f"Failed to log rollout configuration: {e}")
 
         # Use adaptive sharding based on batch size and tensor parallelism
-        from .adaptive_mesh import get_adaptive_sharding_spec
-        _shard_sig = inspect.signature(get_adaptive_sharding_spec)
-        _shard_kwargs = dict(
+        from .adaptive_mesh import plan_adaptive_mesh
+        plan = plan_adaptive_mesh(
             total_batch_size=self.arguments.total_batch_size,
+            num_return_sequences=self.arguments.num_return_sequences,
             force_tensor_parallel=self.arguments.force_tensor_parallel,
-            mini_batch_size=self.arguments.mini_batch_size,
+            force_data_parallel=self.arguments.force_data_parallel,
+            rollouts_per_step=getattr(self.arguments, 'rollouts_per_step', None),
         )
-        if 'force_data_parallel' in _shard_sig.parameters:
-            _shard_kwargs['force_data_parallel'] = self.arguments.force_data_parallel
-        if 'rollouts_per_step' in _shard_sig.parameters and getattr(self.arguments, 'rollouts_per_step', None):
-            _shard_kwargs['rollouts_per_step'] = self.arguments.rollouts_per_step
-        adaptive_spec = get_adaptive_sharding_spec(**_shard_kwargs)
-        input_sharding = NamedSharding(
-            mesh=mesh,
-            spec=adaptive_spec
-        )
+        adaptive_spec = plan.input_partition_spec
         # Store input spec for debugging/inspection
         self.input_partition_spec = adaptive_spec
         step_sharding = NamedSharding(
@@ -530,8 +523,8 @@ class GRPOTrainer(Trainer):
         )
         
         @ejit(
-            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
-            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            in_shardings=(self.state_shardings, adaptive_spec, adaptive_spec, empty_sharding),
+            out_shardings=(empty_sharding, adaptive_spec, adaptive_spec),
             static_argnums=(3,),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
