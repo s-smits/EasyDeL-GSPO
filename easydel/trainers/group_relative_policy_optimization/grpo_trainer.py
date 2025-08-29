@@ -522,12 +522,10 @@ class GRPOTrainer(Trainer):
             rollouts_per_step=getattr(self.arguments, 'rollouts_per_step', None),
         )
         adaptive_spec = plan.input_partition_spec
+        input_sharding = NamedSharding(mesh=mesh, spec=adaptive_spec)
         # Store input spec for debugging/inspection
         self.input_partition_spec = adaptive_spec
-        step_sharding = NamedSharding(
-            mesh=mesh,
-            spec=self.arguments.step_partition_spec,
-        )
+        step_sharding = NamedSharding(mesh=mesh, spec=self.arguments.step_partition_spec)
         
         @ejit(
             in_shardings=(state_shardings_named, input_sharding, input_sharding, empty_sharding),
