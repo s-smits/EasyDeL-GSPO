@@ -472,6 +472,14 @@ class GRPOTrainer(Trainer):
         self._update_model_mesh(mesh)
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
+        # Ensure state shardings are NamedSharding, not bare PartitionSpec
+        try:
+            state_shardings_named = jax.tree_util.tree_map(
+                lambda spec: spec if hasattr(spec, "device_set") else NamedSharding(mesh=mesh, spec=spec),
+                self.state_shardings,
+            )
+        except Exception:
+            state_shardings_named = self.state_shardings
         
         # Derive rollouts_per_step from num_return_sequences if not provided
         mesh_shape = getattr(mesh, "shape", {})
@@ -522,8 +530,8 @@ class GRPOTrainer(Trainer):
         )
         
         @ejit(
-            in_shardings=(self.state_shardings, adaptive_spec, adaptive_spec, empty_sharding),
-            out_shardings=(empty_sharding, adaptive_spec, adaptive_spec),
+            in_shardings=(state_shardings_named, input_sharding, input_sharding, empty_sharding),
+            out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
@@ -600,8 +608,8 @@ class GRPOTrainer(Trainer):
         
         sharded_training_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, None),
-            out_shardings=(self.state_shardings, empty_sharding),
+            in_shardings=(state_shardings_named, None),
+            out_shardings=(state_shardings_named, empty_sharding),
             donate_argnums=(0,),
             static_argnums=static_argnames,
         )
@@ -618,7 +626,7 @@ class GRPOTrainer(Trainer):
 
         sharded_evaluation_step_function = ejit(
             grpo_step,
-            in_shardings=(self.state_shardings, None),
+            in_shardings=(state_shardings_named, None),
             out_shardings=empty_sharding,
             static_argnums=static_argnames,
         )
