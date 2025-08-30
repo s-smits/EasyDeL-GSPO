@@ -79,10 +79,18 @@ def plan_adaptive_mesh(
     - Input spec avoids TP; step spec uses TP when tp>1.
     """
     if num_devices is None:
-        try:
-            num_devices = jax.device_count()
-        except Exception:
-            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+        # Prefer environment to avoid early JAX backend initialization
+        env_dc = os.getenv("JAX_DEVICE_COUNT")
+        if env_dc is not None:
+            try:
+                num_devices = int(env_dc)
+            except Exception:
+                num_devices = None
+        if num_devices is None:
+            try:
+                num_devices = jax.device_count()
+            except Exception:
+                num_devices = 1
 
     # Note: rollouts_per_step is passed through but not used in mesh planning
     # The trainer will handle deriving num_return_sequences after mesh is configured
@@ -178,10 +186,20 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     force_data_parallel = getattr(arguments, "force_data_parallel", None)
     rollouts_per_step = getattr(arguments, "rollouts_per_step", None)
 
-    try:
-        num_devices = jax.device_count()
-    except Exception:
-        num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+    # Prefer environment to avoid early JAX backend initialization
+    env_dc = os.getenv("JAX_DEVICE_COUNT")
+    if env_dc is not None:
+        try:
+            num_devices = int(env_dc)
+        except Exception:
+            num_devices = None
+    else:
+        num_devices = None
+    if num_devices is None:
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = 1
 
     plan = plan_adaptive_mesh(
         total_batch_size=total_batch_size,
@@ -205,10 +223,20 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
 
     # If the user forced DP larger than process_count but we don't implement intra-process DP sub-shards here,
     # cap DP to process_count and recompute plan to avoid duplicated prompts.
-    try:
-        procs = jax.process_count()
-    except Exception:
-        procs = 1
+    # Prefer environment to avoid early JAX backend initialization
+    env_pc = os.getenv("JAX_PROCESS_COUNT")
+    if env_pc is not None:
+        try:
+            procs = int(env_pc)
+        except Exception:
+            procs = None
+    else:
+        procs = None
+    if procs is None:
+        try:
+            procs = jax.process_count()
+        except Exception:
+            procs = 1
     if force_data_parallel and int(plan.dp) > int(procs):
         logger.warning(
             f"Requested DP={force_data_parallel} exceeds process_count={procs}; reducing DP to {procs}."
@@ -232,14 +260,29 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     # With TP, all TP replicas must see the same data
     # Only DP workers should have different data shards
     try:
-        proc_count = jax.process_count()
-        
+        # Prefer environment to avoid early JAX backend initialization
+        env_pc = os.getenv("JAX_PROCESS_COUNT")
+        if env_pc is not None:
+            try:
+                proc_count = int(env_pc)
+            except Exception:
+                proc_count = None
+        else:
+            proc_count = None
+        if proc_count is None:
+            proc_count = jax.process_count()
+
         # Handle single-process multi-device setups (e.g., TPU pods)
         if proc_count == 1 and plan.dp > 1:
             # Single process with intra-process DP - all DP groups see same shard
             arguments.grain_shard_count = 1
             arguments.grain_shard_index = 0
-            if jax.process_index() == 0:
+            env_pi = os.getenv("JAX_PROCESS_INDEX")
+            try:
+                proc_index = int(env_pi) if env_pi is not None else jax.process_index()
+            except Exception:
+                proc_index = 0
+            if proc_index == 0:
                 logger.warning(
                     f"Single-process multi-device setup detected (proc_count=1, mesh_dp={plan.dp}). "
                     f"All {plan.dp} DP groups will see the same dataset shard (shard 0/1). "
@@ -249,10 +292,15 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         elif plan.tp > 1:
             # Multi-process with TP
             num_dp_groups = max(1, int(proc_count) // int(plan.tp))
-            dp_group_id = int(jax.process_index()) // int(plan.tp)
+            env_pi = os.getenv("JAX_PROCESS_INDEX")
+            try:
+                proc_index = int(env_pi) if env_pi is not None else jax.process_index()
+            except Exception:
+                proc_index = 0
+            dp_group_id = int(proc_index) // int(plan.tp)
             arguments.grain_shard_count = int(num_dp_groups)
             arguments.grain_shard_index = int(dp_group_id)
-            if jax.process_index() == 0:
+            if proc_index == 0:
                 logger.info(
                     f"Dataset sharding with TP={plan.tp}: {num_dp_groups} data shards across DP groups. "
                     f"Processes {list(range(0, int(plan.tp)))} will see shard 0, "
@@ -266,12 +314,17 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         else:
             # No TP, standard sharding across all processes
             arguments.grain_shard_count = int(proc_count)
-            arguments.grain_shard_index = int(jax.process_index())
+            env_pi = os.getenv("JAX_PROCESS_INDEX")
+            try:
+                proc_index = int(env_pi) if env_pi is not None else jax.process_index()
+            except Exception:
+                proc_index = 0
+            arguments.grain_shard_index = int(proc_index)
 
-        if jax.process_index() == 0:
+        if (lambda: (int(os.getenv("JAX_PROCESS_INDEX")) if os.getenv("JAX_PROCESS_INDEX") is not None else 0))() == 0:
             logger.info(
                 f"Dataset configuration: shard {arguments.grain_shard_index}/{arguments.grain_shard_count} "
-                f"(process {jax.process_index()}/{proc_count}, mesh_dp={plan.dp}, mesh_tp={plan.tp})"
+                f"(process {arguments.grain_shard_index}/{proc_count}, mesh_dp={plan.dp}, mesh_tp={plan.tp})"
             )
     except Exception as e:
         logger.warning(f"Failed to configure dataset sharding: {e}")
