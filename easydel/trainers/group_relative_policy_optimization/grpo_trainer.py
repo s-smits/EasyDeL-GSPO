@@ -359,14 +359,10 @@ class GRPOTrainer(Trainer):
                         try:
                             dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
                             if _jax.process_index() == 0:
-                                print(
-                                    f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
-                                )
                                 logger.info(
                                     f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
                                 )
                         except Exception as e:
-                            print(f"DEBUG: Dataset sharding failed for {dataset_name}: {e}")
                             logger.warning(f"Dataset sharding failed for {dataset_name}: {e}")
         except Exception as _e:
             # Best-effort: continue without sharding if anything goes wrong
@@ -499,9 +495,6 @@ class GRPOTrainer(Trainer):
                     per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
                     # Use effective dp for expected global actually running this process configuration
                     global_total = int(effective_dp) * per_process
-                    print(
-                        f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}"
-                    )
                     logger.info(
                         f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
                         f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
@@ -509,7 +502,6 @@ class GRPOTrainer(Trainer):
                         f"batch_size={self.arguments.total_batch_size}"
                     )
             except Exception as e:
-                print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")
 
         # Use adaptive sharding based on batch size and tensor parallelism

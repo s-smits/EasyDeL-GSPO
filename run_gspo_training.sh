@@ -20,16 +20,15 @@ export GRAIN_DISABLE_FORK=1
 export GRAIN_USE_SUBPROCESS=0
 export GRAIN_WORKER_COUNT=1
 export AUTO_INIT_JAX=0
-export JAX_PROCESS_COUNT=${JAX_PROCESS_COUNT:-1}
-export JAX_PROCESS_INDEX=${JAX_PROCESS_INDEX:-0}
 export WANDB_MODE=disabled
 
-# Normalize envs that may be set to string 'None' by upstream tools
-if [ "${JAX_PROCESS_COUNT:-}" = "None" ] || [ -z "${JAX_PROCESS_COUNT:-}" ]; then
-  export JAX_PROCESS_COUNT=1
+# Let JAX auto-detect process count/index from the TPU runtime
+# Only normalize if they're explicitly set to 'None' string
+if [ "${JAX_PROCESS_COUNT:-}" = "None" ]; then
+  unset JAX_PROCESS_COUNT
 fi
-if [ "${JAX_PROCESS_INDEX:-}" = "None" ] || [ -z "${JAX_PROCESS_INDEX:-}" ]; then
-  export JAX_PROCESS_INDEX=0
+if [ "${JAX_PROCESS_INDEX:-}" = "None" ]; then
+  unset JAX_PROCESS_INDEX
 fi
 
 # Pull latest changes and install
@@ -79,7 +78,6 @@ $PY_BIN -u easydel/scripts/finetune/gsm8k_math_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
-  --force_data_parallel 2 \
   --use_wandb false \
   --log_logprobs_metrics false \
   --log_global true \
