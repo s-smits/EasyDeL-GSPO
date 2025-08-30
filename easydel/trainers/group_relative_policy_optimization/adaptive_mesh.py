@@ -139,13 +139,9 @@ def plan_adaptive_mesh(
     ep = 1
     sp = 1  # simplified planner: avoid SP
 
-    # Step spec: DP on batch; TP on sequence if used. Do NOT shard batch over FSDP.
-    step_batch_parts = []
-    if dp > 1 and (total_batch_size % dp == 0):
-        step_batch_parts.append("dp")
-    step_batch = None if not step_batch_parts else (step_batch_parts[0] if len(step_batch_parts) == 1 else tuple(step_batch_parts))
-    step_seq = "tp" if tp > 1 else None
-    step_spec = PartitionSpec(step_batch, step_seq)
+    # Step spec aligned with TrainingArguments default semantics:
+    # batch -> ('dp','fsdp'), sequence -> 'sp'
+    step_spec = PartitionSpec(("dp", "fsdp"), "sp")
 
     # Input spec: avoid TP; keep only DP on batch. Replicate across FSDP.
     in_batch_parts = []
