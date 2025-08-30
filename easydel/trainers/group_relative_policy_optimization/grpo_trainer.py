@@ -508,10 +508,24 @@ class GRPOTrainer(Trainer):
         )
         # Store input spec for debugging/inspection
         self.input_partition_spec = adaptive_spec
+        # Also store full sharding object for helpers
+        self.input_sharding = input_sharding
         step_sharding = NamedSharding(
             mesh=mesh,
             spec=self.arguments.step_partition_spec,
         )
+        # Derive a 1D sharding (batch-only) for per-sequence 1D arrays like lengths
+        try:
+            base_spec = self.arguments.step_partition_spec
+            batch_dim = base_spec[0] if len(base_spec) > 0 else None
+            if isinstance(batch_dim, tuple) and len(batch_dim) > 0:
+                batch_dim_1d = batch_dim[0]
+            else:
+                batch_dim_1d = batch_dim
+            lengths_spec = PartitionSpec(batch_dim_1d) if batch_dim_1d else PartitionSpec()
+        except Exception:
+            lengths_spec = PartitionSpec()
+        self.lengths_sharding = NamedSharding(mesh=mesh, spec=lengths_spec)
         
         @ejit(
             in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
@@ -575,6 +589,17 @@ class GRPOTrainer(Trainer):
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
+
+        # Helpers to materialize arrays on host for safe decoding/logging
+        @ejit(in_shardings=(self.input_sharding,), out_shardings=empty_sharding)
+        def _materialize_for_decode(x):
+            return x
+        self.materialize_for_decode = _materialize_for_decode
+
+        @ejit(in_shardings=(self.lengths_sharding,), out_shardings=empty_sharding)
+        def _materialize_for_decode_1d(x):
+            return x
+        self.materialize_for_decode_1d = _materialize_for_decode_1d
 
         self._train_shared_fn_static_args = (
             self.num_generations,
@@ -934,7 +959,12 @@ class GRPOTrainer(Trainer):
 
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-            completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+            # Materialize completions on host for robust tokenizer decoding
+            _host_completion_ids = self.materialize_for_decode(completion_ids)
+            completions_text = self.processing_class.batch_decode(
+                jax.device_get(_host_completion_ids),
+                skip_special_tokens=True,
+            )
 
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
@@ -1102,7 +1132,8 @@ class GRPOTrainer(Trainer):
             # Host-side concise summary for completion token lengths
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
-                    lengths = jax.device_get(completion_lengths_per_seq)
+                    _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
+                    lengths = jax.device_get(_safe_lengths)
                     mean_v = float(jnp.mean(lengths))
                     std_v = float(jnp.std(lengths))
                     min_v = int(jnp.min(lengths))
@@ -1164,12 +1195,14 @@ class GRPOTrainer(Trainer):
                     else:
                         in_prompts = prompts * self.num_generations
                                     # Debug output removed to prevent host divergence
+                        # Provide host-materialized lengths to reward functions when needed
+                        _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
                         output_reward_func = reward_func(
                             prompts=in_prompts,
                             completions=completions,
                             max_length=self.arguments.max_sequence_length,
                             batch=batch,
-                            completion_lengths=jax.device_get(completion_lengths_per_seq),
+                            completion_lengths=jax.device_get(_safe_lengths),
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
                         # Debug: Log individual reward function values
@@ -1421,33 +1454,34 @@ class GRPOTrainer(Trainer):
             except Exception:
                 cur_step = 0
 
-            def _to_local_host(x, name="array"):
-                """Safely extract local host data with multiple fallback strategies."""
-                if not isinstance(x, jax.Array):
-                    return x
-
-                # Try 1: Fully addressable (replicated/single-device)
+            # Materialize to host to avoid device_get failures on non-addressable arrays
+            try:
+                local_completion_ids = jax.device_get(self.materialize_for_decode(completion_ids))
+            except Exception:
+                # Fallback to previous heuristic
+                def _to_local_host(x, name="array"):
+                    if not isinstance(x, jax.Array):
+                        return x
+                    try:
+                        if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
+                            return jax.device_get(x)
+                    except Exception:
+                        pass
+                    try:
+                        shards = x.addressable_shards
+                        if shards and len(shards) > 0:
+                            return jax.device_get(shards[0].data)
+                    except Exception:
+                        pass
+                    return jnp.array([])
+                local_completion_ids = _to_local_host(completion_ids, "completion_ids")
+            try:
+                local_comp_lens = jax.device_get(self.materialize_for_decode_1d(completion_lengths_per_seq))
+            except Exception:
                 try:
-                    if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
-                        return jax.device_get(x)
+                    local_comp_lens = jax.device_get(completion_lengths_per_seq)
                 except Exception:
-                    pass
-
-                # Try 2: Get first local shard (partial data is better than crash)
-                try:
-                    shards = x.addressable_shards
-                    if shards and len(shards) > 0:
-                        return jax.device_get(shards[0].data)
-                except Exception:
-                    pass
-
-                # Avoid cross-host collectives here since only process 0 runs this block
-                # Last resort: Return empty array (do not allgather)
-                return jnp.array([])
-
-            # Extract with fallbacks
-            local_completion_ids = _to_local_host(completion_ids, "completion_ids")
-            local_comp_lens = _to_local_host(completion_lengths_per_seq, "lengths")
+                    local_comp_lens = jnp.array([])
 
             # Decode with error handling
             try:
