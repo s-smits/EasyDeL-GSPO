@@ -94,6 +94,7 @@ def plan_adaptive_mesh(
     desired_tp = int(force_tensor_parallel) if force_tensor_parallel else 1
     desired_tp = max(1, desired_tp)
     if num_devices % desired_tp != 0:
+        # Snap TP down to largest divisor of num_devices not exceeding desired_tp
         snapped_tp = _largest_divisor_not_exceeding(num_devices, desired_tp)
         if snapped_tp != desired_tp:
             logger.warning(
@@ -106,7 +107,9 @@ def plan_adaptive_mesh(
 
     if force_data_parallel:
         desired_dp = max(1, int(force_data_parallel))
-        desired_dp = min(desired_dp, remaining_after_tp)
+        # Respect batch cap and remaining slots after TP
+        desired_dp = min(desired_dp, max(1, total_batch_size), remaining_after_tp)
+        # Snap DP to a divisor of remaining_after_tp
         dp = _largest_divisor_not_exceeding(remaining_after_tp, desired_dp)
         if dp != desired_dp:
             logger.warning(
@@ -143,25 +146,9 @@ def plan_adaptive_mesh(
     in_batch = None if not in_batch_parts else (in_batch_parts[0] if len(in_batch_parts) == 1 else tuple(in_batch_parts))
     in_spec = PartitionSpec(in_batch, None)
 
-    # Warn if DP does not divide total_batch_size (layout will replicate batch over DP in that case)
-    if dp > 1 and (total_batch_size % dp != 0):
-        logger.warning(
-            f"total_batch_size ({total_batch_size}) is not divisible by dp ({dp}); "
-            f"batch will be replicated over DP for step/input specs. Consider using total_batch_size=k*dp for best efficiency."
-        )
-
     # Derived metadata
     total_workers = int(dp) * int(fsdp) * int(tp)
     data_parallel_workers = int(dp) * int(fsdp)
-    try:
-        pc = jax.process_count()
-        pi = jax.process_index()
-    except Exception:
-        pc = None
-        pi = None
-    logger.info(
-        f"adaptive_mesh.plan: dp={dp} fsdp={fsdp} tp={tp} total_workers={total_workers} data_parallel_workers={data_parallel_workers} jax.process_count={pc} jax.process_index={pi}"
-    )
     per_process_rollouts_capacity = int(total_batch_size) * max(1, int(num_return_sequences))
     global_rollouts_capacity = data_parallel_workers * per_process_rollouts_capacity
 
@@ -249,18 +236,15 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         
         # Handle single-process multi-device setups (e.g., TPU pods)
         if proc_count == 1 and plan.dp > 1:
-            # In single-process mode, true per-DP sharding at the dataloader is not possible.
-            # Use a single shard and warn the user. Recommend multi-process launch for true sharding.
+            # Single process with intra-process DP - all DP groups see same shard
             arguments.grain_shard_count = 1
             arguments.grain_shard_index = 0
-            try:
-                setattr(arguments, "single_process_dp_mode", True)
-            except Exception:
-                ...
             if jax.process_index() == 0:
                 logger.warning(
-                    f"Single-process multi-device detected (proc_count=1, mesh_dp={plan.dp}). "
-                    f"Dataset sharding is disabled (shard 0/1). For true per-DP sharding, use a multi-process launch (e.g., mpirun -n {plan.dp})."
+                    f"Single-process multi-device setup detected (proc_count=1, mesh_dp={plan.dp}). "
+                    f"All {plan.dp} DP groups will see the same dataset shard (shard 0/1). "
+                    f"For true dataset sharding across DP groups, use multi-process launch: "
+                    f"e.g., mpirun -n {plan.dp} or srun -n {plan.dp}"
                 )
         elif plan.tp > 1:
             # Multi-process with TP
@@ -289,17 +273,111 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
                 f"Dataset configuration: shard {arguments.grain_shard_index}/{arguments.grain_shard_count} "
                 f"(process {jax.process_index()}/{proc_count}, mesh_dp={plan.dp}, mesh_tp={plan.tp})"
             )
-        # Clamp invalid shard settings as a failsafe
-        if arguments.grain_shard_count is None or arguments.grain_shard_count <= 0:
-            arguments.grain_shard_count = 1
-        if arguments.grain_shard_index is None or arguments.grain_shard_index < 0:
-            arguments.grain_shard_index = 0
     except Exception as e:
         logger.warning(f"Failed to configure dataset sharding: {e}")
         # Fallback to safe defaults
         arguments.grain_shard_count = 1
         arguments.grain_shard_index = 0
     return plan
+
+
+def calculate_optimal_mesh_dims(
+    total_batch_size: int,
+    num_return_sequences: int,
+    num_devices: int = None,
+    prefer_data_parallel: bool = True,  # kept for API compatibility; not used
+    force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
+    mini_batch_size: int = None,  # kept for API compatibility; not used
+) -> tuple[int, int, int, int, int]:
+    """General DP×TP×FSDP sizing.
+
+    Returns (dp, fsdp, ep, tp, sp). `sp` is always 1 in this simplified model.
+    This delegates to `plan_adaptive_mesh` to keep behavior consistent.
+    """
+    if num_devices is None:
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+
+    plan = plan_adaptive_mesh(
+        total_batch_size=total_batch_size,
+        num_return_sequences=num_return_sequences,
+        num_devices=num_devices,
+        force_tensor_parallel=force_tensor_parallel,
+        force_data_parallel=force_data_parallel,
+        mini_batch_size=mini_batch_size,
+    )
+    return (plan.dp, plan.fsdp, plan.ep, plan.tp, plan.sp)
+
+
+def get_adaptive_sharding_spec(
+    total_batch_size: int,
+    num_devices: int = None,
+    force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
+    mini_batch_size: int = None,
+    num_return_sequences: int = 8,
+    rollouts_per_step: int | None = None,
+) -> PartitionSpec:
+    """
+    Get appropriate sharding spec for input tensors based on batch size.
+    
+    Returns:
+        PartitionSpec for input sharding
+    """
+    if num_devices is None:
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+    
+    # Use the centralized planner
+    plan = plan_adaptive_mesh(
+        total_batch_size=total_batch_size,
+        num_return_sequences=num_return_sequences,
+        num_devices=num_devices,
+        force_tensor_parallel=force_tensor_parallel,
+        force_data_parallel=force_data_parallel,
+        mini_batch_size=mini_batch_size,
+        rollouts_per_step=rollouts_per_step,
+    )
+    return plan.input_partition_spec
+
+
+def get_adaptive_step_partition_spec(
+    total_batch_size: int,
+    num_devices: int = None,
+    force_tensor_parallel: int = None,
+    force_data_parallel: int = None,
+    mini_batch_size: int = None,
+    num_return_sequences: int = 8,
+    rollouts_per_step: int | None = None,
+) -> PartitionSpec:
+    """
+    Get appropriate step partition spec for training based on batch size.
+    
+    Returns:
+        PartitionSpec for step partitioning
+    """
+    if num_devices is None:
+        try:
+            num_devices = jax.device_count()
+        except Exception:
+            num_devices = int(os.getenv("JAX_DEVICE_COUNT", "1"))
+    
+    # Use the centralized planner
+    plan = plan_adaptive_mesh(
+        total_batch_size=total_batch_size,
+        num_return_sequences=num_return_sequences,
+        num_devices=num_devices,
+        force_tensor_parallel=force_tensor_parallel,
+        force_data_parallel=force_data_parallel,
+        mini_batch_size=mini_batch_size,
+        rollouts_per_step=rollouts_per_step,
+    )
+    return plan.step_partition_spec
 
 
 def validate_mesh_config(
