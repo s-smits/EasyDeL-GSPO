@@ -18,7 +18,7 @@ export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
 export PYTHONUNBUFFERED=1
 export GRAIN_DISABLE_FORK=1
 export GRAIN_USE_SUBPROCESS=0
-export GRAIN_WORKER_COUNT=1
+export GRAIN_WORKER_COUNT=0
 export AUTO_INIT_JAX=0
 export WANDB_MODE=disabled
 
@@ -86,6 +86,11 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
+  --use_grain true \
+  --grain_worker_count 0 \
+  --grain_worker_buffer_size 0 \
+  --grain_read_threads 1 \
+  --grain_prefetch_buffer_size 128 \
   --use_wandb false \
   --log_logprobs_metrics false \
   --log_global true \
