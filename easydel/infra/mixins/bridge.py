@@ -726,8 +726,13 @@ class EasyBridgeMixin(PushToHubMixin):
         config_class, module = get_modules_by_type(model_type, task_type=cls._model_task)
 
         logger.debug(f"Downloading hf_model weights from {pretrained_model_name_or_path}")
-        if "torch_dtype" not in kwargs.keys():
-            kwargs["torch_dtype"] = torch.float16
+        # Migrate deprecated 'torch_dtype' to new 'dtype' param for HF loaders
+        if "torch_dtype" in kwargs and "dtype" not in kwargs:
+            kwargs["dtype"] = kwargs.pop("torch_dtype")
+        else:
+            kwargs.pop("torch_dtype", None)
+        if "dtype" not in kwargs:
+            kwargs["dtype"] = torch.float16
 
         hf_model = cls.get_torch_loader().from_pretrained(pretrained_model_name_or_path, **kwargs)
         generation_config = getattr(hf_model, "generation_config", None)
