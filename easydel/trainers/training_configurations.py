@@ -599,7 +599,8 @@ class TrainingArguments:
                 f"JAX runtime: process_count={pc} process_index={pi} env(JAX_PROCESS_COUNT)={pc_env} env(JAX_PROCESS_INDEX)={pi_env} env(JAX_COORDINATOR_ADDRESS)={coord_env}"
             )
             # Only auto-initialize jax.distributed when explicitly requested via config or coordinator env present
-            if os.getenv("JAX_COORDINATOR_ADDRESS") or (self.jax_distributed_config and self.jax_distributed_config.get("initialize_jax_distributed", False)):
+            # Only attempt initialize before any jax.devices() calls; rely on env(JAX_COORDINATOR_ADDRESS)
+            if os.getenv("JAX_COORDINATOR_ADDRESS") and not os.getenv("ED_SKIP_JAX_INIT"):
                 try:
                     from jax.distributed import is_initialized as _jd_is_init, initialize as _jd_init
                     if not _jd_is_init():

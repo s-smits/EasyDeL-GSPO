@@ -38,12 +38,19 @@ if [ -z "${JAX_COORDINATOR_ADDRESS:-}" ]; then
     BASE="${BASH_REMATCH[1]}"
     RANK="${BASH_REMATCH[2]}"
     COORD_NAME="${BASE}0"
-    COORD_IP="$(getent hosts "$COORD_NAME" | awk '{print $1}')"
+    # Prefer IPv4 to avoid multi-line/IPv6 link-local issues
+    COORD_IP="$(getent ahostsv4 "$COORD_NAME" | awk 'NR==1 {print $1}')"
+    if [ -z "$COORD_IP" ]; then
+      # Fallback: resolve first address and strip scope if any
+      COORD_IP="$(getent hosts "$COORD_NAME" | awk 'NR==1 {print $1}' | sed 's/%.*//')"
+    fi
     if [ -n "$COORD_IP" ]; then
       export JAX_COORDINATOR_ADDRESS="${COORD_IP}:8476"
       export JAX_PROCESS_INDEX="${RANK}"
       export JAX_PROCESS_COUNT="${ED_NUM_PROCS:-4}"
       echo "Auto JAX distributed: coord=$JAX_COORDINATOR_ADDRESS index=$JAX_PROCESS_INDEX count=$JAX_PROCESS_COUNT"
+    else
+      echo "WARN: Could not resolve coordinator address for $COORD_NAME"
     fi
   fi
 fi
