@@ -31,6 +31,23 @@ if [ "${JAX_PROCESS_INDEX:-}" = "None" ]; then
   unset JAX_PROCESS_INDEX
 fi
 
+# Auto-configure JAX multi-worker (TPU Pod) if coordinator not set and hostname follows *-w-<rank>
+if [ -z "${JAX_COORDINATOR_ADDRESS:-}" ]; then
+  HN="$(hostname)"
+  if [[ "$HN" =~ (.*-w-)([0-9]+)$ ]]; then
+    BASE="${BASH_REMATCH[1]}"
+    RANK="${BASH_REMATCH[2]}"
+    COORD_NAME="${BASE}0"
+    COORD_IP="$(getent hosts "$COORD_NAME" | awk '{print $1}')"
+    if [ -n "$COORD_IP" ]; then
+      export JAX_COORDINATOR_ADDRESS="${COORD_IP}:8476"
+      export JAX_PROCESS_INDEX="${RANK}"
+      export JAX_PROCESS_COUNT="${ED_NUM_PROCS:-4}"
+      echo "Auto JAX distributed: coord=$JAX_COORDINATOR_ADDRESS index=$JAX_PROCESS_INDEX count=$JAX_PROCESS_COUNT"
+    fi
+  fi
+fi
+
 # Pull latest changes and install
 echo "Setting up environment..."
 git pull origin working
@@ -49,23 +66,7 @@ CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-# Prefer explicitly the known venv at /home/air/.venv if present
-PY_BIN="${PY_BIN:-${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}python3}" # prefer venv python, else python3
-if [ -x "/home/air/.venv/bin/python" ]; then
-  PY_BIN="/home/air/.venv/bin/python"
-elif [ -x "$VIRTUAL_ENV/bin/python" ]; then
-  PY_BIN="$VIRTUAL_ENV/bin/python"
-elif command -v python3.11 >/dev/null 2>&1; then
-  PY_BIN="$(command -v python3.11)"
-elif command -v python3.10 >/dev/null 2>&1; then
-  PY_BIN="$(command -v python3.10)"
-elif command -v python3 >/dev/null 2>&1; then
-  PY_BIN="$(command -v python3)"
-fi
-
-echo "Using interpreter: ${PY_BIN} ($($PY_BIN --version 2>&1))"
-
-$PY_BIN -u easydel/scripts/finetune/gsm8k_math_gspo.py \
+python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
