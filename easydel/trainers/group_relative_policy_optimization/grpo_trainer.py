@@ -972,7 +972,7 @@ class GRPOTrainer(Trainer):
 
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
                 prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-            # Materialize completions on host for robust tokenizer decoding
+            # Decode completions text using pjit materialization executed on all processes
             _host_completion_ids = self.materialize_for_decode(completion_ids)
             completions_text = self.processing_class.batch_decode(
                 jax.device_get(_host_completion_ids),
@@ -1140,29 +1140,31 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
+            # Materialize lengths for safe host use on all processes (avoid rank-only pjit)
+            _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
             # Global gathering removed to reduce collective overhead
 
-            # Host-side concise summary for completion token lengths
+            # Materialize lengths on all processes; only process 0 logs to avoid divergence
+            try:
+                lengths_np = np.array(jax.device_get(_safe_lengths))
+            except Exception:
+                lengths_np = np.array([])
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
-                    _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
-                    lengths = jax.device_get(_safe_lengths)
-                    mean_v = float(jnp.mean(lengths))
-                    std_v = float(jnp.std(lengths))
-                    min_v = int(jnp.min(lengths))
-                    max_v = int(jnp.max(lengths))
+                    mean_v = float(np.mean(lengths_np)) if lengths_np.size > 0 else 0.0
+                    std_v = float(np.std(lengths_np)) if lengths_np.size > 0 else 0.0
+                    min_v = int(np.min(lengths_np)) if lengths_np.size > 0 else 0
+                    max_v = int(np.max(lengths_np)) if lengths_np.size > 0 else 0
                     logger.info(
                         f"completion_lengths: mean={mean_v:.2f}, std={std_v:.2f}, min={min_v}, max={max_v}"
                     )
-                    # Also print a small head of the per-completion token lengths
                     try:
-                        head_n = int(min(16, lengths.shape[0]))
-                        logger.info(f"completion_lengths_head={lengths[:head_n].tolist()} (n={int(lengths.shape[0])})")
+                        head_n = int(min(16, lengths_np.shape[0]))
+                        logger.info(f"completion_lengths_head={lengths_np[:head_n].tolist()} (n={int(lengths_np.shape[0])})")
                     except Exception:
                         pass
                 except Exception as e:
                     logger.debug(f"Could not compute completion length summary: {e}")
-                # Brief prompt count
                 try:
                     logger.info(f"prompts: count={int(batch['input_ids'].shape[0])}")
                 except Exception:
@@ -1173,15 +1175,13 @@ class GRPOTrainer(Trainer):
                 if isinstance(prompts, list):
                     prompts_rep = [p for p in prompts for _ in range(self.num_generations)]
                 else:
-                    # Fallback: broadcast single prompt
                     prompts_rep = [str(prompts)] * int(completion_ids.shape[0])
             except Exception:
-                # Last-resort safe fallback
+                # Last-resort safe fallback: repeat first prompt or empty string
                 try:
                     _B = int(prompt_ids.shape[0])
-                    prompts_rep = [prompts[i % _B] if isinstance(prompts, list) and _B > 0 else ""] * int(
-                        completion_ids.shape[0]
-                    )
+                    base_prompt = prompts[0] if isinstance(prompts, list) and _B > 0 else (str(prompts) if prompts else "")
+                    prompts_rep = [base_prompt] * int(completion_ids.shape[0])
                 except Exception:
                     prompts_rep = [""] * int(completion_ids.shape[0])
 
@@ -1224,7 +1224,6 @@ class GRPOTrainer(Trainer):
                         in_prompts = prompts_rep
                                     # Debug output removed to prevent host divergence
                         # Provide host-materialized lengths to reward functions when needed
-                        _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
                         output_reward_func = reward_func(
                             prompts=in_prompts,
                             completions=completions,
@@ -1487,32 +1486,29 @@ class GRPOTrainer(Trainer):
             except Exception:
                 cur_step = 0
 
-            # Materialize to host to avoid device_get failures on non-addressable arrays
+            # Materialize to host to avoid device_get failures on non-addressable arrays (no pjit)
+            def _to_local_host(x, name="array"):
+                if not isinstance(x, jax.Array):
+                    return x
+                try:
+                    if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
+                        return jax.device_get(x)
+                except Exception:
+                    pass
+                try:
+                    shards = x.addressable_shards
+                    if shards and len(shards) > 0:
+                        return jax.device_get(shards[0].data)
+                except Exception:
+                    pass
+                return jnp.array([])
+            # Avoid device_get calls under rank gating; use local shard access only here
+            local_completion_ids = _to_local_host(completion_ids, "completion_ids")
             try:
-                local_completion_ids = jax.device_get(self.materialize_for_decode(completion_ids))
-            except Exception:
-                # Fallback to previous heuristic
-                def _to_local_host(x, name="array"):
-                    if not isinstance(x, jax.Array):
-                        return x
-                    try:
-                        if hasattr(x, "is_fully_addressable") and x.is_fully_addressable:
-                            return jax.device_get(x)
-                    except Exception:
-                        pass
-                    try:
-                        shards = x.addressable_shards
-                        if shards and len(shards) > 0:
-                            return jax.device_get(shards[0].data)
-                    except Exception:
-                        pass
-                    return jnp.array([])
-                local_completion_ids = _to_local_host(completion_ids, "completion_ids")
-            try:
-                local_comp_lens = jax.device_get(self.materialize_for_decode_1d(completion_lengths_per_seq))
+                local_comp_lens = _to_local_host(completion_lengths_per_seq, "lengths")
             except Exception:
                 try:
-                    local_comp_lens = jax.device_get(completion_lengths_per_seq)
+                    local_comp_lens = _to_local_host(completion_lengths_per_seq, "lengths")
                 except Exception:
                     local_comp_lens = jnp.array([])
 

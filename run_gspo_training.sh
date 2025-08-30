@@ -30,7 +30,7 @@ cd /home/air/EasyDeL-GSPO
 echo "Starting GSPO training with optimized configuration..."
 
 # Parse command line arguments
-DATASET="${1:-gsm8k}"
+DATASET="${1:-math-ds}"
 CURRICULUM_MATH="${2:-false}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
@@ -44,7 +44,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --rollout_chunk_size 4 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 4096 \
+  --max_completion_length 5120 \
   --learning_rate 2e-6 \
   --dataset_use_pct 10 \
   --force_tensor_parallel 4 \
