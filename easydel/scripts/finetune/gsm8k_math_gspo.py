@@ -64,6 +64,10 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(runtime.processor_repo_id)
     tokenizer.padding_side = "left"
+    try:
+        tokenizer.truncation_side = "left"
+    except Exception:
+        ...
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
@@ -127,7 +131,10 @@ def main():
     )
 
     SYSTEM_PROMPT_MATH = (
-        "You are a competitive math solver. Solve the problem inside <think>...</think>, then present ONLY the final result inside <answer>...</answer>. "
+        "You are a helpful math assistant. Solve the math problem step by step. "
+        "Show your work clearly, then put your final answer in the format \\boxed{answer}. "
+        "The boxed answer must contain only the numerical value or simplified expression. "
+        "Do not include units, explanations, or extra text inside the boxed answer."
     )
 
     # Dataset builders
@@ -232,6 +239,7 @@ def main():
                 max_length=gspo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
+                return_attention_mask=True,
             )
             # Normalize ground-truth numbers for robustness (strip $, %, commas)
             def _norm(x: str) -> str:
@@ -263,6 +271,7 @@ def main():
                 max_length=gspo_config.max_prompt_length,
                 truncation=True,
                 add_special_tokens=False,
+                return_attention_mask=True,
             )
             # Keep full solution text for Math-Verify
             sol = batch["solution"]
