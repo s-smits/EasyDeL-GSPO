@@ -1168,6 +1168,23 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     pass
             
+            # Build prompt replication aligned with completion ordering: [p0 x R, p1 x R, ...]
+            try:
+                if isinstance(prompts, list):
+                    prompts_rep = [p for p in prompts for _ in range(self.num_generations)]
+                else:
+                    # Fallback: broadcast single prompt
+                    prompts_rep = [str(prompts)] * int(completion_ids.shape[0])
+            except Exception:
+                # Last-resort safe fallback
+                try:
+                    _B = int(prompt_ids.shape[0])
+                    prompts_rep = [prompts[i % _B] if isinstance(prompts, list) and _B > 0 else ""] * int(
+                        completion_ids.shape[0]
+                    )
+                except Exception:
+                    prompts_rep = [""] * int(completion_ids.shape[0])
+
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
@@ -1180,13 +1197,11 @@ class GRPOTrainer(Trainer):
                 ):
                     if isinstance(reward_func, EasyDeLState):
                         if is_conversational:
-                            messages = [
-                                {"messages": p + c}
-                                for p, c in zip(prompts * self.num_generations, completions, strict=False)
-                            ]
+                            # Note: conversational path expects message lists; rely on existing behavior
+                            messages = [{"messages": p + c} for p, c in zip(prompts_rep, completions, strict=False)]
                             texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
                         else:
-                            texts = [p + c for p, c in zip(prompts * self.num_generations, completions, strict=False)]
+                            texts = [p + c for p, c in zip(prompts_rep, completions, strict=False)]
 
                         rew = reward_func.apply_fn(
                             reward_func.graphdef,
@@ -1206,7 +1221,7 @@ class GRPOTrainer(Trainer):
                             ),
                         ).logits[:, 0]
                     else:
-                        in_prompts = prompts * self.num_generations
+                        in_prompts = prompts_rep
                                     # Debug output removed to prevent host divergence
                         # Provide host-materialized lengths to reward functions when needed
                         _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
