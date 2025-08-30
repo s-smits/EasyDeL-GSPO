@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, List
+import os
 
 try:  # Optional JAX for multihost-safe aggregation
     import jax  # type: ignore
@@ -94,6 +95,9 @@ def safe_global_sum(value: Any) -> Any:
 
     Falls back to returning the local value on error or single-process setups.
     """
+    # Allow disabling via env to avoid TPU host collectives if unstable
+    if os.getenv("EASYDEL_DISABLE_GLOBAL_AGG", "0").lower() in {"1", "true", "yes"}:
+        return value
     if jax is None:
         return value
     try:

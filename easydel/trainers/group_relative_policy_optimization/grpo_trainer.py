@@ -1266,32 +1266,37 @@ class GRPOTrainer(Trainer):
                 num_prompts_global = jnp.array(float(num_prompts_local))
 
                 # Safe global scalar aggregation (proc-local fallbacks on failure)
-                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                do_global = bool(getattr(self.arguments, "log_global", False))
+                if do_global and jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
                 try:
-                    print(f"DEBUG: Starting global aggregation - process_count={jax.process_count()}")
-                    if jax.process_count() > 1:
-                        print("DEBUG: Multi-process global aggregation")
-                        _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
-                        _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
-                        _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
-                        _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
-                        success_count_comp_global = jnp.sum(_sc)
-                        total_comp_global = jnp.sum(_tc)
-                        pass_prompt_count_global = jnp.sum(_pp)
-                        num_prompts_global = jnp.sum(_np)
-                        success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
-                        pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                        print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
+                    if do_global:
+                        print(f"DEBUG: Starting global aggregation - process_count={jax.process_count()}")
+                        if jax.process_count() > 1:
+                            print("DEBUG: Multi-process global aggregation")
+                            _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
+                            _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
+                            _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
+                            _np = jax.experimental.multihost_utils.process_allgather(jnp.array(num_prompts_local, dtype=jnp.int32))
+                            success_count_comp_global = jnp.sum(_sc)
+                            total_comp_global = jnp.sum(_tc)
+                            pass_prompt_count_global = jnp.sum(_pp)
+                            num_prompts_global = jnp.sum(_np)
+                            success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
+                            pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
+                            print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
+                        else:
+                            print("DEBUG: Single-process fallback for global metrics")
+                            # Global variables already initialized above with local values
                     else:
-                        print("DEBUG: Single-process fallback for global metrics")
-                        # Global variables already initialized above with local values
+                        # Global aggregation disabled by config; keep local metrics only
+                        pass
                 except Exception as e:
                     print(f"DEBUG: Global aggregation failed: {e}")
-                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    if do_global and jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                         logger.debug(f"global aggregation: failed {e}")
                     # Global variables already initialized above with fallback values
-                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                if do_global and jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: end")
             except Exception as e:
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):

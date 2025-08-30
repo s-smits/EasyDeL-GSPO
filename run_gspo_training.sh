@@ -15,6 +15,8 @@
 # Set environment variables for TPU
 export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
+# Disable global host aggregation to avoid TPU halts from multihost collectives
+export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
@@ -48,7 +50,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --force_tensor_parallel 4 \
   --force_data_parallel 4 \
   --log_logprobs_metrics false \
-  --log_global true \
+  --log_global false \
   --log_steps 1 \
   --save_steps 100 \
   --do_eval false \
