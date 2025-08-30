@@ -42,7 +42,7 @@ fi
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
-# Note: dataset_use_rate now uses fractions (1.0 = 100%, 0.1 = 10%)
+# Note: dataset_use_pct now uses fractions (1.0 = 100%, 0.1 = 10%)
 python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
@@ -55,7 +55,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gfspo.py \
   --max_prompt_length 512 \
   --max_completion_length 5120 \
   --learning_rate 2e-6 \
-  --dataset_use_rate 2 \
+  --dataset_use_pct 2 \
   --force_tensor_parallel 4 \
   --force_data_parallel 2 \
   --log_logprobs_metrics false \

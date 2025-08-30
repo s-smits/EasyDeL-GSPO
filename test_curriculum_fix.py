@@ -18,7 +18,7 @@ def test_curriculum_training():
         "python", "-m", "easydel.scripts.finetune.gsm8k_math_gfspo",
         "--repo_id", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         "--dataset", "math-ds",
-        "--dataset_use_rate", "10",  # Use only 10% of data for quick test
+        "--dataset_use_pct", "10",  # Use only 10% of data for quick test
         "--curriculum_math", "true",
         "--num_train_epochs", "1",  # 1 epoch per level for quick test
         "--learning_rate", "5e-6",

@@ -132,25 +132,20 @@ def main():
 
     # Dataset builders
     def _safe_split(name: str, rate: float | int | None) -> str:
-        """Return a split string that avoids invalid 100% percent slices.
+        """Return a split string that only slices for percent in [1, 100).
 
-        If rate is >= 1.0 or None, returns the base split name (no slicing).
+        If rate is not in (0, 1), returns the base split name (no slicing).
         Otherwise uses a percentage in [1, 99].
         """
         try:
             if rate is None:
                 return name
-            # Handle numeric strings or other weird inputs defensively
             r = float(rate)
         except Exception:
             return name
 
-        if r >= 1.0:
-            return name
         pct = int(r * 100)
-        if pct <= 0:
-            pct = 1
-        if pct >= 100:
+        if pct < 1 or pct >= 100:
             return name
         return f"{name}[:{pct}%]"
 
@@ -166,7 +161,6 @@ def main():
 
         ds_train = load_dataset("openai/gsm8k", "main", split=_safe_split("train", runtime.dataset_use_pct))
         ds_test = load_dataset("openai/gsm8k", "main", split=_safe_split("test", runtime.dataset_use_pct))
-
         def map_ex(x):
             return {
                 "prompt": [
