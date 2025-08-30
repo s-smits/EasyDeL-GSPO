@@ -20,7 +20,7 @@ class RunTimeConfig:
         default="math-ds",
         metadata={"help": "Dataset to use: 'gsm8k'|'gsm8k-ds' or 'math'|'math-ds'"},
     )
-    dataset_use_rate: float = field(
+    dataset_use_pct: float = field(
         default=1.0,
         metadata={"help": "Fraction of dataset to use (1.0 = 100%, 0.1 = 10%)"}
     )
@@ -131,6 +131,29 @@ def main():
     )
 
     # Dataset builders
+    def _safe_split(name: str, rate: float | int | None) -> str:
+        """Return a split string that avoids invalid 100% percent slices.
+
+        If rate is >= 1.0 or None, returns the base split name (no slicing).
+        Otherwise uses a percentage in [1, 99].
+        """
+        try:
+            if rate is None:
+                return name
+            # Handle numeric strings or other weird inputs defensively
+            r = float(rate)
+        except Exception:
+            return name
+
+        if r >= 1.0:
+            return name
+        pct = int(r * 100)
+        if pct <= 0:
+            pct = 1
+        if pct >= 100:
+            return name
+        return f"{name}[:{pct}%]"
+
     def build_gsm8k():
         def extract_hash_answer(text: str):
             if not isinstance(text, str):
@@ -141,8 +164,8 @@ def main():
                 return m[-1] if m else ""
             return text.split("####")[-1].strip()
 
-        ds_train = load_dataset("openai/gsm8k", "main", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
-        ds_test = load_dataset("openai/gsm8k", "main", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_train = load_dataset("openai/gsm8k", "main", split=_safe_split("train", runtime.dataset_use_pct))
+        ds_test = load_dataset("openai/gsm8k", "main", split=_safe_split("test", runtime.dataset_use_pct))
 
         def map_ex(x):
             return {
@@ -157,9 +180,9 @@ def main():
 
     def build_math():
         # Hendrycks MATH — problems include LaTeX; solutions contain \\boxed{...}
-        ds_train = load_dataset("qwedsacf/competition_math", split=f"train[:{int(runtime.dataset_use_rate * 100)}%]")
+        ds_train = load_dataset("qwedsacf/competition_math", split=_safe_split("train", runtime.dataset_use_pct))
         try:
-            ds_test = load_dataset("qwedsacf/competition_math", split=f"test[:{int(runtime.dataset_use_rate * 100)}%]")
+            ds_test = load_dataset("qwedsacf/competition_math", split=_safe_split("test", runtime.dataset_use_pct))
         except ValueError as e:
             # Fallback for datasets that only provide a 'train' split
             if "Unknown split" in str(e) or "test" in str(e):
