@@ -153,6 +153,15 @@ def plan_adaptive_mesh(
     # Derived metadata
     total_workers = int(dp) * int(fsdp) * int(tp)
     data_parallel_workers = int(dp) * int(fsdp)
+    try:
+        pc = jax.process_count()
+        pi = jax.process_index()
+    except Exception:
+        pc = None
+        pi = None
+    logger.info(
+        f"adaptive_mesh.plan: dp={dp} fsdp={fsdp} tp={tp} total_workers={total_workers} data_parallel_workers={data_parallel_workers} jax.process_count={pc} jax.process_index={pi}"
+    )
     per_process_rollouts_capacity = int(total_batch_size) * max(1, int(num_return_sequences))
     global_rollouts_capacity = data_parallel_workers * per_process_rollouts_capacity
 

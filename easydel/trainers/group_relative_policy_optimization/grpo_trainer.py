@@ -465,6 +465,13 @@ class GRPOTrainer(Trainer):
         """
         # Get or create mesh with adaptive configuration
         mesh = self._get_or_create_mesh()
+        # Log mesh and runtime diagnostics
+        try:
+            pc = jax.process_count()
+            pi = jax.process_index()
+            logger.info(f"configure_functions: jax.process_count={pc} jax.process_index={pi} mesh.shape={getattr(mesh, 'shape', {})}")
+        except Exception:
+            logger.info(f"configure_functions: mesh.shape={getattr(mesh, 'shape', {})}")
         self._update_model_mesh(mesh)
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)

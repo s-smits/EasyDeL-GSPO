@@ -581,12 +581,34 @@ class TrainingArguments:
             JaxDistributedConfig.initialize(self.jax_distributed_config)
         except Exception as e:
             logger.info(f"Skipping JAX distributed initialization in this process: {e}")
-        # Ensure distributed is initialized when multiple processes are detected to satisfy downstream tools
+
+        # Diagnostics and safe distributed initialization policy
         try:
-            if jax.process_count() > 1:
-                from jax.distributed import is_initialized as _jd_is_init, initialize as _jd_init
-                if not _jd_is_init():
-                    _jd_init()
+            pc_env = os.getenv("JAX_PROCESS_COUNT")
+            pi_env = os.getenv("JAX_PROCESS_INDEX")
+            coord_env = os.getenv("JAX_COORDINATOR_ADDRESS")
+            pc = None
+            pi = None
+            try:
+                pc = jax.process_count()
+                pi = jax.process_index()
+            except Exception:
+                pc = None
+                pi = None
+            logger.info(
+                f"JAX runtime: process_count={pc} process_index={pi} env(JAX_PROCESS_COUNT)={pc_env} env(JAX_PROCESS_INDEX)={pi_env} env(JAX_COORDINATOR_ADDRESS)={coord_env}"
+            )
+            # Only auto-initialize jax.distributed when explicitly requested via config or coordinator env present
+            if os.getenv("JAX_COORDINATOR_ADDRESS") or (self.jax_distributed_config and self.jax_distributed_config.get("initialize_jax_distributed", False)):
+                try:
+                    from jax.distributed import is_initialized as _jd_is_init, initialize as _jd_init
+                    if not _jd_is_init():
+                        _jd_init()
+                        logger.info("Initialized jax.distributed based on coordinator/config.")
+                except Exception as _e:
+                    logger.warning(f"jax.distributed initialization attempt failed: {_e}")
+            else:
+                logger.info("Skipping jax.distributed.initialize: no coordinator configured; running single-controller mode.")
         except Exception:
             ...
         
