@@ -591,12 +591,12 @@ class GRPOTrainer(Trainer):
         self.generate_function = generate
 
         # Helpers to materialize arrays on host for safe decoding/logging
-        @ejit(in_shardings=(self.input_sharding,), out_shardings=empty_sharding)
+        @ejit(in_shardings=(None,), out_shardings=empty_sharding)
         def _materialize_for_decode(x):
             return x
         self.materialize_for_decode = _materialize_for_decode
 
-        @ejit(in_shardings=(self.lengths_sharding,), out_shardings=empty_sharding)
+        @ejit(in_shardings=(None,), out_shardings=empty_sharding)
         def _materialize_for_decode_1d(x):
             return x
         self.materialize_for_decode_1d = _materialize_for_decode_1d
