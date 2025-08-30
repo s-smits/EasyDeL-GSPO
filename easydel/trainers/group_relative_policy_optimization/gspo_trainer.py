@@ -55,13 +55,11 @@ class GSPOTrainer(GRPOTrainer):
         self.arguments = arguments
         
         try:
-            print(f"DEBUG: Initializing GSPO trainer - importance_sampling_level={arguments.importance_sampling_level}, epsilon={arguments.epsilon}, beta={arguments.beta}")
             logger.info(
                 f"Initialized GSPO trainer with importance_sampling_level={arguments.importance_sampling_level}, "
                 f"epsilon={arguments.epsilon}, beta={arguments.beta}"
             )
         except Exception as e:
-            print(f"DEBUG: Failed to log GSPO trainer initialization: {e}")
             logger.warning(f"Failed to log GSPO trainer initialization: {e}")
 
     def configure_functions(self) -> TrainerConfigureFunctionOutput:

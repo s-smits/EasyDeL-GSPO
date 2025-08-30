@@ -83,14 +83,11 @@ class GRPOTrainer(Trainer):
 
         if self._mesh_plan:
             try:
-                if jax.process_index() == 0:
-                    print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
                 logger.info(
                     f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
                     f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
                 )
             except Exception as e:
-                print(f"DEBUG: Failed to log mesh configuration: {e}")
                 logger.warning(f"Failed to log mesh configuration: {e}")
         
         self.arguments = arguments
@@ -580,19 +577,12 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     proc_offset = 0
                 prng_key = jax.random.fold_in(base_key, int(proc_offset))
-
-                try:
-                    print("DEBUG: generate() starting")
-                    sequences = module.generate(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        generation_config=generation_config,
-                        prng_key=prng_key,
-                    ).sequences
-                    print("DEBUG: generate() done")
-                except Exception as e:
-                    print(f"DEBUG: generate() failed: {e}")
-                    raise
+                sequences = module.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=generation_config,
+                    prng_key=prng_key,
+                ).sequences
                 # Return inputs re-constrained to the input sharding spec to allow repeated calls
                 input_ids = with_sharding_constraint(input_ids, adaptive_spec)
                 attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
@@ -653,14 +643,10 @@ class GRPOTrainer(Trainer):
         def _compute_refmodel_logps(graphtree, graphother, ids, mask, graphdef):
             apply = flax.nnx.merge(graphdef, graphtree, graphother)
             with apply.mesh:
-                try:
-                    ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
-                    mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
-                    out = get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
-                    return out
-                except Exception as e:
-                    print(f"DEBUG: compute_refmodel_logps failed: {e}")
-                    raise
+                ids = with_sharding_constraint(ids, self.arguments.step_partition_spec)
+                mask = with_sharding_constraint(mask, self.arguments.step_partition_spec)
+                out = get_per_token_logps(apply, ids, mask, self.arguments.max_prompt_length)
+                return out
 
         # Allow input sharding of token ids and masks to pass through (we re-constrain inside the fn)
         # This avoids mismatches like: pjit expects replicated but arg is sharded as ('dp','tp')
@@ -920,8 +906,6 @@ class GRPOTrainer(Trainer):
                     ref_mb = max(1, min(int(ref_mb), total_bsz))
 
                     try:
-                        if ref_mb < total_bsz:
-                            print(f"DEBUG: ref_logps microbatching enabled: mb={ref_mb} total={total_bsz}")
                         parts = []
                         for start in range(0, total_bsz, ref_mb):
                             end = min(total_bsz, start + ref_mb)
@@ -937,25 +921,20 @@ class GRPOTrainer(Trainer):
                             out_mb = jax.block_until_ready(out_mb)
                             parts.append(out_mb)
                         ref_logps_chunk = jnp.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-                    except Exception as e:
-                        print(f"DEBUG: ref_logps microbatch path failed ({e}), retrying with mb=1")
-                        try:
-                            parts = []
-                            for i in range(total_bsz):
-                                ids_mb = prompt_completion_ids_chunk[i:i+1]
-                                msk_mb = full_mask_chunk[i:i+1]
-                                out_mb = self.compute_refmodel_logps(
-                                    self.ref_state.graphstate,
-                                    self.ref_state.graphother,
-                                    ids_mb,
-                                    msk_mb,
-                                )
-                                out_mb = jax.block_until_ready(out_mb)
-                                parts.append(out_mb)
-                            ref_logps_chunk = jnp.concatenate(parts, axis=0)
-                        except Exception as ee:
-                            print(f"DEBUG: ref_logps mb=1 fallback failed ({ee}); using zeros as last resort")
-                            ref_logps_chunk = jnp.zeros_like(jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1), dtype=jnp.float32)
+                    except Exception:
+                        parts = []
+                        for i in range(total_bsz):
+                            ids_mb = prompt_completion_ids_chunk[i:i+1]
+                            msk_mb = full_mask_chunk[i:i+1]
+                            out_mb = self.compute_refmodel_logps(
+                                self.ref_state.graphstate,
+                                self.ref_state.graphother,
+                                ids_mb,
+                                msk_mb,
+                            )
+                            out_mb = jax.block_until_ready(out_mb)
+                            parts.append(out_mb)
+                        ref_logps_chunk = jnp.concatenate(parts, axis=0)
                 token_logps_time += float(token_logps_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
@@ -1100,27 +1079,20 @@ class GRPOTrainer(Trainer):
                     def _get_gt(_batch, idx: int):
                         try:
                             if "solution_normalized" in _batch and _batch["solution_normalized"] is not None:
-                                print("DEBUG: Using 'solution_normalized' from batch")
                                 v = _batch["solution_normalized"]
                             elif "solution" in _batch and _batch["solution"] is not None:
-                                print("DEBUG: Using 'solution' from batch")
                                 v = _batch["solution"]
                             elif "answer" in _batch and _batch["answer"] is not None:
-                                print("DEBUG: Using 'answer' from batch")
                                 v = _batch["answer"]
                             else:
-                                print("DEBUG: No ground truth key found in batch")
                                 return None
                             if hasattr(v, "__getitem__"):
                                 try:
-                                    print(f"DEBUG: Attempting to index ground truth with idx={idx}")
                                     return v[idx]
-                                except Exception as e:
-                                    print(f"DEBUG: Exception indexing ground truth with idx={idx}: {e}, falling back to v[0]")
+                                except Exception:
                                     return v[0]
                             return v
-                        except Exception as e:
-                            print(f"DEBUG: Exception in _get_gt: {e}")
+                        except Exception:
                             return None
 
                     example_gt = _get_gt(batch, example_idx)
@@ -1131,20 +1103,15 @@ class GRPOTrainer(Trainer):
                         # Detect dataset type based on configured reward functions
                         rf_names = [getattr(rf, "__name__", "") for rf in self.reward_funcs]
                         rf_mods = [getattr(rf, "__module__", "") for rf in self.reward_funcs]
-                        print(f"DEBUG: Reward function names: {rf_names}")
-                        print(f"DEBUG: Reward function modules: {rf_mods}")
                         is_math = any((name.startswith("math/") or mod.endswith("math_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
                         is_gsm8k = any((name.startswith("gsm8k/") or mod.endswith("gsm8k_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
-                        print(f"DEBUG: Detected dataset type - is_math={is_math}, is_gsm8k={is_gsm8k}")
 
                         if is_math:
                             try:
-                                print("DEBUG: Using math reward extraction")
                                 # Preview: last 200 characters (avoid full tokenization overhead)
                                 preview = example_pred_text[-200:] if len(example_pred_text) > 200 else example_pred_text
                                 if len(preview) > 200:
                                     preview = "..." + preview[-200:]
-                                print(f"DEBUG: Math preview (chars tail): '{preview}'")
 
                                 # Extract: prefer last boxed; else last number; fallback to preview
                                 example_pred_value = preview
@@ -1168,26 +1135,20 @@ class GRPOTrainer(Trainer):
                                     if _nums:
                                         example_pred_value = _nums[-1]
 
-                                print(f"DEBUG: Math extraction result: '{example_pred_value}'")
-                            except Exception as e:
-                                print(f"DEBUG: Math extraction failed: {e}")
+                            except Exception:
                                 example_pred_value = example_pred_text
                         elif is_gsm8k:
                             try:
-                                print("DEBUG: Using GSM8K reward extraction")
                                 import re as _re
                                 from easydel.verification.gsm8k_reward import _extract_answer_from_xml as _gx_extract_xml, _normalize_number_text as _gx_norm  # type: ignore
                                 _ans = _gx_extract_xml(example_pred_text) or example_pred_text
                                 _norm = _gx_norm(_ans)
                                 _nums = _re.findall(r"-?\d+\.?\d*", _norm)
                                 example_pred_value = _nums[-1] if _nums else _ans
-                                print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
-                            except Exception as e:
-                                print(f"DEBUG: GSM8K extraction failed: {e}")
+                            except Exception:
                                 pass
                         # else: keep example_pred_value as raw text
-                    except Exception as e:
-                        print(f"DEBUG: Exception in reward-specific extraction: {e}")
+                    except Exception:
                         pass
 
                     # Clip long prompt/output for readability
@@ -1199,12 +1160,11 @@ class GRPOTrainer(Trainer):
                             return str(s)
 
                     try:
-                        print(f"DEBUG: About to log example - prompt_len={len(str(example_prompt))}, gt='{example_gt}', pred_len={len(str(example_pred_value))}")
                         logger.info(
                             f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
                         )
-                    except Exception as e:
-                        print(f"DEBUG: Failed to log example: {e}")
+                    except Exception:
+                        pass
                 except Exception as _e:
                     try:
                         logger.debug(f"example/local logging failed: {_e}")
@@ -1305,9 +1265,9 @@ class GRPOTrainer(Trainer):
                                 _fname = getattr(reward_func, "__name__", f"reward_{i}")
                                 _mean = float(jnp.mean(rew))
                                 _success_rate = float(jnp.mean(rew > 0.0))
-                                print(f"DEBUG: {_fname} - mean={_mean:.4f}, success_rate={_success_rate:.4f}")
-                            except Exception as e:
-                                print(f"DEBUG: Failed to log reward {i}: {e}")
+                                logger.debug(f"{_fname} - mean={_mean:.4f}, success_rate={_success_rate:.4f}")
+                            except Exception:
+                                pass
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             # Optional cross-process sync to stabilize host-side reward paths
@@ -1349,8 +1309,8 @@ class GRPOTrainer(Trainer):
                 # Debug: Show why success_rate might be misleading
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     try:
-                        print(f"DEBUG: reward/success_rate={float(success_rate_comp_local):.4f} (based on sum of rewards > 0)")
-                        print(f"DEBUG: This can be misleading if format_reward=1.0 but answer_reward=0.0")
+                        logger.debug(f"reward/success_rate={float(success_rate_comp_local):.4f} (based on sum of rewards > 0)")
+                        logger.debug("This can be misleading if format_reward=1.0 but answer_reward=0.0")
                     except Exception:
                         pass
 
@@ -1370,9 +1330,7 @@ class GRPOTrainer(Trainer):
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     logger.debug("global aggregation: start")
                 try:
-                    print(f"DEBUG: Starting global aggregation - process_count={jax.process_count()}")
                     if jax.process_count() > 1:
-                        print("DEBUG: Multi-process global aggregation")
                         _sc = jax.experimental.multihost_utils.process_allgather(jnp.array(success_count_comp_local, dtype=jnp.int32))
                         _tc = jax.experimental.multihost_utils.process_allgather(jnp.array(total_comp_local, dtype=jnp.int32))
                         _pp = jax.experimental.multihost_utils.process_allgather(jnp.array(pass_prompt_count_local, dtype=jnp.int32))
@@ -1383,12 +1341,10 @@ class GRPOTrainer(Trainer):
                         num_prompts_global = jnp.sum(_np)
                         success_rate_comp_global = jnp.where(total_comp_global > 0, success_count_comp_global / total_comp_global, jnp.array(0.0))
                         pass_at_k_global = pass_prompt_count_global / jnp.maximum(1.0, num_prompts_global)
-                        print(f"DEBUG: Global aggregation successful - total_comp_global={total_comp_global}")
                     else:
-                        print("DEBUG: Single-process fallback for global metrics")
                         # Global variables already initialized above with local values
+                        pass
                 except Exception as e:
-                    print(f"DEBUG: Global aggregation failed: {e}")
                     if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                         logger.debug(f"global aggregation: failed {e}")
                     # Global variables already initialized above with fallback values
