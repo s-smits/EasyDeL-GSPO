@@ -888,12 +888,15 @@ class GRPOTrainer(Trainer):
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
-            # Prefer generating all returns at once to avoid any chunk interleaving ambiguities.
-            # If a smaller chunk is explicitly provided, clamp to [1, R] and rely on reordering below.
+            # Memory-cautious default: chunk size = 1 unless explicitly overridden.
+            # This avoids large per-call KV caches on TPUs and reduces halt risk.
             if rollout_chunk_size is None or int(rollout_chunk_size) <= 0:
-                rollout_chunk_size = int(self.num_generations)
+                rollout_chunk_size = 1
             else:
                 rollout_chunk_size = int(max(1, min(int(rollout_chunk_size), int(self.num_generations))))
+            # If microbatch_one_completion is enabled, enforce chunk size = 1
+            if bool(getattr(self.arguments, "microbatch_one_completion", False)):
+                rollout_chunk_size = 1
             # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
 
             sequences_chunks = []
