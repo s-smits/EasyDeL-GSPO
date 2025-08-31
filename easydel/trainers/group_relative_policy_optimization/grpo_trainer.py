@@ -906,6 +906,13 @@ class GRPOTrainer(Trainer):
                 gather_idx = jnp.clip(gather_idx, 0, max(0, total_len - 1))
                 completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
                 completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
+                
+                # Debug: Store sequences for logging
+                try:
+                    self._debug_last_sequences = jax.device_get(prompt_completion_ids_chunk)
+                    self._debug_last_completion_ids = jax.device_get(completion_ids_chunk)
+                except Exception:
+                    pass
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
@@ -1129,7 +1136,28 @@ class GRPOTrainer(Trainer):
                             return str(s)
 
                     try:
+                        # Debug sequence length and extraction
+                        debug_full_seq = ""
+                        debug_completion_raw = ""
+                        try:
+                            if hasattr(self, '_debug_last_sequences') and self._debug_last_sequences is not None:
+                                debug_seq = self._debug_last_sequences[0] if len(self._debug_last_sequences) > 0 else None
+                                if debug_seq is not None:
+                                    debug_full_seq = self.processing_class.decode(debug_seq, skip_special_tokens=True)
+                        except Exception:
+                            pass
+                        
+                        try:
+                            if hasattr(self, '_debug_last_completion_ids') and self._debug_last_completion_ids is not None:
+                                debug_comp = self._debug_last_completion_ids[0] if len(self._debug_last_completion_ids) > 0 else None
+                                if debug_comp is not None:
+                                    debug_completion_raw = self.processing_class.decode(debug_comp, skip_special_tokens=True)
+                        except Exception:
+                            pass
+                        
                         print(f"DEBUG: About to log example - prompt_len={len(str(example_prompt))}, gt='{example_gt}', pred_len={len(str(example_pred_value))}")
+                        print(f"DEBUG: Full sequence (first 200 chars): '{debug_full_seq[:200] if debug_full_seq else 'N/A'}'")
+                        print(f"DEBUG: Raw completion: '{debug_completion_raw[:100] if debug_completion_raw else 'N/A'}'")
                         logger.info(
                             f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
                         )
