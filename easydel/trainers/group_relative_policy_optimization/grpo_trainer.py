@@ -911,7 +911,16 @@ class GRPOTrainer(Trainer):
                 try:
                     self._debug_last_sequences = jax.device_get(prompt_completion_ids_chunk)
                     self._debug_last_completion_ids = jax.device_get(completion_ids_chunk)
-                except Exception:
+                    self._debug_prompt_ids = jax.device_get(prompt_ids)
+                    
+                    # Debug sequence lengths
+                    seq_shape = prompt_completion_ids_chunk.shape
+                    prompt_shape = prompt_ids.shape  
+                    completion_shape = completion_ids_chunk.shape
+                    print(f"DEBUG: Sequence shapes - full={seq_shape}, prompt={prompt_shape}, completion={completion_shape}")
+                    print(f"DEBUG: Expected generation length = {seq_shape[-1] - prompt_shape[-1]} tokens")
+                except Exception as e:
+                    print(f"DEBUG: Failed to store debug sequences: {e}")
                     pass
 
                 with capture_time() as token_logps_time_fn:
