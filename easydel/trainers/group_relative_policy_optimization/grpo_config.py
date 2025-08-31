@@ -174,6 +174,19 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Optional: strictly control which EOS token ids to use during generation/stopping
+    strict_eos_ids: list[int] | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional override for EOS token ids used during generation and completion-length detection. "
+                "If set, these ids replace the auto-detected set (tokenizer/model special tokens). "
+                "Useful for models with multiple special tokens (e.g., Qwen) where you want to stop only on "
+                "<|im_end|> to shape rollout length behavior."
+            )
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:

@@ -159,6 +159,60 @@ class GRPOTrainer(Trainer):
                     reward_processing_classes[i] = reward_processing_class
                 reward_funcs[i] = reward_func
 
+        # Resolve static EOS once and stick to it to avoid drifting behaviors
+        self._eos_ids: list[int] | None = None
+
+        def _resolve_static_tokens_once():
+            # Determine EOS: strict override > tokenizer > model.generation_config
+            strict = getattr(self.arguments, "strict_eos_ids", None)
+            if isinstance(strict, (list, tuple)) and len(strict) > 0:
+                try:
+                    ids = [int(x) for x in strict if x is not None]
+                except Exception:
+                    ids = []
+            else:
+                # Prefer tokenizer/processor EOS
+                if isinstance(self.processing_class, ProcessorMixin):
+                    tok = self.processing_class.tokenizer
+                else:
+                    tok = self.processing_class
+                eos_val = getattr(tok, "eos_token_id", None)
+                if isinstance(eos_val, (list, tuple)) and len(eos_val) > 0:
+                    ids = [int(eos_val[0])]
+                elif isinstance(eos_val, int):
+                    ids = [int(eos_val)]
+                else:
+                    # Fallback to model.generation_config
+                    try:
+                        conf_eos = getattr(self.model, "generation_config", None)
+                        conf_val = getattr(conf_eos, "eos_token_id", None)
+                        if isinstance(conf_val, (list, tuple)) and len(conf_val) > 0:
+                            ids = [int(conf_val[0])]
+                        elif isinstance(conf_val, int):
+                            ids = [int(conf_val)]
+                        else:
+                            raise ValueError
+                    except Exception:
+                        raise ValueError(
+                            "Unable to resolve EOS token id. Please set GRPOConfig.strict_eos_ids explicitly."
+                        )
+            if not ids:
+                raise ValueError("Resolved empty EOS token ids. Please set GRPOConfig.strict_eos_ids explicitly.")
+            self._eos_ids = ids
+            # Best-effort: set model.generation_config to use the same single-source EOS
+            try:
+                self.model.generation_config.eos_token_id = ids[0] if len(ids) == 1 else ids
+            except Exception:
+                pass
+            # One-time visibility
+            try:
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    logger.info(f"EOS resolved (static): {self._eos_ids}")
+            except Exception:
+                pass
+
+        _resolve_static_tokens_once()
+
         self.num_generations = arguments.num_return_sequences
         self.reward_processing_classes = reward_processing_classes
         self.reward_funcs = reward_funcs
@@ -208,6 +262,8 @@ class GRPOTrainer(Trainer):
             log_table = None
         self.log_table = log_table
 
+        # EOS resolved once above; no further heuristics
+
     def _get_or_create_mesh(self):
         """Get mesh from arguments or create from adaptive config."""
         if hasattr(self.arguments, 'mesh_dims') and self.arguments.mesh_dims:
@@ -254,53 +310,10 @@ class GRPOTrainer(Trainer):
 
     @cached_property
     def eos_token_id(self) -> list[int]:
-        eos_ids = []
-        # 1) Start with EOS from the primary processing class/tokenizer
-        if isinstance(self.processing_class, ProcessorMixin):
-            tokenizer = self.processing_class.tokenizer
-            proc_eos_token_id = tokenizer.eos_token_id
-        else:
-            tokenizer = self.processing_class
-            proc_eos_token_id = getattr(self.processing_class, "eos_token_id", None)
-
-        if isinstance(proc_eos_token_id, int):
-            proc_eos_token_id = [proc_eos_token_id]
-        if isinstance(proc_eos_token_id, (list, tuple)):
-            eos_ids.extend([t for t in proc_eos_token_id if t is not None])
-
-        # 2) Include common Qwen end tokens if the tokenizer knows them
-        special_tokens = [
-            "<|im_end|>",
-            "<|endoftext|>",
-        ]
-        convert_fn = getattr(tokenizer, "convert_tokens_to_ids", None)
-        unk_id = getattr(tokenizer, "unk_token_id", None)
-        if callable(convert_fn):
-            for tok in special_tokens:
-                try:
-                    tid = convert_fn(tok)
-                except Exception:
-                    tid = None
-                if tid is not None and (unk_id is None or tid != unk_id):
-                    eos_ids.append(tid)
-
-        # 3) Merge any EOS ids present in model.generation_config (if available)
-        if hasattr(self.model, "generation_config"):
-            conf_eos = self.model.generation_config.eos_token_id
-            if isinstance(conf_eos, int):
-                conf_eos = [conf_eos]
-            if isinstance(conf_eos, (list, tuple)):
-                eos_ids.extend([t for t in conf_eos if t is not None])
-
-        # Return unique list with deterministic ordering, excluding pad_token_id
-        unique_eos = sorted(set(eos_ids))
-        try:
-            pad_id = self.pad_token_id
-            unique_eos = [t for t in unique_eos if t is not None and t != pad_id]
-        except Exception:
-            # Best-effort filtering; if pad_token_id not available, keep unique list
-            pass
-        return unique_eos
+        # Single source of truth determined at initialization
+        if self._eos_ids is None or len(self._eos_ids) == 0:
+            raise ValueError("EOS not resolved. This should have been set during trainer initialization.")
+        return self._eos_ids
 
     def _prepare_dataset(
         self,
@@ -844,7 +857,16 @@ class GRPOTrainer(Trainer):
                                 self.generate_function(state, prompt_ids, prompt_mask, 1, seed_ri)
                             )
                             seq_list.append(seq_one)
-                        seq_chunk = jnp.concatenate(seq_list, axis=0)
+                        # Currently seq_list is returns-major: [ri=0 (B rows), ri=1 (B rows), ...]
+                        # Reorder to prompt-major: (B, cur_nrs, ...) -> (B*cur_nrs, ...)
+                        seq_concat = jnp.concatenate(seq_list, axis=0)  # (cur_nrs * B, ...)
+                        B_local = int(prompt_ids.shape[0])
+                        new_shape = (cur_nrs, B_local) + tuple(seq_concat.shape[1:])
+                        seq_rm = jnp.reshape(seq_concat, new_shape)  # (R, B, ...)
+                        seq_pm = jnp.transpose(seq_rm, (1, 0) + tuple(range(2, seq_rm.ndim)))  # (B, R, ...)
+                        seq_chunk = jnp.reshape(
+                            seq_pm, (B_local * cur_nrs,) + tuple(seq_pm.shape[2:])
+                        )  # (B*R, ...)
                     else:
                         # Single backend call for the whole chunk
                         seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
