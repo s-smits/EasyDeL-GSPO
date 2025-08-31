@@ -567,22 +567,8 @@ class GRPOTrainer(Trainer):
                     use_cache=False,
                 )
                 
-                # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
-                def _hash_u32(ids):
-                    h = jnp.uint32(2166136261)
-                    def body(hh, x):
-                        hh = jnp.uint32((hh ^ jnp.uint32(x)) * jnp.uint32(16777619))
-                        return hh, None
-                    hh, _ = jax.lax.scan(body, h, ids.astype(jnp.uint32))
-                    return hh
-
-                base_key = jax.random.PRNGKey(prng_seed)
-                try:
-                    prompt_slice = input_ids[:, : self.arguments.max_prompt_length]
-                    ph = jax.vmap(_hash_u32)(prompt_slice)
-                    prng_key = jax.random.fold_in(base_key, int(jnp.bitwise_xor.reduce(ph.astype(jnp.uint32))))
-                except Exception:
-                    prng_key = base_key
+                # Single source of randomness: trainer-provided prng_seed only
+                prng_key = jax.random.PRNGKey(prng_seed)
 
                 sequences = module.generate(
                     input_ids=input_ids,

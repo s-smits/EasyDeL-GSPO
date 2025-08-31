@@ -1349,29 +1349,8 @@ class EasyGenerationMixin:
             logits = model_outputs.logits[:, -1]
             logits = logits_processor(state.sequences, logits, state.cur_len)
             logits = logits_warper(logits, logits, state.cur_len)
-            # Small, per-row jitter to diversify identical rows (optional; defaults to off)
-            try:
-                diversify_eps = getattr(self.config, "diversify_returns_epsilon", 1e-5)
-            except Exception:
-                diversify_eps = 1e-5
-            if diversify_eps and diversify_eps > 0.0:
-                try:
-                    row_keys_for_noise = jax.random.split(prng_key, logits.shape[0])
-                    # Gumbel noise preserves softmax-invariance patterns; scale by epsilon
-                    def _g_noise(k, row_shape):
-                        return jax.random.gumbel(k, shape=row_shape, dtype=logits.dtype)
-                    noise = jax.vmap(lambda k, t: _g_noise(k, t.shape))(row_keys_for_noise, logits)
-                    logits = logits + (diversify_eps * noise)
-                except Exception:
-                    pass
-            # Use per-row RNG keys to ensure duplicate rows (e.g., expanded for num_return_sequences)
-            # sample independently within a single generate() call.
-            # Use fold_in(row_index) for guaranteed distinct streams per row
-            try:
-                row_indices = jnp.arange(logits.shape[0], dtype=jnp.uint32)
-                row_keys = jax.vmap(lambda i: jax.random.fold_in(prng_key, int(i)))(row_indices)
-            except Exception:
-                row_keys = jax.random.split(prng_key, logits.shape[0])
+            # Derive independent per-row RNG streams solely from the trainer-provided key
+            row_keys = jax.random.split(prng_key, logits.shape[0])
             next_token = (
                 jax.vmap(lambda k, row_logits: jax.random.categorical(k, row_logits, axis=-1))(row_keys, logits)
                 * ~state.is_sent_finished
