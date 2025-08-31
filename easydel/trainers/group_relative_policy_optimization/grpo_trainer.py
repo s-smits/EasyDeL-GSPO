@@ -1318,6 +1318,15 @@ class GRPOTrainer(Trainer):
                                 best_j = j
                         sus.append((i, hits, best_j, best_hits))
                     logger.info(f"align_check: (prompt_idx, hits_on_own_tgt, best_match_idx, best_hits) -> {sus}")
+                    # Also print a single aligned example (idx=0)
+                    try:
+                        ex_prompt = prompts[0] if isinstance(prompts, list) and len(prompts) > 0 else (str(prompts) if prompts else "")
+                        ex_pred = completions_text[0] if isinstance(completions_text, list) and len(completions_text) > 0 else (str(completions_text) if completions_text else "")
+                        ex_tgt = per_prompt_targets[0] if len(per_prompt_targets) > 0 else ""
+                        ex_pred_num = _norm_num(str(ex_pred)) or ""
+                        logger.info(f"example/aligned | prompt='{ex_prompt[:80].replace('\n',' ')}' | tgt='{ex_tgt}' | pred_last_num='{ex_pred_num}'")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
