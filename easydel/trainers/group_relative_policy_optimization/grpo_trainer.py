@@ -727,9 +727,10 @@ class GRPOTrainer(Trainer):
                 continue
             tuples = { _gt_tuple_at(i) for i in idcs }
             if len(tuples) > 1:
+                cleaned_text = text[:80].replace('\n', ' ')
                 raise RuntimeError(
                     f"Duplicate prompt text with conflicting ground truths detected (count={len(idcs)}). "
-                    f"Prompt head='{text[:80].replace('\n',' ')}'"
+                    f"Prompt head='{cleaned_text}'"
                 )
 
         # Map each position to the first occurrence index of its prompt
@@ -1185,19 +1186,48 @@ class GRPOTrainer(Trainer):
                     pass
             
             # Build prompt replication aligned with completion ordering: [p0 x R, p1 x R, ...]
-            try:
-                if isinstance(prompts, list):
-                    prompts_rep = [p for p in prompts for _ in range(self.num_generations)]
+            if isinstance(prompts, list):
+                prompts_rep = [p for p in prompts for _ in range(self.num_generations)]
+            else:
+                prompts_rep = [str(prompts)] * int(completion_ids.shape[0])
+
+            # Alignment sanity check (fail fast if mapping is inconsistent)
+            B = int(prompt_ids.shape[0])
+            R = int(self.num_generations)
+            flat = int(completion_ids.shape[0])
+            if B * R != flat:
+                raise RuntimeError(
+                    f"Alignment error: B({B}) * R({R}) != completions({flat}). This indicates broken generation ordering."
+                )
+
+            # Optional GSM8K mapping sanity (regex-last-number vs. ground-truth replication)
+            if "answer" in batch and batch["answer"] is not None:
+                # Normalize answers to strings of length B
+                ans_obj = batch["answer"]
+                if hasattr(ans_obj, "tolist"):
+                    ans_list = list(ans_obj.tolist())
+                elif isinstance(ans_obj, (list, tuple)):
+                    ans_list = list(ans_obj)
                 else:
-                    prompts_rep = [str(prompts)] * int(completion_ids.shape[0])
-            except Exception:
-                # Last-resort safe fallback: repeat first prompt or empty string
-                try:
-                    _B = int(prompt_ids.shape[0])
-                    base_prompt = prompts[0] if isinstance(prompts, list) and _B > 0 else (str(prompts) if prompts else "")
-                    prompts_rep = [base_prompt] * int(completion_ids.shape[0])
-                except Exception:
-                    prompts_rep = [""] * int(completion_ids.shape[0])
+                    ans_list = [str(ans_obj)]
+                if len(ans_list) != B:
+                    # If mismatch, provide explicit error to surface dataset/tokenization issues
+                    raise RuntimeError(
+                        f"Ground-truth length mismatch: answers({len(ans_list)}) != B({B})."
+                    )
+                # Replicate GT per completion: [gt0 x R, gt1 x R, ...]
+                gt_rep = [ans_list[i // R] for i in range(B * R)]
+                # Extract last number per completion using a minimal regex (no XML handling here)
+                import re as _re
+                def _last_num(s: str) -> str | None:
+                    toks = _re.findall(r"-?\d+\.?\d*", s)
+                    return toks[-1] if toks else None
+                pred_nums = [(_last_num(t) or "") for t in completions_text]
+                sanity_successes = sum(1 for p, g in zip(pred_nums, gt_rep, strict=False) if p.replace(",","") == str(g))
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    logger.info(
+                        f"sanity/gsm8k: regex_last_number successes={sanity_successes}/{B*R}"
+                    )
 
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
