@@ -730,9 +730,11 @@ class GRPOTrainer(Trainer):
                 continue
             tuples = { _gt_tuple_at(i) for i in idcs }
             if len(tuples) > 1:
+                # Avoid backslashes inside f-string expressions; precompute cleaned text
+                cleaned_text = text[:80].replace("\n", " ")
                 raise RuntimeError(
                     f"Duplicate prompt text with conflicting ground truths detected (count={len(idcs)}). "
-                    f"Prompt head='{text[:80].replace('\n',' ')}'"
+                    f"Prompt head='{cleaned_text}'"
                 )
 
         # Map each position to the first occurrence index of its prompt
