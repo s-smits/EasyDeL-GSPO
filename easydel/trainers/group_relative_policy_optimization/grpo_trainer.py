@@ -694,8 +694,8 @@ class GRPOTrainer(Trainer):
         occurrences so that the leading dimension remains unchanged. This
         preserves divisibility requirements for DP sharding.
         
-        IMPORTANT: Ground truth answers are NOT deduplicated to maintain
-        proper alignment for reward calculation.
+        IMPORTANT: All sample-wise fields (including ground truths) are
+        reindexed using the same mapping to keep alignment intact.
         """
         # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
@@ -798,12 +798,6 @@ class GRPOTrainer(Trainer):
             except Exception:
                 pass
         
-        # Define fields that should NOT be deduplicated (ground truth data)
-        preserve_fields = {
-            "answer", "solution", "solution_normalized", 
-            "target", "label", "gt", "ground_truth"
-        }
-        
         # Rebuild batch in-place using final_indices, preserving leading dimension
         rebuilt_batch: dict[str, tp.Any] = {}
         for key, values in batch.items():
@@ -812,11 +806,7 @@ class GRPOTrainer(Trainer):
             except Exception:
                 vlen = None
 
-            # CRITICAL FIX: Don't deduplicate ground truth fields
-            if key in preserve_fields:
-                # Keep original ground truth values to maintain alignment
-                rebuilt_batch[key] = values
-            elif vlen == original_size:
+            if vlen == original_size:
                 if isinstance(values, jax.Array):
                     rebuilt_batch[key] = values[final_indices]
                 else:
