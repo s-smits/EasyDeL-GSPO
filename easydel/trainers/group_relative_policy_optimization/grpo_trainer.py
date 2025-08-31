@@ -346,6 +346,17 @@ class GRPOTrainer(Trainer):
                 **map_kwargs,
             )
 
+        # Inject a stable per-row index for downstream alignment diagnostics and safety
+        try:
+            if isinstance(dataset, Dataset):
+                def _add_ed_idx(example, idx):
+                    example["ed_idx"] = int(idx)
+                    return example
+                dataset = dataset.map(_add_ed_idx, with_indices=True, desc=f"Adding ed_idx to {dataset_name} dataset")
+        except Exception:
+            # Best-effort only; absence of ed_idx will skip related diagnostics
+            pass
+
         # Shard dataset per JAX process to balance difficulty and avoid excessive duplicates
         try:
             import jax as _jax  # local import to avoid top-level overhead
@@ -1276,7 +1287,13 @@ class GRPOTrainer(Trainer):
                             out.append("")
                 return out
 
-            per_prompt_targets = _normalize_to_list_str_local(batch.get("answer", []))
+            # Prefer normalized solution fields if available, otherwise fall back to 'answer'
+            if batch.get("solution_normalized", None) is not None:
+                per_prompt_targets = _normalize_to_list_str_local(batch.get("solution_normalized", []))
+            elif batch.get("solution", None) is not None:
+                per_prompt_targets = _normalize_to_list_str_local(batch.get("solution", []))
+            else:
+                per_prompt_targets = _normalize_to_list_str_local(batch.get("answer", []))
             # Ensure we have exactly B items (best-effort)
             if len(per_prompt_targets) != int(prompt_ids.shape[0]):
                 try:
@@ -1332,7 +1349,9 @@ class GRPOTrainer(Trainer):
                         ex_pred = completions_text[0] if isinstance(completions_text, list) and len(completions_text) > 0 else (str(completions_text) if completions_text else "")
                         ex_tgt = per_prompt_targets[0] if len(per_prompt_targets) > 0 else ""
                         ex_pred_num = _norm_num(str(ex_pred)) or ""
-                        logger.info(f"example/aligned | prompt='{ex_prompt[:80].replace('\n',' ')}' | tgt='{ex_tgt}' | pred_last_num='{ex_pred_num}'")
+                        # Fix f-string backslash issue by extracting replace call
+                        ex_prompt_clean = ex_prompt[:80].replace('\n', ' ')
+                        logger.info(f"example/aligned | prompt='{ex_prompt_clean}' | tgt='{ex_tgt}' | pred_last_num='{ex_pred_num}'")
                     except Exception:
                         pass
             except Exception:
