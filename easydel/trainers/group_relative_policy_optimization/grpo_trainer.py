@@ -951,6 +951,7 @@ class GRPOTrainer(Trainer):
                             seq_pm, (B_local * cur_nrs,) + tuple(seq_pm.shape[2:])
                         )  # (B*R, ...)
                     else:
+                        print(f"DEBUG: Using single generate call (not diversified) - cur_nrs={cur_nrs}")
                         # Single backend call for the whole chunk
                         seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                             self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
@@ -971,18 +972,19 @@ class GRPOTrainer(Trainer):
                 completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
                 completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
                 
-                # Debug: Store sequences for logging (handle multi-device arrays)
+                # Debug: Store sequences for logging (handle multi-device arrays safely)
                 try:
-                    # Only process on rank 0 and get local shards only
                     if jax.process_index() == 0:
-                        # Get local addressable data only to avoid multi-host issues
-                        local_seqs = prompt_completion_ids_chunk.addressable_shards[0].data if prompt_completion_ids_chunk.addressable_shards else None
-                        local_comps = completion_ids_chunk.addressable_shards[0].data if completion_ids_chunk.addressable_shards else None 
-                        local_prompts = prompt_ids.addressable_shards[0].data if prompt_ids.addressable_shards else None
-                        
-                        self._debug_last_sequences = local_seqs
-                        self._debug_last_completion_ids = local_comps  
-                        self._debug_prompt_ids = local_prompts
+                        # Use jax.device_get on local data only - safer approach
+                        try:
+                            self._debug_last_sequences = jax.device_get(prompt_completion_ids_chunk[:1])  # Just first sample
+                            self._debug_last_completion_ids = jax.device_get(completion_ids_chunk[:1])
+                            self._debug_prompt_ids = jax.device_get(prompt_ids[:1])
+                        except Exception:
+                            # Fallback: disable debug storage on multi-device setups
+                            self._debug_last_sequences = None
+                            self._debug_last_completion_ids = None
+                            self._debug_prompt_ids = None
                     
                     # Debug sequence lengths
                     seq_shape = prompt_completion_ids_chunk.shape
@@ -1244,6 +1246,13 @@ class GRPOTrainer(Trainer):
                                 example_pred_value = _nums[-1] if _nums else _ans
                                 print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
                         print(f"DEBUG: Full completion text (first 200 chars): '{example_pred_text[:200] if example_pred_text else 'N/A'}'")
+                        
+                        # Quick diversity check: show a few different completions from this batch
+                        if isinstance(completions_text, list) and len(completions_text) >= 4:
+                            print("DEBUG: Completion diversity sample:")
+                            for j in range(min(4, len(completions_text))):
+                                comp_preview = str(completions_text[j])[:100].replace('\n', ' ') if j < len(completions_text) else "N/A"
+                                print(f"  [{j}]: '{comp_preview}'")
                             except Exception as e:
                                 print(f"DEBUG: GSM8K extraction failed: {e}")
                                 pass
