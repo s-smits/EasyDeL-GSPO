@@ -1284,6 +1284,43 @@ class GRPOTrainer(Trainer):
             # Expand contiguously per prompt to match [p0 × R, p1 × R, ...]
             targets_expanded = [t for t in per_prompt_targets for _ in range(self.num_generations)]
 
+            # Optional alignment diagnostic (rank 0)
+            try:
+                if jax.process_index() == 0 and bool(getattr(self.arguments, "debug_align_check", False)):
+                    def _norm_num(s: str) -> str | None:
+                        try:
+                            import re as _re
+                            s2 = s.replace(",", "").replace("$", "").replace("%", "").strip()
+                            nums = _re.findall(r"-?\d+\.?\d*", s2)
+                            return nums[-1] if nums else None
+                        except Exception:
+                            return None
+                    B = int(prompt_ids.shape[0])
+                    R = int(self.num_generations)
+                    sus = []
+                    show = min(B, 4)
+                    for i in range(show):
+                        s = i * R
+                        e = s + R
+                        grp = completions_text[s:e]
+                        tgt = per_prompt_targets[i] if i < len(per_prompt_targets) else ""
+                        tgt_n = _norm_num(str(tgt)) or ""
+                        hits = sum(1 for t in grp if _norm_num(str(t)) == tgt_n)
+                        # Also check if group matches any other target more strongly
+                        best_j = i
+                        best_hits = hits
+                        for j in range(min(B, 8)):
+                            tj = per_prompt_targets[j] if j < len(per_prompt_targets) else ""
+                            tj_n = _norm_num(str(tj)) or ""
+                            hj = sum(1 for t in grp if _norm_num(str(t)) == tj_n)
+                            if hj > best_hits:
+                                best_hits = hj
+                                best_j = j
+                        sus.append((i, hits, best_j, best_hits))
+                    logger.info(f"align_check: (prompt_idx, hits_on_own_tgt, best_match_idx, best_hits) -> {sus}")
+            except Exception:
+                pass
+
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),

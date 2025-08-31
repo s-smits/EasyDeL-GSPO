@@ -187,6 +187,17 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Debug alignment checker (rank 0 only)
+    debug_align_check: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, run a lightweight alignment diagnostic on rank 0 to ensure per-prompt ground truths "
+                "match completion groups (B×R). Prints a short mapping summary and flags potential shifts."
+            )
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:
