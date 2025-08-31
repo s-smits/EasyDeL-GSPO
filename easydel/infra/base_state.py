@@ -65,8 +65,8 @@ import optax
 from eformer import escale as es
 from eformer.escale import PartitionAxis
 from eformer.loggings import get_logger
-from eformer.paths import ePath, ePathLike
-from eformer.serialization import AsyncCheckpointManager
+from easydel.utils.checkpoint_managers.path_utils import EasyPath as ePath, EasyPathLike
+from easydel.utils.checkpoint_managers import CheckpointManager
 from flax import nnx as nn
 from flax import struct
 from jax import numpy as jnp
@@ -425,25 +425,23 @@ class EasyDeLState(struct.PyTreeNode):
             Exception: If any error occurs during loading or deserialization.
         """
         load_directory = ePath(load_directory)
-        optim_path = (
-            load_directory if AsyncCheckpointManager.is_tensorstore(load_directory) else load_directory / OPTIMIZER_NAME
-        )
+        optim_path = load_directory / OPTIMIZER_NAME
         struct_path = load_directory / OPTIMIZER_STRUCT_NAME
 
         if not struct_path.exists():
             raise FileNotFoundError(f"Optimizer files are missing at {load_directory}")
         try:
-            leaves, _ = AsyncCheckpointManager(max_workers=1).load(
-                path=AsyncCheckpointManager.safe_loadpath(optim_path),
-                mesh=self.model.mesh,
-                partition_rules=self.model.config.get_partition_rules(),
-                prefix="tx",
+            leaves, _ = CheckpointManager.load_checkpoint(
+                path=optim_path,
+                shard_fns=None,
+                verbose=False
             )
             recreated = opt_state = leaves
 
             treedef, step = pickle.loads(struct_path.read_bytes())
 
-            if not AsyncCheckpointManager.is_tensorstore(optim_path):
+            # Handle the case where leaves is a dict with indexed parameters
+            if isinstance(leaves, dict) and any(key.startswith(("param_idx_", "param_")) for key in leaves.keys()):
                 recreated = [None] * len(leaves)
                 for i in range(len(leaves)):
                     try:
@@ -452,6 +450,8 @@ class EasyDeLState(struct.PyTreeNode):
                         recreated[i] = leaves[f"param_{i}"]
 
                 opt_state = jax.tree_util.tree_unflatten(treedef, recreated)
+            else:
+                opt_state = leaves
             logger.info(f"Optimizer state loaded from {load_directory}")
 
             return self.replace(opt_state=opt_state, step=jnp.asarray(step))
@@ -461,7 +461,7 @@ class EasyDeLState(struct.PyTreeNode):
 
     def save_optimizer(
         self,
-        save_directory: str | os.PathLike | ePathLike,
+        save_directory: str | os.PathLike | EasyPathLike,
         float_dtype: jnp.dtype | None = None,
     ):
         save_directory = ePath(save_directory)
@@ -471,14 +471,12 @@ class EasyDeLState(struct.PyTreeNode):
             logger.info(f"Coordinated optimizer save through {optim_path}")
             try:
                 with self.model.mesh:
-                    AsyncCheckpointManager(max_workers=1).save(
-                        tree=self.opt_state,
+                    CheckpointManager.save_checkpoint(
+                        state=self.opt_state,
                         path=optim_path,
-                        mesh=self.model.mesh,
-                        float_dtype=float_dtype,
-                        prefix="tx",
+                        float_dtype=float_dtype
                     )
-                    struct_path: ePathLike = save_directory / OPTIMIZER_STRUCT_NAME
+                    struct_path: EasyPathLike = save_directory / OPTIMIZER_STRUCT_NAME
                     buffer_struct = pickle.dumps((jax.tree_util.tree_structure(self.opt_state), self.step))
                     struct_path.write_bytes(buffer_struct)
             except Exception as e:
@@ -489,7 +487,7 @@ class EasyDeLState(struct.PyTreeNode):
 
     def save_state(
         self,
-        save_directory: str | os.PathLike | ePathLike,
+        save_directory: str | os.PathLike | EasyPathLike,
         float_dtype: jnp.dtype | None = None,
         save_optimizer: bool = True,
     ):
