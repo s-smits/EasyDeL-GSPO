@@ -48,6 +48,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
   --force_tensor_parallel 4 \
+  --force_data_parallel 4 \
   --log_logprobs_metrics false \
   --log_global false \
   --log_steps 1 \
