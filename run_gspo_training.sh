@@ -62,7 +62,8 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --ensure_unique_prompts false
+  --ensure_unique_prompts false \
+  --shuffle_train_dataset false
 
 #   --force_data_parallel 1 \
 

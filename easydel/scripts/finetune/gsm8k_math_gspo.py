@@ -382,7 +382,10 @@ def main():
                 print("WARNING: No data after curriculum assembly; running regular training.")
             return trainer.train()
 
-        combined = concatenate_datasets(parts).shuffle(seed=17)
+        # Only shuffle if multiple parts to avoid alignment issues with single-dataset training
+        combined = concatenate_datasets(parts)
+        if len(parts) > 1:
+            combined = combined.shuffle(seed=17)  # Only shuffle when combining multiple curriculum levels
 
         # Reuse trainer's arguments; train for 1 epoch
         args = trainer.arguments

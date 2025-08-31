@@ -372,12 +372,9 @@ class GRPOTrainer(Trainer):
         try:
             import jax as _jax  # local import to avoid top-level overhead
             if isinstance(dataset, Dataset):
-                # Deterministic shuffle before sharding to interleave difficulty evenly
-                try:
-                    _seed = int(getattr(arguments, "seed", 17))
-                except Exception:
-                    _seed = 17
-                dataset = dataset.shuffle(seed=_seed)
+                # Skip redundant shuffle to prevent alignment issues - rely on script-level shuffle only
+                # Previous: dataset = dataset.shuffle(seed=_seed) caused triple shuffle with same seed
+                # Grain DataLoader handles shuffling if needed via shuffle_train_dataset config
                 shard_count = getattr(arguments, "grain_shard_count", None)
                 shard_index = getattr(arguments, "grain_shard_index", None)
                 if shard_count is None:
