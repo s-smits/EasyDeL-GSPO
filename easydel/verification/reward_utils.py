@@ -104,25 +104,19 @@ def safe_global_sum(value: Any) -> Any:
         return value
     if jax is None:
         return value
-    try:
-        pc = int(jax.process_count())
-    except Exception:
-        pc = 1
+    pc = int(jax.process_count()) if hasattr(jax, "process_count") else 1
     if pc <= 1:
         return value
+    gathered = jax.experimental.multihost_utils.process_allgather(value)  # type: ignore[attr-defined]
+    # jnp/np arrays or scalars
     try:
-        gathered = jax.experimental.multihost_utils.process_allgather(value)  # type: ignore[attr-defined]
+        return gathered.sum()
+    except Exception as e:
+        # Python sequence fallback
         try:
-            # jnp/np arrays
-            return gathered.sum()
-        except Exception:
-            # Python sequence fallback
-            try:
-                return sum(gathered)
-            except Exception:
-                return value
-    except Exception:
-        return value
+            return sum(gathered)
+        except Exception as e2:
+            raise RuntimeError(f"safe_global_sum failed to reduce gathered values: {e}; fallback failed: {e2}")
 
 
 def extract_answer_from_xml(solution_str: str) -> str | None:

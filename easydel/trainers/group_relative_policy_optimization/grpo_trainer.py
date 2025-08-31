@@ -865,21 +865,12 @@ class GRPOTrainer(Trainer):
             if getattr(self.arguments, "ensure_unique_prompts", True):
                 batch = self._ensure_unique_prompts(batch)
                 # IMPORTANT: re-bind prompt tensors after filtering to keep alignment with batch
-                try:
-                    prompt_ids = jnp.asarray(batch["input_ids"])  # rebind after dedup
-                    prompt_mask = jnp.asarray(batch["attention_mask"])  # rebind after dedup
-                except Exception as _e:
-                    # If conversion fails, keep previous tensors (better than crashing)
-                    pass
+                prompt_ids = jnp.asarray(batch["input_ids"])  # rebind after dedup
+                prompt_mask = jnp.asarray(batch["attention_mask"])  # rebind after dedup
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                    try:
-                        _pid_len = int(prompt_ids.shape[0])
-                    except Exception:
-                        _pid_len = -1
-                    try:
-                        _ans_len = len(batch.get("answer", [])) if batch.get("answer", None) is not None else -1
-                    except Exception:
-                        _ans_len = -1
+                    _pid_len = int(prompt_ids.shape[0])
+                    _ans_obj = batch.get("answer", None)
+                    _ans_len = (len(_ans_obj) if _ans_obj is not None and hasattr(_ans_obj, "__len__") else -1)
                     logger.debug(f"preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
 
             # Chunked generation and reference log-prob computation to reduce peak memory
