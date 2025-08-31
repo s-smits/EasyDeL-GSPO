@@ -926,7 +926,9 @@ class GRPOTrainer(Trainer):
                         chunk_idx * 786433  # Large prime
                     ) % (2**31 - 1))
                     per_chunk_seed = max(1, per_chunk_seed)
-                    if bool(getattr(self.arguments, "diversify_returns", True)) and cur_nrs > 1:
+                    diversify_enabled = bool(getattr(self.arguments, "diversify_returns", True))
+                    print(f"DEBUG: diversify_returns={diversify_enabled}, cur_nrs={cur_nrs}")
+                    if diversify_enabled and cur_nrs > 1:
                         # Generate returns one-by-one with distinct seeds to maximize stochastic diversity
                         seq_list = []
                         for ri in range(cur_nrs):
@@ -969,11 +971,18 @@ class GRPOTrainer(Trainer):
                 completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
                 completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
                 
-                # Debug: Store sequences for logging
+                # Debug: Store sequences for logging (handle multi-device arrays)
                 try:
-                    self._debug_last_sequences = jax.device_get(prompt_completion_ids_chunk)
-                    self._debug_last_completion_ids = jax.device_get(completion_ids_chunk)
-                    self._debug_prompt_ids = jax.device_get(prompt_ids)
+                    # Only process on rank 0 and get local shards only
+                    if jax.process_index() == 0:
+                        # Get local addressable data only to avoid multi-host issues
+                        local_seqs = prompt_completion_ids_chunk.addressable_shards[0].data if prompt_completion_ids_chunk.addressable_shards else None
+                        local_comps = completion_ids_chunk.addressable_shards[0].data if completion_ids_chunk.addressable_shards else None 
+                        local_prompts = prompt_ids.addressable_shards[0].data if prompt_ids.addressable_shards else None
+                        
+                        self._debug_last_sequences = local_seqs
+                        self._debug_last_completion_ids = local_comps  
+                        self._debug_prompt_ids = local_prompts
                     
                     # Debug sequence lengths
                     seq_shape = prompt_completion_ids_chunk.shape
@@ -1234,6 +1243,7 @@ class GRPOTrainer(Trainer):
                                 _nums = _re.findall(r"-?\d+\.?\d*", _norm)
                                 example_pred_value = _nums[-1] if _nums else _ans
                                 print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
+                        print(f"DEBUG: Full completion text (first 200 chars): '{example_pred_text[:200] if example_pred_text else 'N/A'}'")
                             except Exception as e:
                                 print(f"DEBUG: GSM8K extraction failed: {e}")
                                 pass
