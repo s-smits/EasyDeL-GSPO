@@ -269,7 +269,6 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                         logger.warning(f"  Math-Verify method: {method}")
                         logger.warning(f"  Regex extracted: '{last_number}' (type: {type(last_number)})")
                         logger.warning(f"  Ground truth: '{gt}' (type: {type(gt)})")
-                        logger.warning(f"  All extracted numbers: {numbers}")
                         logger.warning(f"  Full extracted answer: '{ans}'")
                         logger.warning(f"  Full original text: '{text}'")
 
