@@ -976,25 +976,17 @@ class GRPOTrainer(Trainer):
                 try:
                     if jax.process_index() == 0:
                         # Use jax.device_get on local data only - safer approach
-                        try:
-                            self._debug_last_sequences = jax.device_get(prompt_completion_ids_chunk[:1])  # Just first sample
-                            self._debug_last_completion_ids = jax.device_get(completion_ids_chunk[:1])
-                            self._debug_prompt_ids = jax.device_get(prompt_ids[:1])
-                        except Exception:
-                            # Fallback: disable debug storage on multi-device setups
-                            self._debug_last_sequences = None
-                            self._debug_last_completion_ids = None
-                            self._debug_prompt_ids = None
-                    
-                    # Debug sequence lengths
-                    seq_shape = prompt_completion_ids_chunk.shape
-                    prompt_shape = prompt_ids.shape  
-                    completion_shape = completion_ids_chunk.shape
-                    print(f"DEBUG: Sequence shapes - full={seq_shape}, prompt={prompt_shape}, completion={completion_shape}")
-                    print(f"DEBUG: Expected generation length = {seq_shape[-1] - prompt_shape[-1]} tokens")
-                except Exception as e:
-                    print(f"DEBUG: Failed to store debug sequences: {e}")
-                    pass
+                # Debug: avoid device_get on non-addressable arrays; log shapes only
+                self._debug_last_sequences = None
+                self._debug_last_completion_ids = None
+                self._debug_prompt_ids = None
+                seq_shape = prompt_completion_ids_chunk.shape
+                prompt_shape = prompt_ids.shape
+                completion_shape = completion_ids_chunk.shape
+                print(f"DEBUG: Sequence shapes - full={seq_shape}, prompt={prompt_shape}, completion={completion_shape}")
+                print(f"DEBUG: Expected generation length = {seq_shape[-1] - prompt_shape[-1]} tokens")
+            except Exception:
+                pass
 
                 with capture_time() as token_logps_time_fn:
                     full_mask_chunk = jnp.concatenate([ridmask_chunk, completion_mask_chunk], -1)
@@ -1268,14 +1260,14 @@ class GRPOTrainer(Trainer):
                                 _nums = _re.findall(r"-?\d+\.?\d*", _norm)
                                 example_pred_value = _nums[-1] if _nums else _ans
                                 print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
-                        print(f"DEBUG: Full completion text (first 200 chars): '{example_pred_text[:200] if example_pred_text else 'N/A'}'")
-                        
-                        # Quick diversity check: show a few different completions from this batch
-                        if isinstance(completions_text, list) and len(completions_text) >= 4:
-                            print("DEBUG: Completion diversity sample:")
-                            for j in range(min(4, len(completions_text))):
-                                comp_preview = str(completions_text[j])[:100].replace('\n', ' ') if j < len(completions_text) else "N/A"
-                                print(f"  [{j}]: '{comp_preview}'")
+                                print(f"DEBUG: Full completion text (first 200 chars): '{example_pred_text[:200] if example_pred_text else 'N/A'}'")
+                                
+                                # Quick diversity check: show a few different completions from this batch
+                                if isinstance(completions_text, list) and len(completions_text) >= 4:
+                                    print("DEBUG: Completion diversity sample:")
+                                    for j in range(min(4, len(completions_text))):
+                                        comp_preview = str(completions_text[j])[:100].replace('\n', ' ') if j < len(completions_text) else "N/A"
+                                        print(f"  [{j}]: '{comp_preview}'")
                             except Exception as e:
                                 print(f"DEBUG: GSM8K extraction failed: {e}")
                                 pass
