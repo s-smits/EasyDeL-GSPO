@@ -971,7 +971,16 @@ class GRPOTrainer(Trainer):
             prompts = [""] * _local_prompt_count
 
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
-                prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                # Host-safe prompt decoding to avoid non-addressable JAX arrays
+                try:
+                    _host_prompt_ids = jax.device_get(batch["input_ids"])  # type: ignore
+                    prompts = self.processing_class.batch_decode(_host_prompt_ids, skip_special_tokens=True)
+                except Exception:
+                    # Fallback to previous behavior
+                    try:
+                        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    except Exception:
+                        pass
             # Decode completions text using pjit materialization executed on all processes
             _host_completion_ids = self.materialize_for_decode(completion_ids)
             completions_text = self.processing_class.batch_decode(
@@ -1140,6 +1149,20 @@ class GRPOTrainer(Trainer):
 
             # Calculate completion lengths before rewards (already computed per chunk; keep single computation)
             completion_lengths_per_seq = completion_mask.sum(-1)
+            # Alignment sanity check
+            try:
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    B = int(prompt_ids.shape[0])
+                    R = int(self.num_generations)
+                    flat = int(completion_ids.shape[0])
+                    groups_head = []
+                    for i in range(min(B, 4)):
+                        start = i * R
+                        end = start + R
+                        groups_head.append(int(end - start))
+                    logger.info(f"mapping: B={B}, R={R}, flat={flat}, groups_head={groups_head}")
+            except Exception:
+                pass
             # Materialize lengths for safe host use on all processes (avoid rank-only pjit)
             _safe_lengths = self.materialize_for_decode_1d(completion_lengths_per_seq)
             # Global gathering removed to reduce collective overhead
