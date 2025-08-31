@@ -12,21 +12,20 @@
 #   ./run_gspo_training.sh math-ds false   # Disable curriculum learning
 #   ./run_gspo_training.sh gsm8k-ds        # Use GSM8K dataset (curriculum learning has no effect)
 
-# Set environment variables for CPU (TPU not available)
-export JAX_PLATFORMS=cpu
+# Set environment variables for TPU
+export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off  # For better debugging if needed
-# Disable global host aggregation to avoid halts from multihost collectives
+# Disable global host aggregation to avoid TPU halts from multihost collectives
 export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
 git pull origin stable 2>/dev/null || true
+uv pip install -e . --quiet
+uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
 # Navigate to project directory
 cd /home/air/EasyDeL-GSPO
-
-# Activate virtual environment
-source .venv/bin/activate
 
 echo "Starting GSPO training with optimized configuration..."
 
@@ -48,8 +47,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --max_completion_length 6144 \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
-  --force_tensor_parallel 1 \
-  --force_data_parallel 1 \
+  --force_tensor_parallel 4 \
   --log_logprobs_metrics false \
   --log_global false \
   --log_steps 1 \
