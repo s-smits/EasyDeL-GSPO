@@ -345,6 +345,17 @@ class GRPOTrainer(Trainer):
                 fn_kwargs={"tokenizer": processing_class, "tools": arguments.tools},
                 **map_kwargs,
             )
+        
+        # Batch consistency diagnostic: ensure key lengths match (rank 0 best-effort)
+        try:
+            from datasets import Dataset as _HFDS
+            if isinstance(dataset, _HFDS) and jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                sample = dataset[:8]
+                keys = list(sample.keys())
+                lengths = {k: (len(sample[k]) if hasattr(sample[k], "__len__") else None) for k in keys}
+                logger.info(f"dataset/consistency (head lens): {lengths}")
+        except Exception:
+            pass
 
         # Inject a stable per-row index for downstream alignment diagnostics and safety
         try:
@@ -1133,7 +1144,51 @@ class GRPOTrainer(Trainer):
                             print(f"DEBUG: Exception in _get_gt: {e}")
                             return None
 
-                    example_gt = _get_gt(batch, example_idx)
+                    # Prefer aligned per-prompt target for example logging
+                    try:
+                        def _norm_list(obj):
+                            if obj is None:
+                                return []
+                            if isinstance(obj, list):
+                                base = obj
+                            elif isinstance(obj, str):
+                                base = [obj]
+                            else:
+                                try:
+                                    if hasattr(obj, "tolist"):
+                                        base = obj.tolist()
+                                    else:
+                                        base = list(obj)
+                                except Exception:
+                                    base = [obj]
+                            out = []
+                            for x in base:
+                                if x is None:
+                                    out.append("")
+                                elif isinstance(x, str):
+                                    out.append(x)
+                                else:
+                                    try:
+                                        out.append(str(x))
+                                    except Exception:
+                                        out.append("")
+                            return out
+                        gts0 = None
+                        if batch.get("solution_normalized", None) is not None:
+                            gts0 = _norm_list(batch.get("solution_normalized", []))
+                        elif batch.get("solution", None) is not None:
+                            gts0 = _norm_list(batch.get("solution", []))
+                        else:
+                            gts0 = _norm_list(batch.get("answer", []))
+                        B0 = int(prompt_ids.shape[0])
+                        if len(gts0) != B0:
+                            if len(gts0) > B0:
+                                gts0 = gts0[:B0]
+                            else:
+                                gts0 = gts0 + [""] * (B0 - len(gts0))
+                        example_gt = gts0[example_idx]
+                    except Exception:
+                        example_gt = _get_gt(batch, example_idx)
 
                     # Extract final value from completion using reward-specific logic (reuse reward modules)
                     example_pred_value = example_pred_text
