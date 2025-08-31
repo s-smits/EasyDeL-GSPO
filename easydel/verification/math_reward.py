@@ -215,41 +215,46 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     # Get verification details storage for debugging
     verification_details = kwargs.get("verification_details", [])
     
-    # Prefer normalized ground truth if provided by preprocessing
-    gts = batch.get("solution_normalized", batch.get("solution", []))
-    if callable(normalize_to_list_str):
-        gts = normalize_to_list_str(gts)  # type: ignore
+    # Prefer explicitly aligned targets if provided (length must equal len(completions))
+    targets_expanded = kwargs.get("targets_expanded", None)
+    if isinstance(targets_expanded, list) and len(targets_expanded) == len(completions):
+        gts = [str(x) if not isinstance(x, str) else x for x in targets_expanded]
     else:
-        # Fallback normalization
-        if gts is None:
-            gts = []
-        if isinstance(gts, str):
-            gts = [gts]
-        elif not isinstance(gts, list):
-            try:
-                gts = list(gts)
-            except Exception:
-                gts = [str(gts)]
-        gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
-    # Replicate to match B*R if needed (prompt-major contiguous order: [p0 x R, p1 x R, ...])
-    c_len = len(completions)
-    if callable(replicate_to_length):
-        gts = replicate_to_length(gts, c_len, interleaved=False)  # type: ignore[arg-type]
-    else:
-        g_len = len(gts)
-        if g_len == 0:
-            gts = [""] * c_len
-        elif c_len % g_len == 0:
-            factor = c_len // g_len
-            # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
-            gts = [x for x in gts for _ in range(factor)]
+        # Prefer normalized ground truth if provided by preprocessing
+        gts = batch.get("solution_normalized", batch.get("solution", []))
+        if callable(normalize_to_list_str):
+            gts = normalize_to_list_str(gts)  # type: ignore
         else:
-            # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
-            times = (c_len + g_len - 1) // g_len
-            result = []
-            for x in gts:
-                result.extend([x] * times)
-            gts = result[:c_len]
+            # Fallback normalization
+            if gts is None:
+                gts = []
+            if isinstance(gts, str):
+                gts = [gts]
+            elif not isinstance(gts, list):
+                try:
+                    gts = list(gts)
+                except Exception:
+                    gts = [str(gts)]
+            gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
+        # Replicate to match B*R if needed (prompt-major contiguous order: [p0 x R, p1 x R, ...])
+        c_len = len(completions)
+        if callable(replicate_to_length):
+            gts = replicate_to_length(gts, c_len, interleaved=False)  # type: ignore[arg-type]
+        else:
+            g_len = len(gts)
+            if g_len == 0:
+                gts = [""] * c_len
+            elif c_len % g_len == 0:
+                factor = c_len // g_len
+                # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
+                gts = [x for x in gts for _ in range(factor)]
+            else:
+                # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
+                times = (c_len + g_len - 1) // g_len
+                result = []
+                for x in gts:
+                    result.extend([x] * times)
+                gts = result[:c_len]
 
     # Configure Math-Verify extraction (fixed, strict) and parameters
     use_mv = callable(parse) and callable(verify)  # type: ignore
@@ -494,5 +499,4 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
 __all__ = [
     "answer_reward",
 ]
-
 
