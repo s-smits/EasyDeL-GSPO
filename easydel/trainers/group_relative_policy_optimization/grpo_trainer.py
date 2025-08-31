@@ -753,6 +753,15 @@ class GRPOTrainer(Trainer):
                     f"dedup: original={original_size} unique={len(first_occurrence_indices)} "
                     f"replaced={len(duplicate_positions)} head_replacements={final_indices[:8]}"
                 )
+                # Log more details about the deduplication
+                if len(duplicate_positions) > 0:
+                    logger.warning(
+                        f"DEDUP WARNING: Found {len(duplicate_positions)} duplicate prompts out of {original_size}. "
+                        f"This may cause ground truth misalignment! Consider increasing dataset_use_pct or disabling deduplication."
+                    )
+                    # Show which positions were replaced
+                    logger.debug(f"dedup: duplicate_positions={duplicate_positions[:10]}")
+                    logger.debug(f"dedup: first_occurrence_indices={first_occurrence_indices}")
             except Exception:
                 pass
         
