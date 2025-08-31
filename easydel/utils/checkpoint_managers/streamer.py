@@ -285,7 +285,7 @@ class CheckpointManager:
     @staticmethod
     def load_checkpoint(
         path: EasyPathLike | str | os.PathLike,
-        shard_fns: dict[tp.Callable] | None = None,
+        shard_fns: dict[tp.Any, tp.Callable] | None = None,
         verbose: bool = False,
         mismatch_allowed: bool = True,
         callback: tp.Callable[[jax.Array, str], jax.Array] | None = None,
@@ -379,7 +379,7 @@ class CheckpointManager:
     @staticmethod
     def _load_sharded_from_local_index(
         index_path: str,
-        shard_fns: dict[tp.Callable] | None = None,
+        shard_fns: dict[tp.Any, tp.Callable] | None = None,
         verbose: bool = False,
         mismatch_allowed: bool = True,
         callback: tp.Callable[[jax.Array, str], jax.Array] | None = None,
@@ -430,7 +430,7 @@ class CheckpointManager:
     @staticmethod
     def _load_sharded_from_gcs_index(
         index_gcs_path: str,
-        shard_fns: dict[tp.Callable] | None = None,
+        shard_fns: dict[tp.Any, tp.Callable] | None = None,
         verbose: bool = False,
         mismatch_allowed: bool = True,
         callback: tp.Callable[[jax.Array, str], jax.Array] | None = None,
@@ -501,7 +501,7 @@ class CheckpointManager:
         cls,
         state: PyTreeNode,
         path: EasyPathLike | str | os.PathLike,
-        gather_fns: dict[tp.Callable] | bool | None = None,
+        gather_fns: dict[tp.Any, tp.Callable] | bool | None = None,
         float_dtype: str | jnp.dtype | None = None,
         verbose: bool = True,
         mismatch_allowed: bool = True,
@@ -523,6 +523,12 @@ class CheckpointManager:
             path = "/dev/null"
         if str(path).startswith("/dev/null"):
             path = "/dev/null"
+
+        # If saving is disabled on this host, avoid any file system writes entirely.
+        # Without this guard, sharded saving would attempt to create files like
+        # '/dev/null-00001-of-00001.safetensors' which raises PermissionError.
+        if (not enable) or (str(path) == "/dev/null"):
+            return "/dev/null"
 
         if float_dtype is None:
             float_dtype = jnp.bfloat16
@@ -681,7 +687,7 @@ class CheckpointManager:
     @staticmethod
     def _load_checkpoint_from_file(
         path: EasyPathLike | str | os.PathLike,
-        shard_fns: dict[tp.Callable] | None = None,
+        shard_fns: dict[tp.Any, tp.Callable] | None = None,
         verbose: bool = False,
         mismatch_allowed: bool = True,
         callback: tp.Callable[[jax.Array, str], jax.Array] | None = None,
@@ -725,7 +731,7 @@ class CheckpointManager:
     @classmethod
     def _save_to_gcs(
         cls,
-        state: dict,
+        state: dict[str, jax.Array] | dict,
         gcs_path: str,
         metadata: dict[str, str] | None = None,
         verbose: bool = True,
@@ -752,7 +758,7 @@ class CheckpointManager:
         self,
         state: PyTreeNode,
         gcs_path: str,
-        gather_fns: dict[tp.Callable] | None = None,
+        gather_fns: dict[tp.Any, tp.Callable] | None = None,
         float_dtype: str | jnp.dtype | None = None,
         verbose: bool = False,
         mismatch_allowed: bool = True,
