@@ -53,6 +53,7 @@ from easydel.utils import EasyPath, EasyPathLike, Timers, readme_generator
 from easydel.utils.helpers import get_logger
 from easydel.utils.lazy_import import is_package_available
 from easydel.utils.traversals import specs_to_name_sharding
+from easydel.utils.hf_hub_utils import upload_checkpoint_dir_if_enabled
 
 from .metrics import BaseProgressBar, JSONProgressBar, NullProgressBar, RichProgressBar, TqdmProgressBar
 from .trainer_protocol import (
@@ -953,6 +954,14 @@ class BaseTrainer(BaseTrainerProtocol):
             save_optimizer=self.arguments.save_optimizer_state,
             enable=self.is_enable,
         )
+
+        # Optional: upload this checkpoint directory to Hugging Face Hub under env control
+        try:
+            if self.is_enable:
+                upload_checkpoint_dir_if_enabled(str(directory_name))
+        except Exception:
+            # Never fail training due to upload issues
+            pass
 
         return str(directory_name)
 
