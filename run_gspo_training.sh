@@ -41,10 +41,10 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 4 \
   --num_return_sequences 8 \
-  --rollout_chunk_size 8 \
+  --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 6144 \
+  --max_completion_length 1024 \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
   --force_tensor_parallel 4 \

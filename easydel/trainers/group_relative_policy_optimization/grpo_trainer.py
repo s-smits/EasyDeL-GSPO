@@ -600,7 +600,8 @@ class GRPOTrainer(Trainer):
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
                     num_return_sequences=num_return_sequences,
                     do_sample=True,
-                    use_cache=False,
+                    # Enable KV caching for autoregressive decode; disabling can cause excessive recompute/memory
+                    use_cache=True,
                 )
                 
                 # Single source of randomness: trainer-provided prng_seed only
@@ -934,15 +935,27 @@ class GRPOTrainer(Trainer):
                     if diversify_enabled and cur_nrs > 1:
                         # Generate returns one-by-one with distinct seeds to maximize stochastic diversity
                         seq_list = []
+                        try:
+                            # Log first few seeds for verification
+                            seed_preview = []
+                        except Exception:
+                            seed_preview = []
                         for ri in range(cur_nrs):
                             # Derive a unique seed per return within this chunk
                             # Use larger prime to ensure better diversity between returns
                             seed_ri = int((per_chunk_seed + (ri + 1) * 1073741827) % (2**31 - 1))
                             seed_ri = max(1, seed_ri)
+                            if ri < 4:
+                                seed_preview.append(seed_ri)
                             seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
                                 self.generate_function(state, prompt_ids, prompt_mask, 1, seed_ri)
                             )
                             seq_list.append(seq_one)
+                        try:
+                            if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                                print(f"DEBUG: per-return seeds (head): {seed_preview}")
+                        except Exception:
+                            pass
                         # Currently seq_list is returns-major: [ri=0 (B rows), ri=1 (B rows), ...]
                         # Reorder to prompt-major: (B, cur_nrs, ...) -> (B*cur_nrs, ...)
                         seq_concat = jnp.concatenate(seq_list, axis=0)  # (cur_nrs * B, ...)
@@ -954,7 +967,9 @@ class GRPOTrainer(Trainer):
                             seq_pm, (B_local * cur_nrs,) + tuple(seq_pm.shape[2:])
                         )  # (B*R, ...)
                     else:
-                        print(f"DEBUG: Using single generate call (not diversified) - cur_nrs={cur_nrs}")
+                        # cur_nrs==1 → we diversify across chunks via unique per_chunk_seed per call
+                        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                            print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_chunk_seed={per_chunk_seed} (chunk_idx={chunk_idx})")
                         # Single backend call for the whole chunk
                         seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
                             self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
