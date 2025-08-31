@@ -688,159 +688,81 @@ class GRPOTrainer(Trainer):
     # _gather_unique_rows method removed to avoid TPU collective issues
 
     def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
-        """Ensure batch has unique prompts without changing the batch size.
+        """Ensure unique prompts within a batch without changing leading dim.
 
-        Duplicated prompts are replaced in-place by cycling over the first
-        occurrences so that the leading dimension remains unchanged. This
-        preserves divisibility requirements for DP sharding.
-        
-        IMPORTANT: All sample-wise fields (including ground truths) are
-        reindexed using the same mapping to keep alignment intact.
+        - If duplicate prompt texts are found with conflicting ground truths, fail fast.
+        - Otherwise, replace all duplicates with their first occurrence to preserve DP divisibility.
+        - Reindex all sample-wise fields using the same mapping.
         """
-        # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-        
+
         original_size = len(prompts)
-        seen_prompts: set[str] = set()
-        first_occurrence_indices: list[int] = []
-
-        # Track unique first occurrences
-        for i, prompt in enumerate(prompts):
-            if prompt not in seen_prompts:
-                seen_prompts.add(prompt)
-                first_occurrence_indices.append(i)
-        
-        # Fast path: nothing to change
-        if len(first_occurrence_indices) == original_size:
-            return batch
-        
-        # Build a replacement index list that keeps shape == original_size
-        # Keep first occurrences, replace duplicates by cycling over unique ones
-        if not first_occurrence_indices:
-            # Extremely unlikely, but guard: keep batch unchanged
+        if original_size == 0:
             return batch
 
-        # Cycle helper
-        def _cycled_indices(count: int) -> list[int]:
-            base = first_occurrence_indices
-            times = (count + len(base) - 1) // len(base)
-            return (base * times)[:count]
+        # Build index lists per unique prompt text
+        indices_by_prompt: dict[str, list[int]] = {}
+        for idx, text in enumerate(prompts):
+            indices_by_prompt.setdefault(text, []).append(idx)
 
-        replacement_indices: list[int] = []
-        used = set()
-        for i, prompt in enumerate(prompts):
-            if prompt in used:
-                replacement_indices.append(i)  # placeholder, will be replaced
-            else:
-                used.add(prompt)
-                replacement_indices.append(i)
+        # Quick exit: all unique
+        if len(indices_by_prompt) == original_size:
+            return batch
 
-        # Identify duplicate positions (beyond first occurrences)
-        duplicate_positions = []
-        seen_prompts.clear()
-        for i, prompt in enumerate(prompts):
-            if prompt in seen_prompts:
-                duplicate_positions.append(i)
-            else:
-                seen_prompts.add(prompt)
+        # Collect ground-truth tuples per index for consistency checks
+        gt_keys = ("solution_normalized", "solution", "answer", "target", "label", "gt", "ground_truth")
+        def _gt_tuple_at(i: int) -> tuple:
+            vals: list[tp.Any] = []
+            for k in gt_keys:
+                v = batch.get(k, None)
+                if v is None:
+                    vals.append(None)
+                    continue
+                vals.append(v[i] if hasattr(v, "__getitem__") else v)
+            return tuple(vals)
 
-        fills = _cycled_indices(len(duplicate_positions))
-
-        # Helper to extract a comparable ground truth value at an index
-        def _gt_value_at(idx: int):
-            try:
-                for _k in ("solution_normalized", "solution", "answer", "target", "label", "gt", "ground_truth"):
-                    _v = batch.get(_k, None)
-                    if _v is None:
-                        continue
-                    try:
-                        # Prefer indexable containers
-                        if hasattr(_v, "__getitem__"):
-                            return _v[idx]
-                        return _v
-                    except Exception:
-                        return None
-                return None
-            except Exception:
-                return None
-
-        # Final per-position indices to take from the original batch
-        final_indices = list(range(original_size))
-        skipped_for_gt_mismatch = 0
-        for pos, fill_idx in zip(duplicate_positions, fills, strict=False):
-            # Only replace duplicates if their ground-truth matches; otherwise keep original
-            try:
-                if _gt_value_at(pos) == _gt_value_at(fill_idx):
-                    final_indices[pos] = fill_idx
-                else:
-                    skipped_for_gt_mismatch += 1
-            except Exception:
-                # On any error, avoid replacement to preserve alignment
-                skipped_for_gt_mismatch += 1
-
-        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-            try:
-                logger.debug(
-                    f"dedup: original={original_size} unique={len(first_occurrence_indices)} "
-                    f"replaced={len(duplicate_positions)} head_replacements={final_indices[:8]}"
+        # Validate no conflicting GTs across duplicate prompts
+        for text, idcs in indices_by_prompt.items():
+            if len(idcs) <= 1:
+                continue
+            tuples = { _gt_tuple_at(i) for i in idcs }
+            if len(tuples) > 1:
+                raise RuntimeError(
+                    f"Duplicate prompt text with conflicting ground truths detected (count={len(idcs)}). "
+                    f"Prompt head='{text[:80].replace('\n',' ')}'"
                 )
-                # Log more details about the deduplication
-                if len(duplicate_positions) > 0:
-                    logger.warning(
-                        f"DEDUP WARNING: Found {len(duplicate_positions)} duplicate prompts out of {original_size}. "
-                        f"Ground truth answers are preserved to maintain correct reward alignment."
-                    )
-                    # Show which positions were replaced
-                    logger.debug(f"dedup: duplicate_positions={duplicate_positions[:10]}")
-                    logger.debug(f"dedup: first_occurrence_indices={first_occurrence_indices}")
-                    if skipped_for_gt_mismatch > 0:
-                        logger.debug(f"dedup: skipped_replacements_due_to_gt_mismatch={skipped_for_gt_mismatch}")
-            except Exception:
-                pass
-        
-        # Rebuild batch in-place using final_indices, preserving leading dimension
+
+        # Map each position to the first occurrence index of its prompt
+        first_index_of_prompt: dict[str, int] = { text: idcs[0] for text, idcs in indices_by_prompt.items() }
+        final_indices = [ first_index_of_prompt[p] for p in prompts ]
+
+        # Rebuild batch using final_indices for all per-sample fields
         rebuilt_batch: dict[str, tp.Any] = {}
         for key, values in batch.items():
-            try:
-                vlen = len(values)
-            except Exception:
-                vlen = None
-
+            vlen = len(values) if hasattr(values, "__len__") else None
             if vlen == original_size:
                 if isinstance(values, jax.Array):
                     rebuilt_batch[key] = values[final_indices]
                 else:
-                    try:
-                        import numpy as _np  # local import safe
-                        if isinstance(values, _np.ndarray):
-                            rebuilt_batch[key] = values[final_indices]
-                        elif isinstance(values, (list, tuple)):
-                            rebuilt_batch[key] = [values[i] for i in final_indices]
-                        else:
-                            rebuilt_batch[key] = values
-                    except Exception:
+                    import numpy as _np
+                    if isinstance(values, _np.ndarray):
+                        rebuilt_batch[key] = values[final_indices]
+                    elif isinstance(values, (list, tuple)):
+                        rebuilt_batch[key] = [values[i] for i in final_indices]
+                    else:
                         rebuilt_batch[key] = values
             else:
                 rebuilt_batch[key] = values
-        
+
         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-            try:
-                pid = rebuilt_batch.get("input_ids", None)
-                ans = rebuilt_batch.get("answer", None)
-                pid_len = int(pid.shape[0]) if isinstance(pid, jax.Array) else (len(pid) if pid is not None else -1)
-                ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
-                ans_head = None
-                try:
-                    if ans is not None and hasattr(ans, "__getitem__"):
-                        ans_head = ans[:2]
-                    else:
-                        ans_head = None
-                except Exception:
-                    ans_head = None
-                logger.debug(f"dedup: preserved_len={pid_len} answer_len={ans_len} answer_head={ans_head}")
-            except Exception:
-                pass
-        
+            pid = rebuilt_batch.get("input_ids", None)
+            ans = rebuilt_batch.get("answer", None)
+            pid_len = int(pid.shape[0]) if isinstance(pid, jax.Array) else (len(pid) if pid is not None else -1)
+            ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
+            logger.debug(
+                f"dedup: original={original_size} unique={len(indices_by_prompt)} preserved_len={pid_len} answers_len={ans_len}"
+            )
+
         return rebuilt_batch
 
     def _preprocess_batch_input(
@@ -875,11 +797,11 @@ class GRPOTrainer(Trainer):
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
-            # Default to generating all num_return_sequences at once when not set
-            if rollout_chunk_size is None or rollout_chunk_size <= 0:
-                rollout_chunk_size = int(self.num_generations)
-            # Clamp lower bound only; allow > num_return_sequences (loop uses min() with remaining)
-            rollout_chunk_size = int(max(1, int(rollout_chunk_size)))
+            # Default to 1 to guarantee prompt-major ordering via chunk accumulation
+            if rollout_chunk_size is None or int(rollout_chunk_size) <= 0 or int(rollout_chunk_size) > int(self.num_generations):
+                rollout_chunk_size = 1
+            else:
+                rollout_chunk_size = int(rollout_chunk_size)
             # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
 
             sequences_chunks = []
@@ -989,23 +911,23 @@ class GRPOTrainer(Trainer):
                 _local_prompt_count = 0
             prompts = [""] * _local_prompt_count
 
-            if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
-                # Host-safe prompt decoding to avoid non-addressable JAX arrays
-                try:
-                    _host_prompt_ids = jax.device_get(batch["input_ids"])  # type: ignore
-                    prompts = self.processing_class.batch_decode(_host_prompt_ids, skip_special_tokens=True)
-                except Exception:
-                    # Fallback to previous behavior
-                    try:
-                        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-                    except Exception:
-                        pass
+            # Decode prompts on host for alignment checks
+            _host_prompt_ids = jax.device_get(batch["input_ids"])  # type: ignore
+            prompts = self.processing_class.batch_decode(_host_prompt_ids, skip_special_tokens=True)
             # Decode completions text using pjit materialization executed on all processes
             _host_completion_ids = self.materialize_for_decode(completion_ids)
             completions_text = self.processing_class.batch_decode(
                 jax.device_get(_host_completion_ids),
                 skip_special_tokens=True,
             )
+
+            # Enforce strict alignment: completions must equal B*R and be prompt-major
+            expected = int(prompt_ids.shape[0] * self.num_generations)
+            actual = len(completions_text)
+            if actual != expected:
+                raise RuntimeError(
+                    f"Completions length mismatch: expected {expected} (B*R), got {actual}."
+                )
 
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
