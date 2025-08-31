@@ -1239,6 +1239,51 @@ class GRPOTrainer(Trainer):
                 except Exception:
                     prompts_rep = [""] * int(completion_ids.shape[0])
 
+            # Create an explicitly aligned ground-truth list expanded to match completions (B * R)
+            def _normalize_to_list_str_local(obj) -> list[str]:
+                if obj is None:
+                    return []
+                if isinstance(obj, list):
+                    base = obj
+                elif isinstance(obj, str):
+                    base = [obj]
+                else:
+                    try:
+                        if hasattr(obj, "tolist"):
+                            base = obj.tolist()
+                        else:
+                            base = list(obj)
+                    except Exception:
+                        base = [obj]
+                out = []
+                for x in base:
+                    if x is None:
+                        out.append("")
+                    elif isinstance(x, str):
+                        out.append(x)
+                    else:
+                        try:
+                            out.append(str(x))
+                        except Exception:
+                            out.append("")
+                return out
+
+            per_prompt_targets = _normalize_to_list_str_local(batch.get("answer", []))
+            # Ensure we have exactly B items (best-effort)
+            if len(per_prompt_targets) != int(prompt_ids.shape[0]):
+                try:
+                    # Truncate or pad with empty strings
+                    B_local = int(prompt_ids.shape[0])
+                    if len(per_prompt_targets) > B_local:
+                        per_prompt_targets = per_prompt_targets[:B_local]
+                    else:
+                        per_prompt_targets = per_prompt_targets + [""] * (B_local - len(per_prompt_targets))
+                except Exception:
+                    B_local = int(prompt_ids.shape[0])
+                    per_prompt_targets = [""] * B_local
+            # Expand contiguously per prompt to match [p0 × R, p1 × R, ...]
+            targets_expanded = [t for t in per_prompt_targets for _ in range(self.num_generations)]
+
             # Pre-allocate rewards; when chunk_size==1, we still need the full matrix for grouping
             rewards_per_func = jnp.zeros(
                 (prompt_ids.shape[0] * self.num_generations, len(self.reward_funcs)),
@@ -1286,6 +1331,8 @@ class GRPOTrainer(Trainer):
                             completion_lengths=jax.device_get(_safe_lengths),
                             num_return_sequences=int(self.num_generations),
                             num_prompts_local=int(prompt_ids.shape[0]),
+                            targets_expanded=targets_expanded,
+                            targets_per_prompt=per_prompt_targets,
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
                         # Debug: Log individual reward function values

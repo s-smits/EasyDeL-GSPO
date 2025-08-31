@@ -140,43 +140,49 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     - Store verification details for debugging
     """
 
-    # Ground truths are provided directly as strings in batch["answer"]
-    gt_raw = batch.get("answer", [])
-    if callable(normalize_to_list_str):
-        gts = normalize_to_list_str(gt_raw)  # type: ignore
+    # Prefer explicitly aligned targets if provided (length must equal len(completions))
+    targets_expanded = kwargs.get("targets_expanded", None)
+    gt_list: List[str]
+    if isinstance(targets_expanded, list) and len(targets_expanded) == len(completions):
+        gt_list = [str(x) if not isinstance(x, str) else x for x in targets_expanded]
     else:
-        if isinstance(gt_raw, list):
-            gts = gt_raw
+        # Ground truths are provided directly as strings in batch["answer"]
+        gt_raw = batch.get("answer", [])
+        if callable(normalize_to_list_str):
+            gts = normalize_to_list_str(gt_raw)  # type: ignore
         else:
-            try:
-                import numpy as np  # type: ignore
-                if isinstance(gt_raw, np.ndarray):
-                    gts = gt_raw.tolist()
-                else:
-                    gts = [gt_raw] if gt_raw is not None else []
-            except Exception:
-                gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
-    # Replicate to match completions length (B * R)
-    target = len(completions)
-    if callable(replicate_to_length):
-        # Prompt-major contiguous replication to match generation expansion via jnp.repeat
-        gt_list: List[str] = replicate_to_length(gts, target, interleaved=False)  # type: ignore[arg-type]
-    else:
-        if len(gts) == 0:
-            gt_list = [""] * target
-        elif len(gts) == target:
-            gt_list = gts
-        elif target % len(gts) == 0:
-            factor = target // len(gts)
-            # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
-            gt_list = [x for x in gts for _ in range(factor)]
+            if isinstance(gt_raw, list):
+                gts = gt_raw
+            else:
+                try:
+                    import numpy as np  # type: ignore
+                    if isinstance(gt_raw, np.ndarray):
+                        gts = gt_raw.tolist()
+                    else:
+                        gts = [gt_raw] if gt_raw is not None else []
+                except Exception:
+                    gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
+        # Replicate to match completions length (B * R)
+        target = len(completions)
+        if callable(replicate_to_length):
+            # Prompt-major contiguous replication to match generation expansion via jnp.repeat
+            gt_list = replicate_to_length(gts, target, interleaved=False)  # type: ignore[arg-type]
         else:
-            # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
-            times = (target + len(gts) - 1) // len(gts)
-            result = []
-            for x in gts:
-                result.extend([x] * times)
-            gt_list = result[:target]
+            if len(gts) == 0:
+                gt_list = [""] * target
+            elif len(gts) == target:
+                gt_list = gts
+            elif target % len(gts) == 0:
+                factor = target // len(gts)
+                # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
+                gt_list = [x for x in gts for _ in range(factor)]
+            else:
+                # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
+                times = (target + len(gts) - 1) // len(gts)
+                result = []
+                for x in gts:
+                    result.extend([x] * times)
+                gt_list = result[:target]
 
     # Gate logs to process 0 only to avoid cross-host spam
     try:
@@ -510,5 +516,4 @@ __all__ = [
     "debug_model_outputs",
     "test_verification_with_sample_data",
 ]
-
 
