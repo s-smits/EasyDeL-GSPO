@@ -87,41 +87,53 @@ def plan_adaptive_mesh(
     # Note: rollouts_per_step is passed through but not used in mesh planning
     # The trainer will handle deriving num_return_sequences after mesh is configured
 
-    # Compute dp/tp/fsdp in a robust, general way:
-    # - Snap forced values to the nearest feasible divisors when possible
-    # - Ensure dp * fsdp * tp == num_devices
-    # - Keep dp <= total_batch_size
+    # Compute dp/tp/fsdp robustly:
+    # Priority when BOTH are forced: honor DP first (logical parallel queries), then fit TP.
+    # Otherwise, snap the forced value to feasible divisors and fill the rest.
+
+    # Start with a feasible TP target (may be adjusted below if DP is forced)
     desired_tp = int(force_tensor_parallel) if force_tensor_parallel else 1
     desired_tp = max(1, desired_tp)
     if num_devices % desired_tp != 0:
-        # Snap TP down to largest divisor of num_devices not exceeding desired_tp
         snapped_tp = _largest_divisor_not_exceeding(num_devices, desired_tp)
         if snapped_tp != desired_tp:
             logger.warning(
                 f"Snapping tp from {desired_tp} to feasible {snapped_tp} for num_devices={num_devices}"
             )
         desired_tp = snapped_tp
-    tp = desired_tp
-
-    remaining_after_tp = max(1, num_devices // tp)
 
     if force_data_parallel:
-        desired_dp = max(1, int(force_data_parallel))
-        # Respect batch cap and remaining slots after TP
-        desired_dp = min(desired_dp, max(1, total_batch_size), remaining_after_tp)
-        # Snap DP to a divisor of remaining_after_tp
-        dp = _largest_divisor_not_exceeding(remaining_after_tp, desired_dp)
-        if dp != desired_dp:
+        # Honor DP first. Cap by batch size and total available device groups.
+        requested_dp = max(1, int(force_data_parallel))
+        requested_dp = min(requested_dp, max(1, total_batch_size), max(1, num_devices))
+
+        # If TP also forced, prefer reducing TP to make room for requested DP.
+        if force_tensor_parallel:
+            # The max TP that still allows requested_dp groups is floor(num_devices / requested_dp)
+            max_tp_for_dp = max(1, num_devices // requested_dp)
+            if desired_tp > max_tp_for_dp:
+                logger.warning(
+                    f"Reducing tp from {desired_tp} to {max_tp_for_dp} to honor dp={requested_dp} on {num_devices} devices."
+                )
+                desired_tp = max_tp_for_dp
+
+        tp = max(1, desired_tp)
+        remaining_after_tp = max(1, num_devices // tp)
+
+        # Snap DP to a divisor of remaining_after_tp (still prefer the requested value)
+        dp = _largest_divisor_not_exceeding(remaining_after_tp, requested_dp)
+        if dp != requested_dp:
             logger.warning(
-                f"Snapping dp from {desired_dp} to feasible {dp} for num_devices={num_devices}, tp={tp}"
+                f"Snapping dp from {requested_dp} to feasible {dp} for num_devices={num_devices}, tp={tp}"
             )
         fsdp = max(1, remaining_after_tp // dp)
     else:
-        # Auto DP: prefer as large as possible up to batch size while dividing remaining_after_tp
-        # If rollouts_per_step is provided, try to meet the target by increasing DP (within limits)
+        # Only TP forced or neither forced: choose DP as large as possible up to batch size
+        tp = max(1, desired_tp)
+        remaining_after_tp = max(1, num_devices // tp)
         if rollouts_per_step and rollouts_per_step > 0:
             denom = max(1, total_batch_size * max(1, num_return_sequences))
-            dp_required = (int(rollouts_per_step) + denom - 1) // denom  # ceil division
+            dp_required = (int(rollouts_per_step) + denom - 1) // denom
             dp_target = min(max(1, dp_required), min(max(1, total_batch_size), remaining_after_tp))
         else:
             dp_target = min(max(1, total_batch_size), remaining_after_tp)

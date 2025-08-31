@@ -31,7 +31,7 @@ echo "Starting GSPO training with optimized configuration..."
 
 # Parse command line arguments
 DATASET="${1:-gsm8k}"
-CURRICULUM_MATH="${2:-false}"
+CURRICULUM_MATH="${2:-true}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
 
