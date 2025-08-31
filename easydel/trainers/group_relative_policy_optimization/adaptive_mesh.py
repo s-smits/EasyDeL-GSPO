@@ -215,6 +215,21 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
     
     validate_mesh_config(plan.dp, plan.fsdp, plan.tp, num_devices, total_batch_size)
 
+    # Summarize resolved plan and any adjustments
+    try:
+        if jax.process_index() == 0:
+            adjusted = []
+            if force_data_parallel and int(force_data_parallel) != int(plan.dp):
+                adjusted.append(f"DP:{force_data_parallel}->{plan.dp}")
+            if force_tensor_parallel and int(force_tensor_parallel) != int(plan.tp):
+                adjusted.append(f"TP:{force_tensor_parallel}->{plan.tp}")
+            adj_str = f" (adjusted: {', '.join(adjusted)})" if adjusted else ""
+            logger.info(
+                f"Mesh plan resolved: DP={plan.dp}, FSDP={plan.fsdp}, TP={plan.tp}, devices={num_devices}{adj_str}"
+            )
+    except Exception:
+        pass
+
     # If the user forced DP larger than process_count but we don't implement intra-process DP sub-shards here,
     # cap DP to process_count and recompute plan to avoid duplicated prompts.
     try:
@@ -248,6 +263,14 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
         
         # Handle single-process multi-device setups (e.g., TPU pods)
         if proc_count == 1 and plan.dp > 1:
+            # Optional strict mode to enforce correct sharding
+            if getattr(arguments, "strict_dataset_sharding", False):
+                raise RuntimeError(
+                    "strict_dataset_sharding=True but proc_count==1 with DP>1. "
+                    "True dataset sharding across DP groups requires multi-process launch, e.g.:\n"
+                    f"  mpirun -n {plan.dp} ./run_gspo_training.sh ...\n"
+                    f"  or srun -n {plan.dp} ./run_gspo_training.sh ..."
+                )
             # Single process with intra-process DP - all DP groups see same shard
             arguments.grain_shard_count = 1
             arguments.grain_shard_index = 0
@@ -290,6 +313,15 @@ def configure_adaptive_mesh_inplace(arguments) -> AdaptiveMeshPlan:
             arguments.grain_shard_count = 1
         if arguments.grain_shard_index is None or arguments.grain_shard_index < 0:
             arguments.grain_shard_index = 0
+        # Optional per-process log of shard mapping
+        if getattr(arguments, "verify_dataset_sharding", True):
+            try:
+                logger.info(
+                    f"[rank {jax.process_index()}] dataset shard index={arguments.grain_shard_index}/"
+                    f"{arguments.grain_shard_count} (mesh_dp={plan.dp}, tp={plan.tp})"
+                )
+            except Exception:
+                pass
     except Exception as e:
         logger.warning(f"Failed to configure dataset sharding: {e}")
         # Fallback to safe defaults

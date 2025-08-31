@@ -85,14 +85,11 @@ class GRPOTrainer(Trainer):
 
         if self._mesh_plan:
             try:
-                if jax.process_index() == 0:
-                    print(f"DEBUG: Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}")
                 logger.info(
                     f"Configured mesh: DP={self._mesh_plan.dp}, FSDP={self._mesh_plan.fsdp}, TP={self._mesh_plan.tp}; "
                     f"dataset shards={getattr(arguments, 'grain_shard_count', None)} (index={getattr(arguments, 'grain_shard_index', None)})"
                 )
             except Exception as e:
-                print(f"DEBUG: Failed to log mesh configuration: {e}")
                 logger.warning(f"Failed to log mesh configuration: {e}")
         
         self.arguments = arguments
@@ -354,12 +351,10 @@ class GRPOTrainer(Trainer):
                     try:
                         dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
                         if _jax.process_index() == 0:
-                            print(f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}")
                             logger.info(
                                 f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
                             )
                     except Exception as e:
-                        print(f"DEBUG: Dataset sharding failed for {dataset_name}: {e}")
                         logger.warning(f"Dataset sharding failed for {dataset_name}: {e}")
         except Exception as _e:
             # Best-effort: continue without sharding if anything goes wrong
@@ -482,11 +477,7 @@ class GRPOTrainer(Trainer):
             try:
                 if jax.process_index() == 0:
                     per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
-                    # Use effective dp for expected global actually running this process configuration
                     global_total = int(effective_dp) * per_process
-                    print(
-                        f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}"
-                    )
                     logger.info(
                         f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
                         f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
@@ -494,7 +485,6 @@ class GRPOTrainer(Trainer):
                         f"batch_size={self.arguments.total_batch_size}"
                     )
             except Exception as e:
-                print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")
 
         # Use adaptive sharding based on batch size and tensor parallelism
@@ -687,85 +677,6 @@ class GRPOTrainer(Trainer):
 
     # _gather_unique_rows method removed to avoid TPU collective issues
 
-    def _ensure_unique_prompts(self, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
-        """Ensure unique prompts within a batch without changing leading dim.
-
-        - If duplicate prompt texts are found with conflicting ground truths, fail fast.
-        - Otherwise, replace all duplicates with their first occurrence to preserve DP divisibility.
-        - Reindex all sample-wise fields using the same mapping.
-        """
-        prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
-
-        original_size = len(prompts)
-        if original_size == 0:
-            return batch
-
-        # Build index lists per unique prompt text
-        indices_by_prompt: dict[str, list[int]] = {}
-        for idx, text in enumerate(prompts):
-            indices_by_prompt.setdefault(text, []).append(idx)
-
-        # Quick exit: all unique
-        if len(indices_by_prompt) == original_size:
-            return batch
-
-        # Collect ground-truth tuples per index for consistency checks
-        gt_keys = ("solution_normalized", "solution", "answer", "target", "label", "gt", "ground_truth")
-        def _gt_tuple_at(i: int) -> tuple:
-            vals: list[tp.Any] = []
-            for k in gt_keys:
-                v = batch.get(k, None)
-                if v is None:
-                    vals.append(None)
-                    continue
-                vals.append(v[i] if hasattr(v, "__getitem__") else v)
-            return tuple(vals)
-
-        # Validate no conflicting GTs across duplicate prompts
-        for text, idcs in indices_by_prompt.items():
-            if len(idcs) <= 1:
-                continue
-            tuples = { _gt_tuple_at(i) for i in idcs }
-            if len(tuples) > 1:
-                cleaned_text = text[:80].replace('\n', ' ')
-                raise RuntimeError(
-                    f"Duplicate prompt text with conflicting ground truths detected (count={len(idcs)}). "
-                    f"Prompt head='{cleaned_text}'"
-                )
-
-        # Map each position to the first occurrence index of its prompt
-        first_index_of_prompt: dict[str, int] = { text: idcs[0] for text, idcs in indices_by_prompt.items() }
-        final_indices = [ first_index_of_prompt[p] for p in prompts ]
-
-        # Rebuild batch using final_indices for all per-sample fields
-        rebuilt_batch: dict[str, tp.Any] = {}
-        for key, values in batch.items():
-            vlen = len(values) if hasattr(values, "__len__") else None
-            if vlen == original_size:
-                if isinstance(values, jax.Array):
-                    rebuilt_batch[key] = values[final_indices]
-                else:
-                    import numpy as _np
-                    if isinstance(values, _np.ndarray):
-                        rebuilt_batch[key] = values[final_indices]
-                    elif isinstance(values, (list, tuple)):
-                        rebuilt_batch[key] = [values[i] for i in final_indices]
-                    else:
-                        rebuilt_batch[key] = values
-            else:
-                rebuilt_batch[key] = values
-
-        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-            pid = rebuilt_batch.get("input_ids", None)
-            ans = rebuilt_batch.get("answer", None)
-            pid_len = int(pid.shape[0]) if isinstance(pid, jax.Array) else (len(pid) if pid is not None else -1)
-            ans_len = (len(ans) if hasattr(ans, "__len__") else -1)
-            logger.debug(
-                f"dedup: original={original_size} unique={len(indices_by_prompt)} preserved_len={pid_len} answers_len={ans_len}"
-            )
-
-        return rebuilt_batch
-
     def _preprocess_batch_input(
         self,
         state: EasyDeLState,
@@ -784,25 +695,19 @@ class GRPOTrainer(Trainer):
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
 
 
-            # Ensure unique prompts if enabled
-            if getattr(self.arguments, "ensure_unique_prompts", True):
-                batch = self._ensure_unique_prompts(batch)
-                # IMPORTANT: re-bind prompt tensors after filtering to keep alignment with batch
-                prompt_ids = jnp.asarray(batch["input_ids"])  # rebind after dedup
-                prompt_mask = jnp.asarray(batch["attention_mask"])  # rebind after dedup
-                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                    _pid_len = int(prompt_ids.shape[0])
-                    _ans_obj = batch.get("answer", None)
-                    _ans_len = (len(_ans_obj) if _ans_obj is not None and hasattr(_ans_obj, "__len__") else -1)
-                    logger.debug(f"preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
+            # Streamlined path: assume dataset uniqueness and preserve batch order
+            # (Deduplication removed for simplicity and to avoid remapping GTs.)
 
             # Chunked generation and reference log-prob computation to reduce peak memory
-            rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
-            # Default to 1 to guarantee prompt-major ordering via chunk accumulation
-            if rollout_chunk_size is None or int(rollout_chunk_size) <= 0 or int(rollout_chunk_size) > int(self.num_generations):
+            # Determine rollout chunking
+            if getattr(self.arguments, "debug_strict_ordering", False):
                 rollout_chunk_size = 1
             else:
-                rollout_chunk_size = int(rollout_chunk_size)
+                rc = getattr(self.arguments, "rollout_chunk_size", None)
+                if rc is None or int(rc) <= 0:
+                    rollout_chunk_size = int(self.num_generations)
+                else:
+                    rollout_chunk_size = int(max(1, min(int(rc), int(self.num_generations))))
             # No TP-based capping; PagedAttention KV caching supports multiple prompts regardless of TP
 
             sequences_chunks = []
@@ -905,13 +810,6 @@ class GRPOTrainer(Trainer):
                 completion_mask = _reorder_from_chunks(completion_mask_chunks)
                 ref_per_token_logps = _reorder_from_chunks(ref_logps_chunks)
                 completion_lengths_per_seq = _reorder_from_chunks(comp_len_chunks)
-            # Always initialize prompts to safe placeholders to avoid UnboundLocalError
-            try:
-                _local_prompt_count = int(batch["input_ids"].shape[0])
-            except Exception:
-                _local_prompt_count = 0
-            prompts = [""] * _local_prompt_count
-
             # Decode prompts on host for alignment checks
             _host_prompt_ids = jax.device_get(batch["input_ids"])  # type: ignore
             prompts = self.processing_class.batch_decode(_host_prompt_ids, skip_special_tokens=True)
@@ -931,157 +829,12 @@ class GRPOTrainer(Trainer):
                 )
 
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                try:
-                    logger.debug(
-                        f"preprocess: prompts_len={len(prompts)} completions_len={len(completions_text)} "
-                        f"expected_completions={int(prompt_ids.shape[0]*self.num_generations)}"
-                    )
-                    # Show small heads for inspection
-                    p_head = [p[:64].replace("\n", " ") for p in prompts[:2]] if isinstance(prompts, list) else []
-                    a_obj = batch.get("answer", None)
-                    if a_obj is not None:
-                        try:
-                            a_list = a_obj.tolist() if hasattr(a_obj, "tolist") else list(a_obj)
-                        except Exception:
-                            a_list = []
-                    else:
-                        a_list = []
-                    logger.debug(f"preprocess: prompt_head={p_head} answer_head={a_list[:2]}")
-                    # First prompt's first few completions lengths
-                    first_r = min(self.num_generations, len(completions_text))
-                    comp_lens = [len(completions_text[i]) for i in range(first_r)]
-                    logger.debug(f"preprocess: first_prompt_first_{first_r}_completion_lengths={comp_lens}")
-                except Exception:
-                    pass
+                logger.debug(
+                    f"preprocess: prompts_len={len(prompts)} completions_len={len(completions_text)} "
+                    f"expected_completions={int(prompt_ids.shape[0]*self.num_generations)}"
+                )
 
-            # Print one local example per process each step: prompt, ground truth, extracted prediction
-            if getattr(self.arguments, "verbose", True):
-                try:
-                    example_idx = 0
-                    # Extract prompt string
-                    example_prompt = ""
-                    try:
-                        if isinstance(prompts, list) and len(prompts) > 0:
-                            example_prompt = prompts[example_idx]
-                        else:
-                            example_prompt = str(prompts)
-                    except Exception:
-                        example_prompt = ""
-
-                    # Extract raw completion text for first generation of first prompt
-                    example_pred_text = ""
-                    try:
-                        if isinstance(completions_text, list) and len(completions_text) > example_idx:
-                            example_pred_text = completions_text[example_idx]
-                        else:
-                            example_pred_text = str(completions_text)
-                    except Exception:
-                        example_pred_text = ""
-
-                    # Determine ground truth value from batch (dataset-dependent)
-                    def _get_gt(_batch, idx: int):
-                        try:
-                            if "solution_normalized" in _batch and _batch["solution_normalized"] is not None:
-                                print("DEBUG: Using 'solution_normalized' from batch")
-                                v = _batch["solution_normalized"]
-                            elif "solution" in _batch and _batch["solution"] is not None:
-                                print("DEBUG: Using 'solution' from batch")
-                                v = _batch["solution"]
-                            elif "answer" in _batch and _batch["answer"] is not None:
-                                print("DEBUG: Using 'answer' from batch")
-                                v = _batch["answer"]
-                            else:
-                                print("DEBUG: No ground truth key found in batch")
-                                return None
-                            if hasattr(v, "__getitem__"):
-                                try:
-                                    print(f"DEBUG: Attempting to index ground truth with idx={idx}")
-                                    return v[idx]
-                                except Exception as e:
-                                    print(f"DEBUG: Exception indexing ground truth with idx={idx}: {e}, falling back to v[0]")
-                                    return v[0]
-                            return v
-                        except Exception as e:
-                            print(f"DEBUG: Exception in _get_gt: {e}")
-                            return None
-
-                    example_gt = _get_gt(batch, example_idx)
-
-                    # Extract final value from completion using reward-specific logic (reuse reward modules)
-                    example_pred_value = example_pred_text
-                    try:
-                        # Detect dataset type based on configured reward functions
-                        rf_names = [getattr(rf, "__name__", "") for rf in self.reward_funcs]
-                        rf_mods = [getattr(rf, "__module__", "") for rf in self.reward_funcs]
-                        print(f"DEBUG: Reward function names: {rf_names}")
-                        print(f"DEBUG: Reward function modules: {rf_mods}")
-                        is_math = any((name.startswith("math/") or mod.endswith("math_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
-                        is_gsm8k = any((name.startswith("gsm8k/") or mod.endswith("gsm8k_reward")) for name, mod in zip(rf_names, rf_mods, strict=False))
-                        print(f"DEBUG: Detected dataset type - is_math={is_math}, is_gsm8k={is_gsm8k}")
-
-                        if is_math:
-                            try:
-                                print("DEBUG: Using math reward extraction")
-                                # Preview for logs
-                                preview = example_pred_text[-200:] if len(example_pred_text) > 200 else example_pred_text
-                                preview = preview[:180] + "…" if len(preview) > 180 else preview
-                                print(f"DEBUG: Math extraction preview: '{preview}'")
-                                # Extract last boxed or fallback to last number
-                                try:
-                                    from easydel.verification.math_reward import _last_boxed_only_string as _mv_last_boxed, _remove_boxed as _mv_remove_boxed  # type: ignore
-                                    _boxed = _mv_last_boxed(example_pred_text)
-                                    if _boxed is not None:
-                                        example_pred_value = _mv_remove_boxed(_boxed)
-                                    else:
-                                        import re as _re
-                                        _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
-                                        example_pred_value = _nums[-1] if _nums else preview
-                                except Exception:
-                                    import re as _re
-                                    _nums = _re.findall(r"-?\d+\.?\d*", example_pred_text)
-                                    example_pred_value = _nums[-1] if _nums else preview
-                                print(f"DEBUG: Math extraction result: '{example_pred_value}'")
-                            except Exception as e:
-                                print(f"DEBUG: Math extraction failed: {e}")
-                                example_pred_value = example_pred_text
-                        elif is_gsm8k:
-                            try:
-                                print("DEBUG: Using GSM8K reward extraction")
-                                import re as _re
-                                from easydel.verification.gsm8k_reward import _extract_answer_from_xml as _gx_extract_xml, _normalize_number_text as _gx_norm  # type: ignore
-                                _ans = _gx_extract_xml(example_pred_text) or example_pred_text
-                                _norm = _gx_norm(_ans)
-                                _nums = _re.findall(r"-?\d+\.?\d*", _norm)
-                                example_pred_value = _nums[-1] if _nums else _ans
-                                print(f"DEBUG: GSM8K extraction result: '{example_pred_value}'")
-                            except Exception as e:
-                                print(f"DEBUG: GSM8K extraction failed: {e}")
-                                pass
-                        # else: keep example_pred_value as raw text
-                    except Exception as e:
-                        print(f"DEBUG: Exception in reward-specific extraction: {e}")
-                        pass
-
-                    # Clip long prompt/output for readability
-                    def _clip(s: str, n: int = 180) -> str:
-                        try:
-                            ss = s.replace("\n", " ")
-                            return ss if len(ss) <= n else (ss[:n] + "…")
-                        except Exception:
-                            return str(s)
-
-                    try:
-                        print(f"DEBUG: About to log example - prompt_len={len(str(example_prompt))}, gt='{example_gt}', pred_len={len(str(example_pred_value))}")
-                        logger.info(
-                            f"example/local | prompt={_clip(example_prompt)} | gt={example_gt} | pred={_clip(str(example_pred_value))}"
-                        )
-                    except Exception as e:
-                        print(f"DEBUG: Failed to log example: {e}")
-                except Exception as _e:
-                    try:
-                        logger.debug(f"example/local logging failed: {_e}")
-                    except Exception:
-                        pass
+            # Remove one-off per-step example logs to reduce noise; rely on sanity metric and metrics.
 
             is_conversational = self.train_is_conversational if is_train else self.eval_is_conversational
             if is_conversational:
@@ -1284,9 +1037,9 @@ class GRPOTrainer(Trainer):
                                 _fname = getattr(reward_func, "__name__", f"reward_{i}")
                                 _mean = float(jnp.mean(rew))
                                 _success_rate = float(jnp.mean(rew > 0.0))
-                                print(f"DEBUG: {_fname} - mean={_mean:.4f}, success_rate={_success_rate:.4f}")
-                            except Exception as e:
-                                print(f"DEBUG: Failed to log reward {i}: {e}")
+                                logger.debug(f"reward/{_fname}: mean={_mean:.4f}, success_rate={_success_rate:.4f}")
+                            except Exception:
+                                pass
                     rewards_per_func = rewards_per_func.at[:, i].set(rew.reshape(-1))
             rewarding_time = rewarding_time_fn()
             
@@ -1320,11 +1073,10 @@ class GRPOTrainer(Trainer):
                 
                 # Debug: Show why success_rate might be misleading
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                    try:
-                        print(f"DEBUG: reward/success_rate={float(success_rate_comp_local):.4f} (based on sum of rewards > 0)")
-                        print(f"DEBUG: This can be misleading if format_reward=1.0 but answer_reward=0.0")
-                    except Exception:
-                        pass
+                    logger.debug(
+                        f"reward/success_rate={float(success_rate_comp_local):.4f} (sum(rewards>0)); "
+                        f"note: include format vs answer reward composition when applicable"
+                    )
 
                 # Per-prompt pass@k (at least one success among num_return_sequences)
                 per_prompt_success = jnp.max(successes_local.reshape(-1, self.num_generations), axis=1)
@@ -1340,8 +1092,8 @@ class GRPOTrainer(Trainer):
                         head_n = int(min(8, per_prompt_counts.shape[0]))
                         counts_head = list(map(int, jax.device_get(per_prompt_counts[:head_n])))
                         any_success = list(map(int, jax.device_get((per_prompt_counts > 0)[:head_n])))
-                        print(
-                            f"DEBUG: grouping: B={num_prompts_local}, R={int(self.num_generations)}, "
+                        logger.debug(
+                            f"grouping: B={num_prompts_local}, R={int(self.num_generations)}, "
                             f"per_prompt_success_counts_head={counts_head}, any_success_head={any_success}"
                         )
                     except Exception:

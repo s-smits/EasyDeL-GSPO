@@ -20,7 +20,7 @@ export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin stable 2>/dev/null || true
+# git pull origin stable 2>/dev/null || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -30,7 +30,7 @@ cd /home/air/EasyDeL-GSPO
 echo "Starting GSPO training with optimized configuration..."
 
 # Parse command line arguments
-DATASET="${1:-gsm8k}"
+DATASET="${1:-math-ds}"
 CURRICULUM_MATH="${2:-true}"
 echo "Using dataset: ${DATASET}"
 echo "Curriculum math: ${CURRICULUM_MATH}"
@@ -47,7 +47,7 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --max_completion_length 6144 \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
-  --force_tensor_parallel 4 \
+  --force_tensor_parallel 2 \
   --force_data_parallel 4 \
   --log_logprobs_metrics false \
   --log_global false \
@@ -62,8 +62,6 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --ensure_unique_prompts false
-
-#   --force_data_parallel 1 \
+  
 
 echo "Training completed!"

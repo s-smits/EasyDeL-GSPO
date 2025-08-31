@@ -141,6 +141,18 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+
+    # Debug control to force strict prompt-major ordering during generation
+    debug_strict_ordering: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, forces rollout_chunk_size=1 to guarantee prompt-major ordering end-to-end.\n"
+                "Use for debugging alignment; disable for throughput once stable."
+            )
+        },
+    )
+
     top_p: float = field(
         default=0.95,
         metadata={

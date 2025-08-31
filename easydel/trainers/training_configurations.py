@@ -251,16 +251,19 @@ class TrainingArguments:
             "help": "If True, perform a one-time cross-process verification on step 0 to detect duplicate prompts across DP workers."
         },
     )
+    strict_dataset_sharding: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, raise an error when data_parallelism (DP) > 1 but jax.process_count()==1, since"
+                " true dataset sharding across DP groups requires multi-process launch."
+            )
+        },
+    )
     dataset_sharding_tolerance: float = field(
         default=0.05,
         metadata={
             "help": "Maximum allowed ratio of duplicate prompts before raising an error (default: 0.05 = 5%). Set to 0.0 for strict checking."
-        },
-    )
-    ensure_unique_prompts: bool = field(
-        default=True,
-        metadata={
-            "help": "If True, filter duplicate prompts in each batch to ensure training quality."
         },
     )
     loss_config: LossConfig | None = field(
