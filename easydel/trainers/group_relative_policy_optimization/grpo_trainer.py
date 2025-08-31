@@ -1265,6 +1265,8 @@ class GRPOTrainer(Trainer):
                             max_length=self.arguments.max_sequence_length,
                             batch=batch,
                             completion_lengths=jax.device_get(_safe_lengths),
+                            num_return_sequences=int(self.num_generations),
+                            num_prompts_local=int(prompt_ids.shape[0]),
                         )
                         rew = jnp.array(output_reward_func, dtype="f4")
                         # Debug: Log individual reward function values

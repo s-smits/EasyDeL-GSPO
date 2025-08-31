@@ -285,22 +285,27 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         # Derive per-prompt pass@k locally when prompts are provided
         try:
             total_comps = len(verification_details)
-            if prompts and isinstance(prompts, list) and len(prompts) == total_comps:
-                try:
-                    unique_prompts = []
-                    seen = set()
-                    for p in prompts:
-                        if p not in seen:
-                            seen.add(p)
-                            unique_prompts.append(p)
-                    B = len(unique_prompts)
-                    R = max(1, total_comps // max(1, B))
-                except Exception:
+            # Prefer trainer-provided counts when available
+            R = int(kwargs.get("num_return_sequences", 0) or 0)
+            B = int(kwargs.get("num_prompts_local", 0) or 0)
+            if not (B > 0 and R > 0 and B * R == total_comps):
+                # Fallback to inferring from prompts list length
+                if prompts and isinstance(prompts, list) and len(prompts) == total_comps:
+                    try:
+                        unique_prompts = []
+                        seen = set()
+                        for p in prompts:
+                            if p not in seen:
+                                seen.add(p)
+                                unique_prompts.append(p)
+                        B = len(unique_prompts)
+                        R = max(1, total_comps // max(1, B))
+                    except Exception:
+                        B = total_comps
+                        R = 1
+                else:
                     B = total_comps
                     R = 1
-            else:
-                B = total_comps
-                R = 1
 
             # Pass@k across prompts
             scores = [1.0 if d.get("score", 0.0) > 0.0 else 0.0 for d in verification_details]
