@@ -203,8 +203,18 @@ class EasyGenerationMixin:
             num_key_value_heads = num_attention_heads
 
         head_dim = _safepick(self.config, "head_dim")
+        # Ensure ints for arithmetic
+        _hidden_size_i = int(hidden_size) if hidden_size is not None else int(getattr(self.config, "hidden_size", 0))
+        _num_attn_heads_i = int(num_attention_heads) if num_attention_heads is not None else int(getattr(self.config, "num_attention_heads", 1))
+        if _num_attn_heads_i <= 0:
+            _num_attn_heads_i = 1
         if head_dim is None:
-            head_dim = hid // num_attention_heads
+            head_dim = _hidden_size_i // _num_attn_heads_i
+        # Normalize kv heads to int as well
+        if num_key_value_heads is None:
+            num_key_value_heads = _num_attn_heads_i
+        else:
+            num_key_value_heads = int(num_key_value_heads)
 
         return PagesCacheMetaData.create(
             mesh=self.mesh,
@@ -852,6 +862,7 @@ class EasyGenerationMixin:
         **model_kwargs,
     ) -> tuple[jnp.ndarray, dict[str, tp.Any]]:
         if expand_size == 1:
+            input_ids = jnp.asarray(input_ids) if input_ids is not None else jnp.array([], dtype=jnp.int32)
             return input_ids, model_kwargs
 
         def _expand_dict_for_generation(dict_to_expand):
@@ -865,7 +876,10 @@ class EasyGenerationMixin:
             return dict_to_expand
 
         if input_ids is not None:
-            input_ids = input_ids.repeat(repeats=expand_size, axis=0)
+            input_ids = jnp.asarray(input_ids).repeat(repeats=expand_size, axis=0)
+        else:
+            # Return a zero-length tensor to satisfy type (never used when None in callers)
+            input_ids = jnp.array([], dtype=jnp.int32)
 
         model_kwargs = _expand_dict_for_generation(model_kwargs)
 
@@ -1403,7 +1417,7 @@ class EasyGenerationMixin:
 
     def _beam_search(
         self,
-        input_ids: None,
+        input_ids: jnp.ndarray,
         max_length: int | None = None,
         pad_token_id: int | None = None,
         eos_token_id: int | None = None,
@@ -1486,14 +1500,22 @@ class EasyGenerationMixin:
         # and pass it the `encoder_outputs`, which are part of the `model_kwargs`.
         model = self.decode if self.config.is_encoder_decoder else self
 
+        # Ensure kwargs is a dict
+        if model_kwargs is None:
+            model_kwargs = {}
+
         # flatten beam dim
-        if "encoder_outputs" in model_kwargs:
-            model_kwargs["encoder_outputs"]["last_hidden_state"] = flatten_beam_dim(
-                model_kwargs["encoder_outputs"]["last_hidden_state"]
-            )
+        enc_out_val = model_kwargs.get("encoder_outputs", None)
+        if isinstance(enc_out_val, dict):
+            lh = enc_out_val.get("last_hidden_state", None)
+            if lh is not None:
+                enc_out_val["last_hidden_state"] = flatten_beam_dim(lh)
+            model_kwargs["encoder_outputs"] = enc_out_val
         for kwarg in ["attention_mask", "decoder_attention_mask"]:
             if kwarg in model_kwargs:
-                model_kwargs[kwarg] = flatten_beam_dim(model_kwargs[kwarg])
+                val = model_kwargs.get(kwarg)
+                if val is not None:
+                    model_kwargs[kwarg] = flatten_beam_dim(val)
 
         # initialize model specific kwargs
         model_kwargs = self.prepare_inputs_for_generation(

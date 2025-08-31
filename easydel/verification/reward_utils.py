@@ -62,9 +62,15 @@ def normalize_to_list_str(obj: Any) -> List[str]:
     return out
 
 
-def replicate_to_length(items: List[str], target_len: int) -> List[str]:
-    """Replicate items to exactly target_len elements, preserving order.
-
+def replicate_to_length(items: List[str], target_len: int, interleaved: bool = False) -> List[str]:
+    """Replicate items to exactly target_len elements.
+    
+    Args:
+        items: List of items to replicate
+        target_len: Target length
+        interleaved: If True, use interleaved pattern [a,b,a,b,...] for replication.
+                    If False (default), use contiguous pattern [a,a,...,b,b,...] for replication.
+    
     If items is empty, returns [""] * target_len.
     """
     if target_len <= 0:
@@ -75,9 +81,25 @@ def replicate_to_length(items: List[str], target_len: int) -> List[str]:
         return items
     if target_len % len(items) == 0:
         factor = target_len // len(items)
-        return [x for x in items for _ in range(factor)]
+        if interleaved:
+            # Interleaved pattern: [a,b,c,a,b,c,...] 
+            result = []
+            for _ in range(factor):
+                result.extend(items)
+            return result
+        else:
+            # Contiguous pattern: [a,a,a,...,b,b,b,...] - DEFAULT for num_return_sequences
+            # This matches how generation.expand_inputs_for_generation works with jnp.repeat
+            return [x for x in items for _ in range(factor)]
+    # Fallback for non-exact multiples
     times = (target_len + len(items) - 1) // len(items)
-    return (items * times)[:target_len]
+    if interleaved:
+        result = []
+        for _ in range(times):
+            result.extend(items)
+        return result[:target_len]
+    else:
+        return (items * times)[:target_len]
 
 
 def is_main_process() -> bool:

@@ -226,20 +226,25 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             except Exception:
                 gts = [str(gts)]
         gts = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
-    # Replicate to match B*R if needed
+    # Replicate to match B*R if needed (prompt-major contiguous order: [p0 x R, p1 x R, ...])
     c_len = len(completions)
     if callable(replicate_to_length):
-        gts = replicate_to_length(gts, c_len)  # type: ignore
+        gts = replicate_to_length(gts, c_len, interleaved=False)  # type: ignore[arg-type]
     else:
         g_len = len(gts)
         if g_len == 0:
             gts = [""] * c_len
         elif c_len % g_len == 0:
             factor = c_len // g_len
+            # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
             gts = [x for x in gts for _ in range(factor)]
         else:
+            # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
             times = (c_len + g_len - 1) // g_len
-            gts = (gts * times)[:c_len]
+            result = []
+            for x in gts:
+                result.extend([x] * times)
+            gts = result[:c_len]
 
     # Configure Math-Verify extraction (fixed, strict) and parameters
     use_mv = callable(parse) and callable(verify)  # type: ignore

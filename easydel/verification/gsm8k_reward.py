@@ -34,6 +34,8 @@ except Exception:  # pragma: no cover
     replicate_to_length = None  # type: ignore
     is_main_process = lambda: True  # type: ignore
     safe_global_sum = lambda x: x  # type: ignore
+    def extract_answer_from_xml(solution_str: str) -> str | None:  # type: ignore
+        return None
 
 
 def _extract_text(comp) -> str:
@@ -156,7 +158,8 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     # Replicate to match completions length (B * R)
     target = len(completions)
     if callable(replicate_to_length):
-        gt_list: List[str] = replicate_to_length(gts, target)  # type: ignore
+        # Prompt-major contiguous replication to match generation expansion via jnp.repeat
+        gt_list: List[str] = replicate_to_length(gts, target, interleaved=False)  # type: ignore[arg-type]
     else:
         if len(gts) == 0:
             gt_list = [""] * target
@@ -164,10 +167,15 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
             gt_list = gts
         elif target % len(gts) == 0:
             factor = target // len(gts)
+            # Contiguous replication per prompt: [gt0 * R, gt1 * R, ...]
             gt_list = [x for x in gts for _ in range(factor)]
         else:
+            # Fallback (non-exact multiples): contiguous blocks per prompt, then truncate
             times = (target + len(gts) - 1) // len(gts)
-            gt_list = (gts * times)[:target]
+            result = []
+            for x in gts:
+                result.extend([x] * times)
+            gt_list = result[:target]
 
     # Gate logs to process 0 only to avoid cross-host spam
     try:
