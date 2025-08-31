@@ -535,8 +535,11 @@ class GRPOTrainer(Trainer):
             lengths_spec = PartitionSpec()
         self.lengths_sharding = NamedSharding(mesh=mesh, spec=lengths_spec)
         
+        # Relax state in_shardings to avoid scalar device-id mismatches (e.g., state.step)
+        # The model weights are already sharded in self.model_state; letting PJIT infer
+        # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
+            in_shardings=(None, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
