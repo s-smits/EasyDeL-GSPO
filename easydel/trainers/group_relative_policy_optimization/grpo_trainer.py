@@ -844,14 +844,22 @@ class GRPOTrainer(Trainer):
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
                     # Base per-chunk seed; ensures reproducible diversity across chunks and ranks
-                    per_chunk_seed = int((cur_step_int * 131071 + 4099 * abs(jax.process_index()) + chunk_idx) % (2**31 - 1))
+                    # Use large primes and ensure non-zero base to prevent collisions when step=0
+                    base_offset = 123456789  # Large non-zero base to prevent collisions
+                    per_chunk_seed = int((
+                        base_offset + 
+                        cur_step_int * 1299721 +  # Large prime
+                        abs(jax.process_index()) * 982451 +  # Large prime  
+                        chunk_idx * 786433  # Large prime
+                    ) % (2**31 - 1))
                     per_chunk_seed = max(1, per_chunk_seed)
                     if bool(getattr(self.arguments, "diversify_returns", True)) and cur_nrs > 1:
                         # Generate returns one-by-one with distinct seeds to maximize stochastic diversity
                         seq_list = []
                         for ri in range(cur_nrs):
                             # Derive a unique seed per return within this chunk
-                            seed_ri = int((per_chunk_seed + (ri + 1) * 104729) % (2**31 - 1))
+                            # Use larger prime to ensure better diversity between returns
+                            seed_ri = int((per_chunk_seed + (ri + 1) * 1073741827) % (2**31 - 1))
                             seed_ri = max(1, seed_ri)
                             seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
                                 self.generate_function(state, prompt_ids, prompt_mask, 1, seed_ri)
