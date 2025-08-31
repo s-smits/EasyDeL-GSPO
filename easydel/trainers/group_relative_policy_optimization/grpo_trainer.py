@@ -801,6 +801,23 @@ class GRPOTrainer(Trainer):
         is_train: bool,
     ) -> tuple[dict[str, jax.Array], dict[str, float | int | str]]:
         with capture_time() as preprocessing_time_fn:
+            # DEBUG: Check raw batch alignment at very start
+            print("DEBUG: === RAW BATCH DEBUG ===")
+            try:
+                if "input_ids" in batch and "answer" in batch:
+                    raw_prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    raw_answers = batch["answer"] 
+                    print(f"DEBUG: Raw batch size - prompts: {len(raw_prompts)}, answers: {len(raw_answers) if hasattr(raw_answers, '__len__') else 'scalar'}")
+                    for i in range(min(4, len(raw_prompts))):
+                        prompt_preview = str(raw_prompts[i])[:120].replace('\n', ' ') if i < len(raw_prompts) else "N/A"
+                        if hasattr(raw_answers, '__getitem__'):
+                            answer_preview = str(raw_answers[i]) if i < len(raw_answers) else "N/A"
+                        else:
+                            answer_preview = str(raw_answers)
+                        print(f"DEBUG: RAW[{i}]: prompt='{prompt_preview}' | answer='{answer_preview}'")
+            except Exception as e:
+                print(f"DEBUG: Failed to check raw batch: {e}")
+            
             prompt_ids, prompt_mask = batch["input_ids"], batch["attention_mask"]
 
             # Convert numpy arrays to JAX arrays using the working solution
@@ -812,12 +829,49 @@ class GRPOTrainer(Trainer):
                 raise RuntimeError(f"Failed to convert numpy arrays to JAX arrays: {e}")
 
 
-            # Ensure unique prompts if enabled
-            if getattr(self.arguments, "ensure_unique_prompts", True):
+            # DEBUG: Check data alignment before dedup
+            ensure_unique = getattr(self.arguments, "ensure_unique_prompts", True)
+            print(f"DEBUG: ensure_unique_prompts={ensure_unique}")
+            
+            if ensure_unique:
+                print("DEBUG: Running dedup - checking alignment BEFORE")
+                try:
+                    prompts_before = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    answers_before = batch.get("answer", [])
+                    for i in range(min(3, len(prompts_before))):
+                        prompt_preview = str(prompts_before[i])[:100].replace('\n', ' ') if i < len(prompts_before) else "N/A"
+                        answer_preview = str(answers_before[i]) if hasattr(answers_before, '__getitem__') and i < len(answers_before) else str(answers_before)
+                        print(f"DEBUG: BEFORE dedup[{i}]: prompt='{prompt_preview}' | answer='{answer_preview}'")
+                except Exception as e:
+                    print(f"DEBUG: Failed to check before dedup: {e}")
+                
                 batch = self._ensure_unique_prompts(batch)
+                
+                print("DEBUG: Ran dedup - checking alignment AFTER")
+                try:
+                    prompts_after = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    answers_after = batch.get("answer", [])
+                    for i in range(min(3, len(prompts_after))):
+                        prompt_preview = str(prompts_after[i])[:100].replace('\n', ' ') if i < len(prompts_after) else "N/A"
+                        answer_preview = str(answers_after[i]) if hasattr(answers_after, '__getitem__') and i < len(answers_after) else str(answers_after)
+                        print(f"DEBUG: AFTER dedup[{i}]: prompt='{prompt_preview}' | answer='{answer_preview}'")
+                except Exception as e:
+                    print(f"DEBUG: Failed to check after dedup: {e}")
+                
                 # IMPORTANT: re-bind prompt tensors after filtering to keep alignment with batch
                 prompt_ids = jnp.asarray(batch["input_ids"])  # rebind after dedup
                 prompt_mask = jnp.asarray(batch["attention_mask"])  # rebind after dedup
+            else:
+                print("DEBUG: Skipping dedup - checking base alignment")
+                try:
+                    prompts_base = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    answers_base = batch.get("answer", [])
+                    for i in range(min(3, len(prompts_base))):
+                        prompt_preview = str(prompts_base[i])[:100].replace('\n', ' ') if i < len(prompts_base) else "N/A"
+                        answer_preview = str(answers_base[i]) if hasattr(answers_base, '__getitem__') and i < len(answers_base) else str(answers_base)
+                        print(f"DEBUG: BASE alignment[{i}]: prompt='{prompt_preview}' | answer='{answer_preview}'")
+                except Exception as e:
+                    print(f"DEBUG: Failed to check base alignment: {e}")
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     _pid_len = int(prompt_ids.shape[0])
                     _ans_obj = batch.get("answer", None)
