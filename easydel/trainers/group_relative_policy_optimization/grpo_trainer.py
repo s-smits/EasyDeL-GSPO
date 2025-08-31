@@ -745,10 +745,37 @@ class GRPOTrainer(Trainer):
 
         fills = _cycled_indices(len(duplicate_positions))
 
+        # Helper to extract a comparable ground truth value at an index
+        def _gt_value_at(idx: int):
+            try:
+                for _k in ("solution_normalized", "solution", "answer", "target", "label", "gt", "ground_truth"):
+                    _v = batch.get(_k, None)
+                    if _v is None:
+                        continue
+                    try:
+                        # Prefer indexable containers
+                        if hasattr(_v, "__getitem__"):
+                            return _v[idx]
+                        return _v
+                    except Exception:
+                        return None
+                return None
+            except Exception:
+                return None
+
         # Final per-position indices to take from the original batch
         final_indices = list(range(original_size))
+        skipped_for_gt_mismatch = 0
         for pos, fill_idx in zip(duplicate_positions, fills, strict=False):
-            final_indices[pos] = fill_idx
+            # Only replace duplicates if their ground-truth matches; otherwise keep original
+            try:
+                if _gt_value_at(pos) == _gt_value_at(fill_idx):
+                    final_indices[pos] = fill_idx
+                else:
+                    skipped_for_gt_mismatch += 1
+            except Exception:
+                # On any error, avoid replacement to preserve alignment
+                skipped_for_gt_mismatch += 1
 
         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
             try:
@@ -765,6 +792,8 @@ class GRPOTrainer(Trainer):
                     # Show which positions were replaced
                     logger.debug(f"dedup: duplicate_positions={duplicate_positions[:10]}")
                     logger.debug(f"dedup: first_occurrence_indices={first_occurrence_indices}")
+                    if skipped_for_gt_mismatch > 0:
+                        logger.debug(f"dedup: skipped_replacements_due_to_gt_mismatch={skipped_for_gt_mismatch}")
             except Exception:
                 pass
         
