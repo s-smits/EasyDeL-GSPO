@@ -1007,6 +1007,29 @@ class GRPOTrainer(Trainer):
                 token_logps_time += float(token_logps_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
+                # For debug-only: print local-addressable completion_text[0] when verbose
+                try:
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        # decode first local completion using addressable shard if necessary
+                        carr = completion_ids_chunk
+                        preview = None
+                        if isinstance(carr, jax.Array):
+                            if getattr(carr, 'is_fully_addressable', False):
+                                c0 = jax.device_get(carr[0])
+                                preview = self.processing_class.decode(c0, skip_special_tokens=True)[:120]
+                            else:
+                                shards = getattr(carr, 'addressable_shards', None)
+                                if shards and len(shards) > 0:
+                                    data0 = shards[0].data
+                                    try:
+                                        data0 = jax.device_get(data0[0])
+                                    except Exception:
+                                        data0 = jax.device_get(data0)
+                                    preview = self.processing_class.decode(data0, skip_special_tokens=True)[:120]
+                        if preview is not None:
+                            print(f"DEBUG: local completion_ids_chunk[0] preview: '{preview}'")
+                except Exception:
+                    pass
 
                 # Accumulate
                 sequences_chunks.append(prompt_completion_ids_chunk)
