@@ -692,6 +692,9 @@ class GRPOTrainer(Trainer):
         Duplicated prompts are replaced in-place by cycling over the first
         occurrences so that the leading dimension remains unchanged. This
         preserves divisibility requirements for DP sharding.
+        
+        IMPORTANT: Ground truth answers are NOT deduplicated to maintain
+        proper alignment for reward calculation.
         """
         # Decode prompts for uniqueness check
         prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
@@ -757,13 +760,19 @@ class GRPOTrainer(Trainer):
                 if len(duplicate_positions) > 0:
                     logger.warning(
                         f"DEDUP WARNING: Found {len(duplicate_positions)} duplicate prompts out of {original_size}. "
-                        f"This may cause ground truth misalignment! Consider increasing dataset_use_pct or disabling deduplication."
+                        f"Ground truth answers are preserved to maintain correct reward alignment."
                     )
                     # Show which positions were replaced
                     logger.debug(f"dedup: duplicate_positions={duplicate_positions[:10]}")
                     logger.debug(f"dedup: first_occurrence_indices={first_occurrence_indices}")
             except Exception:
                 pass
+        
+        # Define fields that should NOT be deduplicated (ground truth data)
+        preserve_fields = {
+            "answer", "solution", "solution_normalized", 
+            "target", "label", "gt", "ground_truth"
+        }
         
         # Rebuild batch in-place using final_indices, preserving leading dimension
         rebuilt_batch: dict[str, tp.Any] = {}
@@ -773,7 +782,11 @@ class GRPOTrainer(Trainer):
             except Exception:
                 vlen = None
 
-            if vlen == original_size:
+            # CRITICAL FIX: Don't deduplicate ground truth fields
+            if key in preserve_fields:
+                # Keep original ground truth values to maintain alignment
+                rebuilt_batch[key] = values
+            elif vlen == original_size:
                 if isinstance(values, jax.Array):
                     rebuilt_batch[key] = values[final_indices]
                 else:
