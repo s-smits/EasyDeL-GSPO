@@ -1,5 +1,6 @@
 import re
 import logging
+import os
 from typing import List
 try:  # Optional JAX for proc-0 gating of logs
     import jax
@@ -182,6 +183,14 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         is_proc0 = (jax is None) or (jax.process_index() == 0)
     except Exception:
         is_proc0 = True
+    # Optional per-rank logging for debugging DP/FSDP issues
+    _log_all = os.getenv("EASYDEL_LOG_PER_RANK", "0").lower() in {"1", "true", "yes"}
+    def _rank_prefix() -> str:
+        try:
+            return f"[rank {int(jax.process_index())}] "
+        except Exception:
+            return ""
+    should_log = is_proc0 or _log_all
 
     rewards: List[float] = []
     verification_details = []
@@ -221,11 +230,11 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
         if is_correct:
             detail["score"] = 1.0
             detail["parsed_successfully"] = True
-            if is_proc0:
-                logger.info(f"✓ GSM8K Math-Verify SUCCESS [idx={i}] - Method: {method}")
-                logger.info(f"  Ground truth: {gt}")
-                logger.info(f"  Extracted answer: {ans}")
-                logger.info(f"  Last 20 tokens: {detail['last_20_tokens']}")
+            if should_log:
+                logger.info(f"{_rank_prefix()}✓ GSM8K Math-Verify SUCCESS [idx={i}] - Method: {method}")
+                logger.info(f"{_rank_prefix()}  Ground truth: {gt}")
+                logger.info(f"{_rank_prefix()}  Extracted answer: {ans}")
+                logger.info(f"{_rank_prefix()}  Last 20 tokens: {detail['last_20_tokens']}")
         else:
             # Fallback to regex-based approach
             detail["fallback_used"] = True
@@ -258,19 +267,19 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 is_correct = _answer_check(norm_ans, gt)
                 detail["score"] = 1.0 if is_correct else 0.0
 
-                if is_proc0:
+                if should_log:
                     if is_correct:
-                        logger.info(f"✓ GSM8K REGEX FALLBACK SUCCESS [idx={i}]")
-                        logger.info(f"  Extracted numbers: {numbers}")
-                        logger.info(f"  Last number: {last_number}")
-                        logger.info(f"  Ground truth: {gt}")
+                        logger.info(f"{_rank_prefix()}✓ GSM8K REGEX FALLBACK SUCCESS [idx={i}]")
+                        logger.info(f"{_rank_prefix()}  Extracted numbers: {numbers}")
+                        logger.info(f"{_rank_prefix()}  Last number: {last_number}")
+                        logger.info(f"{_rank_prefix()}  Ground truth: {gt}")
                     else:
-                        logger.warning(f"✗ GSM8K REGEX MISMATCH [idx={i}]")
-                        logger.warning(f"  Math-Verify method: {method}")
-                        logger.warning(f"  Regex extracted: '{last_number}' (type: {type(last_number)})")
-                        logger.warning(f"  Ground truth: '{gt}' (type: {type(gt)})")
-                        logger.warning(f"  Full extracted answer: '{ans}'")
-                        logger.warning(f"  Full original text: '{text}'")
+                        logger.warning(f"{_rank_prefix()}✗ GSM8K REGEX MISMATCH [idx={i}]")
+                        logger.warning(f"{_rank_prefix()}  Math-Verify method: {method}")
+                        logger.warning(f"{_rank_prefix()}  Regex extracted: '{last_number}' (type: {type(last_number)})")
+                        logger.warning(f"{_rank_prefix()}  Ground truth: '{gt}' (type: {type(gt)})")
+                        logger.warning(f"{_rank_prefix()}  Full extracted answer: '{ans}'")
+                        logger.warning(f"{_rank_prefix()}  Full original text: '{text}'")
 
         rewards.append(detail["score"])
         verification_details.append(detail)
@@ -281,7 +290,7 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     regex_fallback_successes = sum(1 for d in verification_details if d["verification_method"] == "regex_fallback" and d["score"] > 0.0)
     no_numbers_count = sum(1 for d in verification_details if d["verification_method"] == "no_numbers_found")
 
-    if is_proc0:
+    if should_log:
         # Derive per-prompt pass@k locally when prompts are provided
         try:
             total_comps = len(verification_details)
@@ -320,14 +329,21 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
                 B = total_comps
                 R = 1
 
-            logger.info("GSM8K VERIFICATION SUMMARY (local):")
-            logger.info(f"  Local prompts: {B}")
-            logger.info(f"  Local completions: {total_comps} ({R} per prompt)")
-            logger.info(f"  Successful completions: {successful_verifications}")
-            logger.info(f"  Math-Verify successes: {math_verify_successes}")
-            logger.info(f"  Regex fallback successes: {regex_fallback_successes}")
-            logger.info(f"  No numbers found: {no_numbers_count}")
-            logger.info(f"  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
+            # Simple duplication signal: unique completions vs total
+            try:
+                unique_texts = len(set([_extract_text(c) for c in completions]))
+            except Exception:
+                unique_texts = total_comps
+
+            logger.info(f"{_rank_prefix()}GSM8K VERIFICATION SUMMARY (local):")
+            logger.info(f"{_rank_prefix()}  Local prompts: {B}")
+            logger.info(f"{_rank_prefix()}  Local completions: {total_comps} ({R} per prompt)")
+            logger.info(f"{_rank_prefix()}  Unique completion texts: {unique_texts}/{total_comps}")
+            logger.info(f"{_rank_prefix()}  Successful completions: {successful_verifications}")
+            logger.info(f"{_rank_prefix()}  Math-Verify successes: {math_verify_successes}")
+            logger.info(f"{_rank_prefix()}  Regex fallback successes: {regex_fallback_successes}")
+            logger.info(f"{_rank_prefix()}  No numbers found: {no_numbers_count}")
+            logger.info(f"{_rank_prefix()}  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
 
             # Best-effort global aggregation for overall success ratio across completions
             try:
