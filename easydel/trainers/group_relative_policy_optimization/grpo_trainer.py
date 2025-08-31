@@ -1505,6 +1505,86 @@ class GRPOTrainer(Trainer):
                     except Exception:
                         pass
 
+                # Debug: Multiple counting methods to cross-check correctness
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    try:
+                        # Method A: Current (sum across reward funcs > 0)
+                        cnt_method_a = int(jax.device_get(success_count_comp_local))
+                        # Method B: If an "answer" reward func exists, use it directly
+                        cnt_method_b = None
+                        try:
+                            answer_idx = None
+                            for i, rf in enumerate(self.reward_funcs):
+                                nm = (getattr(rf, "__name__", None) or rf.__class__.__name__).lower()
+                                if any(k in nm for k in ["answer", "gsm8k", "accuracy"]):
+                                    answer_idx = i
+                                    break
+                            if answer_idx is not None:
+                                ans_success = (rewards_per_func[:, answer_idx] > 0.0).astype(jnp.int32)
+                                cnt_method_b = int(jax.device_get(jnp.sum(ans_success)))
+                        except Exception as e:
+                            print(f"DEBUG: method_B count failed: {e}")
+                            cnt_method_b = None
+                        # Method C: Regex last-number match against targets_expanded
+                        cnt_method_c = None
+                        try:
+                            import re as _re
+                            def _last_number(s: str) -> str | None:
+                                nums = _re.findall(r"-?\d+\.?\d*", s.replace(",", "").replace("$", "").replace("%", ""))
+                                return nums[-1] if nums else None
+                            good = 0
+                            tot = int(len(completions_text))
+                            for i in range(tot):
+                                pred = _last_number(str(completions_text[i]))
+                                tgt = _last_number(str(targets_expanded[i]))
+                                if pred is not None and tgt is not None and pred == tgt:
+                                    good += 1
+                            cnt_method_c = good
+                        except Exception as e:
+                            print(f"DEBUG: method_C regex count failed: {e}")
+                            cnt_method_c = None
+                        print(f"DEBUG: success_count_methods | A(sum_rewards>0)={cnt_method_a} | B(answer_reward)={cnt_method_b} | C(regex)={cnt_method_c}")
+                        # Per-prompt pass@k for each method
+                        try:
+                            B_loc = int(num_prompts_local)
+                            R_loc = int(self.num_generations)
+                            # A
+                            a_grp = successes_local.reshape(-1, R_loc)
+                            a_counts = list(map(int, jax.device_get(jnp.sum(a_grp, axis=1)[:min(8, B_loc)])))
+                            # B
+                            if cnt_method_b is not None and answer_idx is not None:
+                                b_grp = (rewards_per_func[:, answer_idx] > 0.0).reshape(-1, R_loc)
+                                b_counts = list(map(int, jax.device_get(jnp.sum(b_grp, axis=1)[:min(8, B_loc)])))
+                            else:
+                                b_counts = None
+                            # C
+                            if cnt_method_c is not None:
+                                c_grp_counts = []
+                                try:
+                                    for p in range(min(8, B_loc)):
+                                        s = p * R_loc
+                                        e = s + R_loc
+                                        good = 0
+                                        for i in range(s, e):
+                                            import re as _re2
+                                            def _ln(x: str):
+                                                nums = _re2.findall(r"-?\d+\.?\d*", x.replace(",", "").replace("$", "").replace("%", ""))
+                                                return nums[-1] if nums else None
+                                            pred = _ln(str(completions_text[i]))
+                                            tgt = _ln(str(targets_expanded[i]))
+                                            if pred is not None and tgt is not None and pred == tgt:
+                                                good += 1
+                                        c_grp_counts.append(good)
+                                except Exception:
+                                    c_grp_counts = None
+                            else:
+                                c_grp_counts = None
+                            print(f"DEBUG: per_prompt_counts_head | A={a_counts} | B={b_counts} | C={c_grp_counts}")
+                        except Exception as e:
+                            print(f"DEBUG: per-prompt counts comparison failed: {e}")
+                    except Exception:
+                        pass
+
                 # Best-effort global scalars using safe utility (never blocks TPU; env can disable)
                 try:
                     total_comp_global = _safe_global_sum(jnp.array(total_comp_local, dtype=jnp.int32))
