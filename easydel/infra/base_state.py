@@ -467,7 +467,7 @@ class EasyDeLState(struct.PyTreeNode):
         save_directory = ePath(save_directory)
         if self.opt_state is not None:
             save_directory.mkdir(parents=True, exist_ok=True)
-            optim_path = save_directory
+            optim_path = save_directory / OPTIMIZER_NAME
             logger.info(f"Coordinated optimizer save through {optim_path}")
             try:
                 with self.model.mesh:
