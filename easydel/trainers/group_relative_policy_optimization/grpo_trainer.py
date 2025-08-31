@@ -1192,6 +1192,32 @@ class GRPOTrainer(Trainer):
                     logger.info(f"prompts: count={int(batch['input_ids'].shape[0])}")
                 except Exception:
                     pass
+                # Per-prompt diversity diagnostics (unique texts and lengths per prompt)
+                try:
+                    B = int(prompt_ids.shape[0])
+                    R = int(self.num_generations)
+                    total = B * R
+                    if isinstance(completions_text, list) and len(completions_text) >= total:
+                        uniq_text_counts: list[int] = []
+                        uniq_len_counts: list[int] = []
+                        for i in range(B):
+                            s = i * R
+                            e = s + R
+                            texts_i = completions_text[s:e]
+                            try:
+                                lens_i = lengths_np[s:e].tolist() if hasattr(lengths_np, "tolist") else []
+                            except Exception:
+                                lens_i = []
+                            uniq_text_counts.append(len(set(texts_i)))
+                            try:
+                                uniq_len_counts.append(len(set(int(x) for x in lens_i)))
+                            except Exception:
+                                uniq_len_counts.append(0)
+                        logger.info(
+                            f"diversity/unique_texts_per_prompt={uniq_text_counts}; unique_lengths_per_prompt={uniq_len_counts}"
+                        )
+                except Exception:
+                    pass
             
             # Build prompt replication aligned with completion ordering: [p0 x R, p1 x R, ...]
             try:
