@@ -838,7 +838,7 @@ class GRPOTrainer(Trainer):
 
 
             # DEBUG: Check data alignment before dedup
-            ensure_unique = getattr(self.arguments, "ensure_unique_prompts", True)
+            ensure_unique = bool(getattr(self.arguments, "ensure_unique_prompts", False))
             print(f"DEBUG: ensure_unique_prompts={ensure_unique}")
             
             if ensure_unique:

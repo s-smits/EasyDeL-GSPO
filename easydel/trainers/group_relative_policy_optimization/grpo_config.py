@@ -198,6 +198,27 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Data loading hardening knobs
+    ensure_unique_prompts: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, collapse duplicate prompts within a batch to the first occurrence. "
+                "This can help curriculum setups but may interact with per-row ground truths. "
+                "Defaults to False for maximum alignment robustness."
+            )
+        },
+    )
+
+    shuffle_dataset: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, shuffle the dataset in _prepare_dataset. For alignment/debugging, keep False to preserve order."
+            )
+        },
+    )
+
     def __post_init__(self):
         """Post initialization to set dependent parameters."""
         try:
