@@ -1202,6 +1202,30 @@ class GRPOTrainer(Trainer):
                         logger.info(
                             f"diversity/unique_texts_per_prompt={uniq_text_counts}; unique_lengths_per_prompt={uniq_len_counts}"
                         )
+                        # Also print a small grid of per-prompt lengths (first few prompts)
+                        try:
+                            rows_to_show = min(B, 8)
+                            grid = []
+                            for i in range(rows_to_show):
+                                s = i * R
+                                e = s + R
+                                try:
+                                    row = [int(x) for x in lengths_np[s:e].tolist()]
+                                except Exception:
+                                    row = []
+                                grid.append(row)
+                            logger.info(
+                                f"completion_lengths_grid_head(B={B}, R={R}, rows={rows_to_show}): {grid}"
+                            )
+                            # If small, print the full flattened list for exact inspection
+                            if total <= 128:
+                                try:
+                                    flat_full = [int(x) for x in lengths_np[:total].tolist()]
+                                except Exception:
+                                    flat_full = []
+                                logger.info(f"completion_lengths_full_flat={flat_full}")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             

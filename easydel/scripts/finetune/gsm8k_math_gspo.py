@@ -2,7 +2,7 @@ import re
 from dataclasses import field
 
 import jax
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from eformer.pytree import auto_pytree
 from jax import numpy as jnp
 from transformers import AutoConfig, AutoTokenizer
@@ -351,53 +351,82 @@ def main():
                 return (10**9, s)
         return sorted(list(levels), key=_level_key)
 
-    def curriculum_train(trainer, train_ds: Dataset, test_ds: Dataset, epochs_per_level: int):
+    def curriculum_train(
+        trainer,
+        train_ds: Dataset,
+        test_ds: Dataset,
+        epochs_per_level: int,
+        mini_batch_size_override: int | None = None,
+    ):
+        """
+        Simple curriculum: repeat each level dataset `epochs_per_level` times,
+        concatenate all levels, shuffle, and train for a single epoch.
+        """
         levels = get_available_levels(train_ds)
         if not levels:
             if jax.process_index() == 0:
-                print("WARNING: No levels found; falling back to regular training.")
+                print("WARNING: No levels found in dataset. Falling back to regular training.")
             return trainer.train()
-        if jax.process_index() == 0:
-            print(f"DEBUG: Curriculum levels: {levels}")
-            print(f"Columns: {train_ds.column_names}")
-            for lvl in levels:
-                print(f"  {lvl}: {len(filter_dataset_by_level(train_ds, lvl))} examples")
-            try:
-                raw_preview = [train_ds[i].get("level", "") for i in range(min(5, len(train_ds)))]
-                print(f"Raw level preview: {raw_preview}")
-            except Exception:
-                pass
 
+        # Build repeated concatenation per level
+        parts = []
         for lvl in levels:
-            lvl_train = filter_dataset_by_level(train_ds, lvl)
-            lvl_test = filter_dataset_by_level(test_ds, lvl) if test_ds else None
-            if len(lvl_train) == 0:
+            ds_lvl = filter_dataset_by_level(train_ds, lvl)
+            if len(ds_lvl) == 0:
                 continue
+            repeat_n = max(1, int(epochs_per_level))
+            parts.extend([ds_lvl] * repeat_n)
+
+        if not parts:
             if jax.process_index() == 0:
-                print(f"\n==== Training {lvl} for {epochs_per_level} epochs ====")
+                print("WARNING: No data after curriculum assembly; running regular training.")
+            return trainer.train()
 
-            original_epochs = trainer.arguments.num_train_epochs
-            trainer.arguments.num_train_epochs = epochs_per_level
+        combined = concatenate_datasets(parts).shuffle(seed=17)
 
-            new_trainer = ed.GSPOTrainer(
+        # Reuse trainer's arguments; train for 1 epoch
+        args = trainer.arguments
+        original_epochs = args.num_train_epochs
+        original_tb = args.total_batch_size
+        original_mb = args.mini_batch_size
+        original_ga = args.gradient_accumulation_steps
+
+        try:
+            args.num_train_epochs = 1
+            if mini_batch_size_override:
+                args.mini_batch_size = mini_batch_size_override
+                args.total_batch_size = mini_batch_size_override
+
+            new_tr = ed.GSPOTrainer(
                 model=trainer.model_state,
                 reward_funcs=trainer.reward_funcs,
                 processing_class=trainer.processing_class,
-                eval_dataset=lvl_test,
-                train_dataset=lvl_train,
-                arguments=trainer.arguments,
+                eval_dataset=test_ds,
+                train_dataset=combined,
+                arguments=args,
                 data_tokenize_fn=trainer.data_tokenize_fn,
             )
-            new_trainer.train()
-            trainer = new_trainer
-            trainer.arguments.num_train_epochs = original_epochs
-
-        return trainer
+            out = new_tr.train()
+            return out.state
+        finally:
+            # Restore original knobs
+            args.num_train_epochs = original_epochs
+            args.total_batch_size = original_tb
+            args.mini_batch_size = original_mb
+            args.gradient_accumulation_steps = original_ga
 
     if runtime.curriculum_math and _ds == "math":
         if jax.process_index() == 0:
             print("DEBUG: Curriculum learning enabled for math dataset (GSPO)")
-        _ = curriculum_train(trainer, train_ds, test_ds, gspo_config.num_train_epochs)
+        # Pass mini_batch_size override for curriculum with small levels
+        mini_batch_override = 1 if gspo_config.force_tensor_parallel else None
+        _ = curriculum_train(
+            trainer,
+            train_ds,
+            test_ds,
+            gspo_config.num_train_epochs,
+            mini_batch_override,
+        )
     else:
         if runtime.curriculum_math and _ds != "math" and jax.process_index() == 0:
             print("WARNING: curriculum_math set but dataset != math; running regular training.")

@@ -956,12 +956,8 @@ class BaseTrainer(BaseTrainerProtocol):
         )
 
         # Optional: upload this checkpoint directory to Hugging Face Hub under env control
-        try:
-            if self.is_enable:
-                upload_checkpoint_dir_if_enabled(str(directory_name))
-        except Exception:
-            # Never fail training due to upload issues
-            pass
+        if self.is_enable and os.getenv("ED_HF_UPLOAD"):
+            upload_checkpoint_dir_if_enabled(str(directory_name))
 
         return str(directory_name)
 

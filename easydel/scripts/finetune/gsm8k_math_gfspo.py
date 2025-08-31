@@ -427,13 +427,6 @@ def main():
         original_ga = args.gradient_accumulation_steps
 
         try:
-            # Multihost barrier to keep hosts in lockstep before creating a new trainer
-            try:
-                from jax.experimental import multihost_utils as _mh
-                _mh.sync_global_devices("curriculum_simple_start")
-            except Exception:
-                ...
-
             args.num_train_epochs = 1
             if mini_batch_size_override:
                 args.mini_batch_size = mini_batch_size_override
@@ -448,21 +441,8 @@ def main():
                 arguments=args,
                 data_tokenize_fn=trainer.data_tokenize_fn,
             )
-            # Multihost barrier before starting training to avoid launch-id mismatches
-            try:
-                from jax.experimental import multihost_utils as _mh
-                _mh.sync_global_devices("curriculum_simple_before_train")
-            except Exception:
-                ...
             out = new_tr.train()
-            out_state = out.state
-            # Multihost barrier after training to keep hosts synchronized
-            try:
-                from jax.experimental import multihost_utils as _mh
-                _mh.sync_global_devices("curriculum_simple_after_train")
-            except Exception:
-                ...
-            return out_state
+            return out.state
         finally:
             # Restore original knobs
             args.num_train_epochs = original_epochs
