@@ -1323,6 +1323,21 @@ class GRPOTrainer(Trainer):
                 num_prompts_local = int(prompt_ids.shape[0])
                 pass_at_k_local = pass_prompt_count_local / jnp.maximum(1, num_prompts_local)
 
+                # Extra diagnostic: per-prompt success counts to detect systematic 50% caps
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    try:
+                        grouped = successes_local.reshape(-1, self.num_generations)
+                        per_prompt_counts = jnp.sum(grouped, axis=1)
+                        head_n = int(min(8, per_prompt_counts.shape[0]))
+                        counts_head = list(map(int, jax.device_get(per_prompt_counts[:head_n])))
+                        any_success = list(map(int, jax.device_get((per_prompt_counts > 0)[:head_n])))
+                        print(
+                            f"DEBUG: grouping: B={num_prompts_local}, R={int(self.num_generations)}, "
+                            f"per_prompt_success_counts_head={counts_head}, any_success_head={any_success}"
+                        )
+                    except Exception:
+                        pass
+
                 # Initialize global variables with local fallbacks
                 success_rate_comp_global = success_rate_comp_local
                 pass_at_k_global = pass_at_k_local
