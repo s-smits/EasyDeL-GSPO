@@ -1394,6 +1394,27 @@ class GRPOTrainer(Trainer):
                                 best_j = j
                         sus.append((i, hits, best_j, best_hits))
                     logger.info(f"align_check: (prompt_idx, hits_on_own_tgt, best_match_idx, best_hits) -> {sus}")
+                    # Also print per-prompt predicted last-number lists (head)
+                    try:
+                        import re as _re3
+                        def _lnum(s: str) -> str | None:
+                            try:
+                                ss = s.replace(",", "").replace("$", "").replace("%", "")
+                                nums = _re3.findall(r"-?\d+\.?\d*", ss)
+                                return nums[-1] if nums else None
+                            except Exception:
+                                return None
+                        B = int(prompt_ids.shape[0])
+                        R = int(self.num_generations)
+                        show = min(B, 4)
+                        for i in range(show):
+                            s = i * R
+                            e = s + R
+                            preds = [(_lnum(str(x)) or "?") for x in completions_text[s:e]]
+                            tgt = _lnum(str(per_prompt_targets[i])) or "?"
+                            logger.info(f"pred_nums/prompt[{i}] | tgt={tgt} | preds={preds}")
+                    except Exception:
+                        pass
                     # Also print a single aligned example (idx=0)
                     try:
                         ex_prompt = prompts[0] if isinstance(prompts, list) and len(prompts) > 0 else (str(prompts) if prompts else "")
