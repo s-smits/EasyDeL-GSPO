@@ -1,6 +1,11 @@
 from typing import List
 import logging
 import time
+import os
+try:  # Optional JAX for per-rank diagnostics
+    import jax  # type: ignore
+except Exception:  # pragma: no cover
+    jax = None  # type: ignore
 
 try:
     # Math-Verify: robust evaluator for math expressions with full feature set
@@ -371,7 +376,69 @@ def answer_reward(prompts, completions: List[list[dict]], batch, **kwargs) -> Li
     successful = sum(1 for d in verification_details if d["score"] > 0.0)
     total = len(verification_details)
     if total > 0:
-        logger.info(f"Math verification ({problem_type}): {successful}/{total} successful ({successful/total:.1%})")
+        # Optional per-rank logging for DP/FSDP diagnostics
+        try:
+            is_proc0 = True if jax is None else (int(jax.process_index()) == 0)
+        except Exception:
+            is_proc0 = True
+        log_all = os.getenv("EASYDEL_LOG_PER_RANK", "0").lower() in {"1", "true", "yes"}
+        def _rank_prefix() -> str:
+            try:
+                return f"[rank {int(jax.process_index())}] "
+            except Exception:
+                return ""
+        should_log = is_proc0 or log_all
+
+        if should_log:
+            # Derive per-prompt pass@k locally when prompts are provided
+            try:
+                total_comps = len(verification_details)
+                R = int(kwargs.get("num_return_sequences", 0) or 0)
+                B = int(kwargs.get("num_prompts_local", 0) or 0)
+                if not (B > 0 and R > 0 and B * R == total_comps):
+                    # Fallback to inferring from prompts
+                    if prompts and isinstance(prompts, list) and len(prompts) == total_comps:
+                        try:
+                            unique_prompts = []
+                            seen = set()
+                            for p in prompts:
+                                if p not in seen:
+                                    seen.add(p)
+                                    unique_prompts.append(p)
+                            B = len(unique_prompts)
+                            R = max(1, total_comps // max(1, B))
+                        except Exception:
+                            B = total_comps
+                            R = 1
+                    else:
+                        B = total_comps
+                        R = 1
+
+                # Compute pass@k
+                scores = [1.0 if d.get("score", 0.0) > 0.0 else 0.0 for d in verification_details]
+                pass_cnt = 0
+                if B > 0 and R > 0 and B * R == total_comps:
+                    for i in range(B):
+                        grp = scores[i * R : (i + 1) * R]
+                        pass_cnt += 1 if any(s > 0 for s in grp) else 0
+                else:
+                    pass_cnt = sum(scores)
+                    B = total_comps
+                    R = 1
+
+                # Unique completion texts counter to detect duplication
+                try:
+                    unique_texts = len(set([_extract_text(c) for c in completions]))
+                except Exception:
+                    unique_texts = total_comps
+
+                logger.info(f"{_rank_prefix()}Math verification ({problem_type}): {successful}/{total} successful ({successful/total:.1%})")
+                logger.info(f"{_rank_prefix()}  Local prompts: {B}")
+                logger.info(f"{_rank_prefix()}  Local completions: {total_comps} ({R} per prompt)")
+                logger.info(f"{_rank_prefix()}  Unique completion texts: {unique_texts}/{total_comps}")
+                logger.info(f"{_rank_prefix()}  Pass@{R} (prompts): {pass_cnt}/{B} ({(pass_cnt/max(1,B)):.2%})")
+            except Exception:
+                logger.info(f"{_rank_prefix()}Math verification ({problem_type}): {successful}/{total} successful ({successful/total:.1%})")
 
         # Attempt global aggregation (best-effort, proc0 logs only)
         try:
