@@ -141,6 +141,18 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
+    # Diversify multiple returns even when batching
+    diversify_returns: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "If True and rollout_chunk_size > 1, generate each return with a distinct PRNG seed by splitting\n"
+                "the call into per-return invocations (num_return_sequences=1). This maximizes stochastic diversity\n"
+                "at the cost of some overhead. Disable to call the backend once per chunk with multiple returns."
+            )
+        },
+    )
+
     top_p: float = field(
         default=0.95,
         metadata={

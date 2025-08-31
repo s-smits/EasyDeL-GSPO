@@ -830,14 +830,26 @@ class GRPOTrainer(Trainer):
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
-                    # Use a simple per-chunk seed; avoids JIT recompiles and ensures diversity across chunks
-                    # Ensure seed is always positive and within 32-bit range
+                    # Base per-chunk seed; ensures reproducible diversity across chunks and ranks
                     per_chunk_seed = int((cur_step_int * 131071 + 4099 * abs(jax.process_index()) + chunk_idx) % (2**31 - 1))
                     per_chunk_seed = max(1, per_chunk_seed)
-                    seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
-                        self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
-                    )
-                # Debug output removed to prevent host divergence in compiled code
+                    if bool(getattr(self.arguments, "diversify_returns", True)) and cur_nrs > 1:
+                        # Generate returns one-by-one with distinct seeds to maximize stochastic diversity
+                        seq_list = []
+                        for ri in range(cur_nrs):
+                            # Derive a unique seed per return within this chunk
+                            seed_ri = int((per_chunk_seed + (ri + 1) * 104729) % (2**31 - 1))
+                            seed_ri = max(1, seed_ri)
+                            seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
+                                self.generate_function(state, prompt_ids, prompt_mask, 1, seed_ri)
+                            )
+                            seq_list.append(seq_one)
+                        seq_chunk = jnp.concatenate(seq_list, axis=0)
+                    else:
+                        # Single backend call for the whole chunk
+                        seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
+                            self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
+                        )
                 generation_time += float(generation_time_fn())
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
