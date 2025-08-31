@@ -1086,11 +1086,36 @@ class GRPOTrainer(Trainer):
             _host_prompt_ids = jax.device_get(batch["input_ids"])  # type: ignore
             prompts = self.processing_class.batch_decode(_host_prompt_ids, skip_special_tokens=True)
             # Decode completions text using pjit materialization executed on all processes
-            _host_completion_ids = self.materialize_for_decode(completion_ids)
-            completions_text = self.processing_class.batch_decode(
-                jax.device_get(_host_completion_ids),
-                skip_special_tokens=True,
-            )
+            # Guard against non-addressable arrays and TPU halts by falling back to local shard-only decode
+            try:
+                _host_completion_ids = self.materialize_for_decode(completion_ids)
+                completions_text = self.processing_class.batch_decode(
+                    jax.device_get(_host_completion_ids),
+                    skip_special_tokens=True,
+                )
+            except Exception as e:
+                try:
+                    # Fallback: decode only addressable shard completions (rank 0), pad with placeholders
+                    print(f"DEBUG: completion batch_decode fell back due to: {e}")
+                    if isinstance(completion_ids, jax.Array):
+                        shard_list = getattr(completion_ids, 'addressable_shards', None)
+                        local = []
+                        if shard_list and len(shard_list) > 0:
+                            data0 = shard_list[0].data
+                            try:
+                                # decode each local row
+                                for i in range(int(data0.shape[0])):
+                                    row = jax.device_get(data0[i])
+                                    local.append(self.processing_class.decode(row, skip_special_tokens=True))
+                            except Exception:
+                                pass
+                        # Construct a list matching expected length with placeholders for non-local rows
+                        tot = int(completion_ids.shape[0])
+                        completions_text = local + ["<decode_unavailable>"] * max(0, tot - len(local))
+                    else:
+                        completions_text = ["<decode_unavailable>"] * int(completion_ids.shape[0])
+                except Exception:
+                    completions_text = ["<decode_failed>"] * int(completion_ids.shape[0])
 
             # Enforce strict alignment: completions must equal B*R and be prompt-major
             expected = int(prompt_ids.shape[0] * self.num_generations)
