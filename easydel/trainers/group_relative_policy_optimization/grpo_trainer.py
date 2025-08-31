@@ -1145,22 +1145,36 @@ class GRPOTrainer(Trainer):
                             return str(s)
 
                     try:
-                        # Debug sequence length and extraction
+                        # Debug sequence length and extraction (robust for JAX arrays)
                         debug_full_seq = ""
                         debug_completion_raw = ""
                         try:
-                            if hasattr(self, '_debug_last_sequences') and self._debug_last_sequences is not None:
-                                debug_seq = self._debug_last_sequences[0] if len(self._debug_last_sequences) > 0 else None
-                                if debug_seq is not None:
-                                    debug_full_seq = self.processing_class.decode(debug_seq, skip_special_tokens=True)
+                            debug_seq_arr = getattr(self, '_debug_last_sequences', None)
+                            if debug_seq_arr is not None:
+                                try:
+                                    n0 = int(getattr(debug_seq_arr, 'shape', (0,))[0])
+                                except Exception:
+                                    n0 = 0
+                                if n0 > 0:
+                                    debug_seq0 = jax.device_get(debug_seq_arr[0])
+                                    debug_full_seq = self.processing_class.decode(debug_seq0, skip_special_tokens=True)
                         except Exception:
                             pass
-                        
                         try:
-                            if hasattr(self, '_debug_last_completion_ids') and self._debug_last_completion_ids is not None:
-                                debug_comp = self._debug_last_completion_ids[0] if len(self._debug_last_completion_ids) > 0 else None
-                                if debug_comp is not None:
-                                    debug_completion_raw = self.processing_class.decode(debug_comp, skip_special_tokens=True)
+                            debug_comp_arr = getattr(self, '_debug_last_completion_ids', None)
+                            if debug_comp_arr is not None:
+                                try:
+                                    m0 = int(getattr(debug_comp_arr, 'shape', (0,))[0])
+                                except Exception:
+                                    m0 = 0
+                                if m0 > 0:
+                                    debug_comp0 = jax.device_get(debug_comp_arr[0])
+                                    debug_completion_raw = self.processing_class.decode(debug_comp0, skip_special_tokens=True)
+                        except Exception:
+                            pass
+                        try:
+                            if isinstance(completions_text, list) and len(completions_text) > 0:
+                                print(f"DEBUG: completion_text[0] (first 120 chars): '{str(completions_text[0])[:120]}'")
                         except Exception:
                             pass
                         
