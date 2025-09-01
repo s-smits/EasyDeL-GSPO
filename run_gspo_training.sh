@@ -24,8 +24,6 @@
 #   USE_WANDB   - Enable wandb logging (true/false). Default: false
 #   LOG_GLOBAL  - Enable cross-process global logging (true/false). Default: false
 
-set -euo pipefail
-
 export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off
 # Disable best-effort global host aggregations inside reward functions for stability
@@ -54,6 +52,9 @@ if [ "${NPROCS}" -gt 1 ]; then
     echo "ERROR: COORD_ADDR must be set when NPROCS>1" >&2
     exit 1
   fi
+  # Hint to EasyDeL to initialize JAX distributed from environment
+  export EASYDEL_INIT_JAX_DISTRIBUTED=1
+  export NPROCS PROC_ID COORD_ADDR
 fi
 
 echo "Starting GSPO training with optimized configuration..."
@@ -62,10 +63,8 @@ echo "DP=${FORCE_DP} TP=${FORCE_TP} NPROCS=${NPROCS} PROC_ID=${PROC_ID}"
 echo "Batch=${BATCH} NRS=${NRS} MaxPrompt=${MAX_PROMPT} MaxComp=${MAX_COMP}"
 
 # Optional: ensure editable install + math-verify
-if command -v uv >/dev/null 2>&1; then
-  uv pip install -e . --quiet || true
-  uv pip install "math-verify[antlr4_13_2]" --quiet || true
-fi
+uv pip install -e . --quiet
+uv pip install "math-verify[antlr4_13_2]" --quiet
 
 python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
@@ -94,9 +93,4 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  --jax_distributed_config.initialize_jax_distributed "${INIT_DIST}" \
-  --jax_distributed_config.coordinator_address "${COORD_ADDR}" \
-  --jax_distributed_config.num_processes "${NPROCS}" \
-  --jax_distributed_config.process_id "${PROC_ID}"
-
-echo "Training completed!"
+  

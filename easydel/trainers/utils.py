@@ -57,17 +57,59 @@ class JaxDistributedConfig:
 
     @classmethod
     def initialize(cls, config=None):
-        config = cls.get_default_config(config)
-        if config.initialize_jax_distributed:
-            if config.local_device_ids is not None:
-                local_device_ids = [int(x) for x in config.local_device_ids.split(",")]
+        """Initialize JAX distributed from an explicit config or environment.
+
+        Order of precedence:
+        1) Explicit `config` passed in (dict-like) with initialize_jax_distributed=True
+        2) Environment variables when EASYDEL_INIT_JAX_DISTRIBUTED=1 (or NPROCS>1)
+           - COORD_ADDR or JAX_COORDINATOR_ADDRESS
+           - NPROCS or JAX_PROCESS_COUNT
+           - PROC_ID or JAX_PROCESS_INDEX
+           - LOCAL_DEVICE_IDS (optional, comma-separated)
+        Otherwise, no-op.
+        """
+        cfg = cls.get_default_config(config)
+
+        # If no explicit request, consider env-based request
+        init_env = os.getenv("EASYDEL_INIT_JAX_DISTRIBUTED", "0").lower() in {"1", "true", "yes"}
+        # Treat NPROCS>1 as an implicit request
+        try:
+            nprocs_env = int(os.getenv("NPROCS", os.getenv("JAX_PROCESS_COUNT", "1")))
+        except Exception:
+            nprocs_env = 1
+
+        if not bool(cfg.initialize_jax_distributed) and (init_env or nprocs_env > 1):
+            cfg.initialize_jax_distributed = True
+            # coordinator
+            coord = os.getenv("COORD_ADDR", os.getenv("JAX_COORDINATOR_ADDRESS", None))
+            cfg.coordinator_address = coord
+            # counts/ids
+            try:
+                cfg.num_processes = int(os.getenv("NPROCS", os.getenv("JAX_PROCESS_COUNT", str(nprocs_env))))
+            except Exception:
+                cfg.num_processes = nprocs_env
+            try:
+                cfg.process_id = int(os.getenv("PROC_ID", os.getenv("JAX_PROCESS_INDEX", "0")))
+            except Exception:
+                cfg.process_id = 0
+            # local device list (optional)
+            ldi = os.getenv("LOCAL_DEVICE_IDS", None)
+            cfg.local_device_ids = ldi
+
+        if cfg.initialize_jax_distributed:
+            # Convert optional comma-separated device ids
+            if cfg.local_device_ids is not None:
+                try:
+                    local_device_ids = [int(x) for x in str(cfg.local_device_ids).split(",") if x]
+                except Exception:
+                    local_device_ids = None
             else:
                 local_device_ids = None
 
             jax.distributed.initialize(
-                coordinator_address=config.coordinator_address,
-                num_processes=config.num_processes,
-                process_id=config.process_id,
+                coordinator_address=cfg.coordinator_address,
+                num_processes=cfg.num_processes,
+                process_id=cfg.process_id,
                 local_device_ids=local_device_ids,
             )
 
