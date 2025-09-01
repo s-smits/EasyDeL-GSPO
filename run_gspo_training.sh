@@ -44,10 +44,10 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --rollout_chunk_size 1 \
   --num_train_epochs 2 \
   --max_prompt_length 512 \
-  --max_completion_length 1024 \
+  --max_completion_length 4096 \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
-#  --force_tensor_parallel 4 \
+  --force_tensor_parallel 4 \
   --force_data_parallel 1 \
   --log_logprobs_metrics false \
   --log_global false \

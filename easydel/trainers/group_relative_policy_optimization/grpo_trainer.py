@@ -583,9 +583,12 @@ class GRPOTrainer(Trainer):
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
                     num_return_sequences=1,
-                    do_sample=True,
-                    # Enable KV caching for autoregressive decode; disabling can cause excessive recompute/memory
-                    use_cache=True,
+                    do_sample=False,
+                    # Are we even sure this is KV cache? There's an option to enable it
+                    # Could enable KV caching for autoregressive decode; disabling can cause excessive recompute/memory
+                    # Need to check if this is actually KV cache.
+                    # Seems we could keep the old one if we want to.
+                    use_cache=False,
                 )
                 
                 # Single source of randomness: trainer-provided prng_seed only
@@ -992,14 +995,9 @@ class GRPOTrainer(Trainer):
                             seed_ri = _seed_for_return(cur_step_int, jax.process_index(), global_ret_idx)
                             if ri < 4:
                                 seed_preview.append(int(seed_ri))
-                            try:
-                                import jax.experimental.multihost_utils as _mh
-                                global_pid = _mh.host_local_array_to_global_array(prompt_ids, self.model.mesh, self.arguments.step_partition_spec)
-                                global_pmask = _mh.host_local_array_to_global_array(prompt_mask, self.model.mesh, self.arguments.step_partition_spec)
-                            except Exception:
-                                global_pid, global_pmask = prompt_ids, prompt_mask
-                            seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
-                                self.generate_function(state, global_pid, global_pmask, int(seed_ri))
+                            # Call generate with host-local inputs; sharding occurs inside generate
+                            seq_one, _, _ = jax.block_until_ready(
+                                self.generate_function(state, prompt_ids, prompt_mask, int(seed_ri))
                             )
                             seq_list.append(seq_one)
                             global_ret_idx += 1
@@ -1023,15 +1021,9 @@ class GRPOTrainer(Trainer):
                         per_ret_seed = _seed_for_return(cur_step_int, jax.process_index(), global_ret_idx)
                         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                             print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_ret_seed={int(per_ret_seed)} (chunk_idx={chunk_idx}, ret_idx={global_ret_idx})")
-                        # Convert host-local arrays to global arrays explicitly to avoid boundary drift
-                        try:
-                            import jax.experimental.multihost_utils as _mh
-                            global_pid = _mh.host_local_array_to_global_array(prompt_ids, self.model.mesh, self.arguments.step_partition_spec)
-                            global_pmask = _mh.host_local_array_to_global_array(prompt_mask, self.model.mesh, self.arguments.step_partition_spec)
-                        except Exception:
-                            global_pid, global_pmask = prompt_ids, prompt_mask
+                        # Call generate with host-local inputs; sharding occurs inside generate
                         seq_chunk, _, _ = jax.block_until_ready(
-                            self.generate_function(state, global_pid, global_pmask, int(per_ret_seed))
+                            self.generate_function(state, prompt_ids, prompt_mask, int(per_ret_seed))
                         )
                         global_ret_idx += 1
                 generation_time += float(generation_time_fn())
