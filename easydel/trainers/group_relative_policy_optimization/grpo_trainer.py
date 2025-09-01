@@ -529,26 +529,10 @@ class GRPOTrainer(Trainer):
                 print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")
 
-        # Use adaptive sharding based on batch size and tensor parallelism
-        from .adaptive_mesh import get_adaptive_sharding_spec
-        _shard_sig = inspect.signature(get_adaptive_sharding_spec)
-        _shard_kwargs = dict(
-            total_batch_size=self.arguments.total_batch_size,
-            force_tensor_parallel=self.arguments.force_tensor_parallel,
-            mini_batch_size=self.arguments.mini_batch_size,
-        )
-        if 'force_data_parallel' in _shard_sig.parameters:
-            _shard_kwargs['force_data_parallel'] = self.arguments.force_data_parallel
-        if 'rollouts_per_step' in _shard_sig.parameters and getattr(self.arguments, 'rollouts_per_step', None):
-            _shard_kwargs['rollouts_per_step'] = self.arguments.rollouts_per_step
-        adaptive_spec = get_adaptive_sharding_spec(**_shard_kwargs)
-        input_sharding = NamedSharding(
-            mesh=mesh,
-            spec=adaptive_spec
-        )
-        # Store input spec for debugging/inspection
-        self.input_partition_spec = adaptive_spec
-        # Also store full sharding object for helpers
+        # Freeze input sharding to the trainer's step_partition_spec for cross-host consistency
+        frozen_input_spec = self.arguments.step_partition_spec
+        input_sharding = NamedSharding(mesh=mesh, spec=frozen_input_spec)
+        self.input_partition_spec = frozen_input_spec
         self.input_sharding = input_sharding
         step_sharding = NamedSharding(
             mesh=mesh,
@@ -571,13 +555,11 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            # static_argnums=(3,) excludes num_return_sequences; provide sharding for (state, ids, mask, seed)
-            # Use None for state to let PJIT infer uniformly across hosts and avoid device-id drift
-            in_shardings=(None, input_sharding, input_sharding, empty_sharding),
+            # Provide sharding for (state, ids, mask, seed); avoid static args entirely
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
-            static_argnums=(3,),
         )
-        def generate(state: EasyDeLState, input_ids, attention_mask, num_return_sequences: int, prng_seed: int):
+        def generate(state: EasyDeLState, input_ids, attention_mask, prng_seed: int):
             module = state.model
 
             with module.mesh:
@@ -600,7 +582,7 @@ class GRPOTrainer(Trainer):
                     eos_token_id=self.eos_token_id,  # EasyDeL will stop naturally when these tokens are generated
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
-                    num_return_sequences=num_return_sequences,
+                    num_return_sequences=1,
                     do_sample=True,
                     # Enable KV caching for autoregressive decode; disabling can cause excessive recompute/memory
                     use_cache=True,
@@ -1029,7 +1011,7 @@ class GRPOTrainer(Trainer):
                             if ri < 4:
                                 seed_preview.append(seed_ri)
                             seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
-                                self.generate_function(state, prompt_ids, prompt_mask, 1, seed_ri)
+                                self.generate_function(state, prompt_ids, prompt_mask, seed_ri)
                             )
                             seq_list.append(seq_one)
                         try:
@@ -1052,7 +1034,7 @@ class GRPOTrainer(Trainer):
                         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                             print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_chunk_seed={per_chunk_seed} (chunk_idx={chunk_idx})")
                         seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
-                            self.generate_function(state, prompt_ids, prompt_mask, 1, per_chunk_seed)
+                            self.generate_function(state, prompt_ids, prompt_mask, per_chunk_seed)
                         )
                 generation_time += float(generation_time_fn())
                 try:
