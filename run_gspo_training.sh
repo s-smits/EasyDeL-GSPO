@@ -28,6 +28,8 @@ set -euo pipefail
 
 export JAX_PLATFORMS=tpu
 export JAX_TRACEBACK_FILTERING=off
+# Disable best-effort global host aggregations inside reward functions for stability
+export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 DATASET="${1:-gsm8k-ds}"
 CURR="${2:-false}"
@@ -98,4 +100,3 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --jax_distributed_config.process_id "${PROC_ID}"
 
 echo "Training completed!"
-
