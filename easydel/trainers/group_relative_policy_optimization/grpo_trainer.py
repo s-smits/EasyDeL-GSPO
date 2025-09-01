@@ -555,9 +555,9 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            # Provide sharding for (state, ids, mask, seed); avoid static args entirely
-            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
-            out_shardings=(empty_sharding, input_sharding, input_sharding),
+            # Let PJIT infer input placement uniformly across hosts; state uses its own sharding.
+            in_shardings=(self.state_shardings, empty_sharding, empty_sharding, empty_sharding),
+            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, prng_seed: int):
             module = state.model
@@ -597,9 +597,7 @@ class GRPOTrainer(Trainer):
                     generation_config=generation_config,
                     prng_key=prng_key,
                 ).sequences
-                # Return inputs re-constrained to the input sharding spec to allow repeated calls
-                input_ids = with_sharding_constraint(input_ids, adaptive_spec)
-                attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
+                # Return inputs unconstrained to avoid host-specific placement drift
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
