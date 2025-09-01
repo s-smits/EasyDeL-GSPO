@@ -1,0 +1,51 @@
+Lessons learned during GSPO stability and counting fixes
+
+1) Environment integrity matters
+- Broken install detection: Compare `eformer.__version__` to `importlib.metadata.version('eformer')` and print the file path. A mismatch (e.g., code 0.0.52, dist-info 0.0.50) indicates a partial/overwritten install. Fix with a clean reinstall or relax version gate only temporarily.
+- Verify interpreter: Log `sys.executable` to ensure the expected venv drives both driver and workers.
+- Multi-host check: On Ray/TPU pods, remotely print `(version, path, python)` per worker to catch drift.
+
+2) DP multi-host failures are about static signatures, not content
+- Root cause: Hosts entering pjit/jit with different static args, shapes/ranks, pytrees, or shardings compile different HLOs and deadlock collectives.
+- Biggest trigger: Passing `num_return_sequences>1` as a static arg into the compiled `generate` while per-host batch size or call paths differ.
+- Other triggers: Rebinding inputs across steps, converting host-local arrays to global at the boundary, sharding inference differences, or dataset fields adding/removing keys per host.
+
+3) Make the compiled program invariant
+- Force `num_return_sequences=1` inside `generate` (or avoid it in the boundary entirely). Loop per-return outside to keep the compiled signature constant across hosts.
+- Uniformize B across hosts before generation (slice or pad locally, keep shapes identical). Treat inputs as host-local and shard inside the compiled function.
+- Avoid rebinding prompt tensors from outputs; keep boundary shapes/trees stable. Keep logging outside compiled paths to prevent host divergence.
+
+4) Keep efficiency with vectorized-R decode (future enhancement)
+- Prefill once at shape `[B,...]`, broadcast cache to `[B,R,...]`, and run a single `lax.scan` over decode steps carrying `[B,R,...]` state.
+- Use an `alive` mask to stop finished streams without diverging control flow. Treat both B and R as data axes for sharding.
+- Result preserves KV caching and single-compile speed while eliminating static-signature drift.
+
+5) Counting bug: align targets and predictions on the [B,R] grid
+- Symptom: Per-prompt counts like `[8,0,8,0]` and sticky “2/4” arise from scoring flattened predictions `[B·R]` against ground truths `[B]` or from wrong reshape order.
+- Fix: Build `targets_expanded` immediately after the same B slice, replicate golds to `[B,R,...]`, and score on `[B,R]`. Aggregate with `per_prompt_counts = success.sum(axis=1)` and `pass@R = success.any(axis=1).mean()`.
+- Do not flatten before scoring; if deduping, dedup within each prompt and preserve any success bit.
+
+6) RNG hygiene for diversity
+- Seed per return deterministically using `fold_in(base_key, step, process_index, global_prompt_idx*R + r)` to avoid collisions. Avoid reusing the same per-chunk seed.
+
+7) Dataset and batching cautions
+- Shard datasets per process deterministically. Ensure any in-batch dedup preserves batch size to keep DP divisibility.
+- When enforcing uniqueness, rebuild batches in-place and rebind `input_ids`/`attention_mask` from the rebuilt batch to avoid misalignment.
+
+8) JIT compilation and caching practices
+- Be careful with `static_argnums`: changing static args recompiles and can diverge across hosts. Keep boundary args purely dynamic when possible.
+- Ensure `in_shardings`/`out_shardings` match the positional args. Prefer sharding inside the compiled fn for stable behavior.
+- Configure JAX compilation cache directory for faster rebuilds; avoid adding unrelated static captures.
+
+9) Logging and metrics stability
+- Avoid cross-host barriers or chatty per-host logs inside compiled paths. Compute local metrics; optionally all-gather only simple scalars.
+- Distinguish reward-per-completion success from per-prompt pass@R; log both explicitly.
+
+10) Version gating and edits
+- If relaxing version gates, be surgical and temporary. Prefer fixing the environment (reinstall) over broadening gates.
+- Double-check manual edits to avoid stray characters (e.g., accidental text in lists).
+
+11) Operational tips
+- Prefer module execution `python -m easydel.scripts...` with `PYTHONPATH=$PWD` to ensure local package resolution.
+- Validate shapes/trees before generation with a light signature dict (ranks, dtypes, shardings), not data contents.
+
