@@ -554,49 +554,42 @@ class GRPOTrainer(Trainer):
         # Relax state in_shardings to avoid scalar device-id mismatches (e.g., state.step)
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
-        @ejit(
-            # Let PJIT infer from array sharding for inputs; state uses its sharding.
-            in_shardings=(self.state_shardings, None, None, empty_sharding),
-            out_shardings=(None, None, None),
-        )
+        # Plain (non-pjit) generate wrapper to avoid cross-host pjit launch divergence
         def generate(state: EasyDeLState, input_ids, attention_mask, prng_seed: int):
             module = state.model
-
             with module.mesh:
-                input_ids = module.config.partition_manager.shard(
+                # Shard inside mesh context
+                input_ids_s = module.config.partition_manager.shard(
                     input_ids,
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
                     mode=common_types.MODE_PREFILL,
                 )
-                attention_mask = module.config.partition_manager.shard(
+                attention_mask_s = module.config.partition_manager.shard(
                     attention_mask,
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
                     mode=common_types.MODE_PREFILL,
                 )
-                # Proper generation config that relies on natural EOS stopping
-                generation_config = GenerationConfig(
+                gen_cfg = GenerationConfig(
                     top_p=self.arguments.top_p,
                     top_k=self.arguments.top_k,
                     temperature=self.arguments.temperature,
                     pad_token_id=self.pad_token_id,
-                    eos_token_id=self.eos_token_id,  # EasyDeL will stop naturally when these tokens are generated
+                    eos_token_id=self.eos_token_id,
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
                     num_return_sequences=1,
                     do_sample=True,
                     use_cache=True,
                 )
-                
-                # Single source of randomness: trainer-provided prng_seed only
                 prng_key = jax.random.PRNGKey(prng_seed)
-
-                sequences = module.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    generation_config=generation_config,
+                out = module.generate(
+                    input_ids=input_ids_s,
+                    attention_mask=attention_mask_s,
+                    generation_config=gen_cfg,
                     prng_key=prng_key,
-                ).sequences
-                # Return inputs as-is (global arrays), avoiding host-specific placement drift
+                )
+                sequences = out.sequences
+                # Return original host-local inputs for downstream indexing
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
