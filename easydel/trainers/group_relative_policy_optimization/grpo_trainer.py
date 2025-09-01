@@ -571,8 +571,8 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            # Explicitly specify sharding for all 5 args to avoid per-host inference drift
-            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding, empty_sharding),
+            # static_argnums=(3,) excludes num_return_sequences from in_shardings; specify only 4 entries
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
