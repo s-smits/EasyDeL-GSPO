@@ -40,11 +40,11 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
   --total_batch_size 4 \
-  --num_return_sequences 8 \
-  --rollout_chunk_size 1 \
-  --num_train_epochs 2 \
+  --num_return_sequences 4 \
+  --rollout_chunk_size 4 \
+  --num_train_epochs 1 \
   --max_prompt_length 512 \
-  --max_completion_length 4096 \
+  --max_completion_length 1024 \
   --learning_rate 2e-6 \
   --dataset_use_pct 25 \
   --force_tensor_parallel 4 \
@@ -63,7 +63,8 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
   --ensure_unique_prompts false \
-  --shuffle_train_dataset false
+  --shuffle_train_dataset false \
+  --use_grain false
 
 #   --force_data_parallel 1 \
 

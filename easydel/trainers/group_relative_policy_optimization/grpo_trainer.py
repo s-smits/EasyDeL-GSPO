@@ -583,12 +583,8 @@ class GRPOTrainer(Trainer):
                     max_new_tokens=self.arguments.max_completion_length,
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
                     num_return_sequences=1,
-                    do_sample=False,
-                    # Are we even sure this is KV cache? There's an option to enable it
-                    # Could enable KV caching for autoregressive decode; disabling can cause excessive recompute/memory
-                    # Need to check if this is actually KV cache.
-                    # Seems we could keep the old one if we want to.
-                    use_cache=False,
+                    do_sample=True,
+                    use_cache=True,
                 )
                 
                 # Single source of randomness: trainer-provided prng_seed only
@@ -1042,9 +1038,32 @@ class GRPOTrainer(Trainer):
                 true_prompt_lengths = ridmask_chunk.sum(-1)
                 max_comp = int(self.arguments.max_completion_length)
                 total_len = int(prompt_completion_ids_chunk.shape[-1])
+                # Assertions to catch shape/modeling drift early
+                try:
+                    # Leading dims must match for gather
+                    if int(ridmask_chunk.shape[0]) != int(prompt_completion_ids_chunk.shape[0]):
+                        raise RuntimeError(
+                            f"ridmask_chunk batch {int(ridmask_chunk.shape[0])} != sequences batch {int(prompt_completion_ids_chunk.shape[0])}"
+                        )
+                    # Mask must be binary
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        _mx = int(jnp.max(ridmask_chunk))
+                        _mn = int(jnp.min(ridmask_chunk))
+                        if not (_mn >= 0 and _mx <= 1):
+                            print(f"DEBUG: ridmask_chunk not binary: min={_mn}, max={_mx}")
+                except Exception as _e:
+                    print(f"DEBUG: pre-gather assertions failed: {_e}")
                 gather_idx = (true_prompt_lengths[:, None] + jnp.arange(max_comp)[None, :]).astype(jnp.int32)
                 gather_idx = jnp.clip(gather_idx, 0, max(0, total_len - 1))
-                completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
+                # Guard take_along_axis to provide helpful diagnostics on failure
+                try:
+                    completion_ids_chunk = jnp.take_along_axis(prompt_completion_ids_chunk, gather_idx, axis=1)
+                except Exception as _e:
+                    print(
+                        f"DEBUG: take_along_axis failed: seq_shape={tuple(map(int, prompt_completion_ids_chunk.shape))}, "
+                        f"gather_idx_shape={tuple(map(int, gather_idx.shape))}, max_comp={max_comp}, total_len={total_len}"
+                    )
+                    raise
                 completion_mask_chunk = self._make_attn_mask(completion_ids_chunk)
                 
                 # Debug: Store sequences for logging (handle multi-device arrays safely)

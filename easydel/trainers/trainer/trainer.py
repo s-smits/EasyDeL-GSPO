@@ -86,22 +86,32 @@ class Trainer(BaseTrainer):
         """
 
         def collate_fn(batch):
-            results = {}
-            for key in batch[0].keys():
-                data_sample = batch[0][key]
-                try:
-                    data_sample = jax.numpy.array(data_sample)
-                except TypeError:
+            results: dict[str, jax.Array] = {}
+            # Only collate tensor keys required by trainers (e.g., input_ids, attention_mask)
+            wanted_keys = ["input_ids", "attention_mask"]
+            for key in wanted_keys:
+                if key not in batch[0]:
                     continue
-                if self.model.lossfn_type == "ForCausalLM":
-                    if truncation_mode == "keep_end":
-                        corrected_sequence = [jax.numpy.array(f[key])[..., -max_sequence_length:] for f in batch]
+                try:
+                    # Convert and validate dimensionality
+                    sample_arr = jax.numpy.array(batch[0][key])
+                except Exception:
+                    continue
+                # Skip non-array-like or scalars
+                if getattr(sample_arr, "ndim", 0) == 0:
+                    continue
+                try:
+                    if self.model.lossfn_type == "ForCausalLM":
+                        if truncation_mode == "keep_end":
+                            corrected = [jax.numpy.array(f[key])[..., -max_sequence_length:] for f in batch]
+                        else:
+                            corrected = [jax.numpy.array(f[key])[..., :max_sequence_length] for f in batch]
                     else:
-                        corrected_sequence = [jax.numpy.array(f[key])[..., :max_sequence_length] for f in batch]
-                    results[key] = jax.numpy.stack(corrected_sequence)
-                else:
-                    corrected_sequence = [jax.numpy.array(f[key]) for f in batch]
-                    results[key] = jax.numpy.stack(corrected_sequence)
+                        corrected = [jax.numpy.array(f[key]) for f in batch]
+                    results[key] = jax.numpy.stack(corrected)
+                except Exception as e:
+                    # Provide helpful context for debugging dataset issues
+                    raise RuntimeError(f"Failed to collate key='{key}' with truncation_mode='{truncation_mode}': {e}")
             return results
 
         return collate_fn
