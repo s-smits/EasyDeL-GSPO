@@ -962,6 +962,7 @@ class GRPOTrainer(Trainer):
             except Exception:
                 cur_step_int = 0
             chunk_idx = 0
+            global_ret_idx = 0
             while nrs_remaining > 0:
                 # Global sync to ensure all hosts reach generation together with identical program signature
                 try:
@@ -971,16 +972,10 @@ class GRPOTrainer(Trainer):
                     pass
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
-                    # Base per-chunk seed; ensures reproducible diversity across chunks and ranks
-                    # Use large primes and ensure non-zero base to prevent collisions when step=0
-                    base_offset = 123456789  # Large non-zero base to prevent collisions
-                    per_chunk_seed = int((
-                        base_offset + 
-                        cur_step_int * 1299721 +  # Large prime
-                        abs(jax.process_index()) * 982451 +  # Large prime  
-                        chunk_idx * 786433  # Large prime
-                    ) % (2**31 - 1))
-                    per_chunk_seed = max(1, per_chunk_seed)
+                    # Deterministic seed schedule per rollout across the entire group
+                    def _seed_for_return(step_i: int, proc_i: int, ret_i: int) -> int:
+                        val = (123457 + step_i * 1299721 + abs(proc_i) * 982451 + ret_i * 786433) % (2**31 - 1)
+                        return int(max(1, val))
                     diversify_enabled = bool(getattr(self.arguments, "diversify_returns", True))
                     print(f"DEBUG: diversify_returns={diversify_enabled}, cur_nrs={cur_nrs}")
                     # Always generate with num_return_sequences=1 to keep static args identical across hosts.
@@ -994,16 +989,20 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             seed_preview = []
                         for ri in range(cur_nrs):
-                            # Derive a unique seed per return within this chunk
-                            # Use larger prime to ensure better diversity between returns
-                            seed_ri = int((per_chunk_seed + (ri + 1) * 1073741827) % (2**31 - 1))
-                            seed_ri = max(1, seed_ri)
+                            seed_ri = _seed_for_return(cur_step_int, jax.process_index(), global_ret_idx)
                             if ri < 4:
-                                seed_preview.append(seed_ri)
+                                seed_preview.append(int(seed_ri))
+                            try:
+                                import jax.experimental.multihost_utils as _mh
+                                global_pid = _mh.host_local_array_to_global_array(prompt_ids, self.model.mesh, self.arguments.step_partition_spec)
+                                global_pmask = _mh.host_local_array_to_global_array(prompt_mask, self.model.mesh, self.arguments.step_partition_spec)
+                            except Exception:
+                                global_pid, global_pmask = prompt_ids, prompt_mask
                             seq_one, prompt_ids, prompt_mask = jax.block_until_ready(
-                                self.generate_function(state, prompt_ids, prompt_mask, seed_ri)
+                                self.generate_function(state, global_pid, global_pmask, int(seed_ri))
                             )
                             seq_list.append(seq_one)
+                            global_ret_idx += 1
                         try:
                             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                                 print(f"DEBUG: per-return seeds (head): {seed_preview}")
@@ -1020,9 +1019,10 @@ class GRPOTrainer(Trainer):
                             seq_pm, (B_local * cur_nrs,) + tuple(seq_pm.shape[2:])
                         )  # (B*R, ...)
                     else:
-                        # cur_nrs==1 → single return with unique per_chunk_seed
+                        # cur_nrs==1 → single return with unique per-return seed based on global_ret_idx
+                        per_ret_seed = _seed_for_return(cur_step_int, jax.process_index(), global_ret_idx)
                         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
-                            print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_chunk_seed={per_chunk_seed} (chunk_idx={chunk_idx})")
+                            print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_ret_seed={int(per_ret_seed)} (chunk_idx={chunk_idx}, ret_idx={global_ret_idx})")
                         # Convert host-local arrays to global arrays explicitly to avoid boundary drift
                         try:
                             import jax.experimental.multihost_utils as _mh
@@ -1031,8 +1031,9 @@ class GRPOTrainer(Trainer):
                         except Exception:
                             global_pid, global_pmask = prompt_ids, prompt_mask
                         seq_chunk, _, _ = jax.block_until_ready(
-                            self.generate_function(state, global_pid, global_pmask, per_chunk_seed)
+                            self.generate_function(state, global_pid, global_pmask, int(per_ret_seed))
                         )
+                        global_ret_idx += 1
                 generation_time += float(generation_time_fn())
                 try:
                     import jax.experimental.multihost_utils as _mh
