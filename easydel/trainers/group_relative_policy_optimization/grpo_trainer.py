@@ -571,8 +571,9 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            # static_argnums=(3,) excludes num_return_sequences from in_shardings; specify only 4 entries
-            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding),
+            # static_argnums=(3,) excludes num_return_sequences; provide sharding for (state, ids, mask, seed)
+            # Use None for state to let PJIT infer uniformly across hosts and avoid device-id drift
+            in_shardings=(None, input_sharding, input_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
@@ -926,6 +927,38 @@ class GRPOTrainer(Trainer):
                         print(f"DEBUG: Uniformized batch across hosts to B={B_uniform}")
                 except Exception as _e:
                     print(f"DEBUG: Failed to uniformize batch: {_e}")
+
+            # Enforce identical static launch signature across hosts (detect divergent config early)
+            try:
+                import jax.experimental.multihost_utils as _mh
+                def _first_eos(eos):
+                    try:
+                        return int(eos[0]) if isinstance(eos, (list, tuple)) and len(eos) > 0 else int(eos)
+                    except Exception:
+                        return 0
+                mesh_shape = getattr(self.model.mesh, 'shape', {})
+                dp_val = int(mesh_shape.get('dp', 1)) if hasattr(mesh_shape, 'get') else 1
+                tp_val = int(mesh_shape.get('tp', 1)) if hasattr(mesh_shape, 'get') else 1
+                sig = jnp.array([
+                    int(self.arguments.max_prompt_length),
+                    int(self.arguments.max_completion_length),
+                    _first_eos(self.eos_token_id),
+                    1,  # NRS static enforced to 1
+                    dp_val,
+                    tp_val,
+                ], dtype=jnp.int32)
+                gs = _mh.process_allgather(sig)
+                arr = jax.device_get(gs)
+                # All rows should equal the first
+                import numpy as _np3
+                base = _np3.array(arr[0])
+                ok = _np3.all((_np3.array(arr) == base).all(axis=1))
+                if not ok:
+                    raise RuntimeError(f"Divergent launch signature across hosts: {arr}")
+            except Exception as _e:
+                # Do not crash on environments without multihost utils; this is a guard only
+                if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                    print(f"DEBUG: launch signature guard skipped: {_e}")
 
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
