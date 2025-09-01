@@ -52,9 +52,6 @@ if [ "${NPROCS}" -gt 1 ]; then
     echo "ERROR: COORD_ADDR must be set when NPROCS>1" >&2
     exit 1
   fi
-  # Hint to EasyDeL to initialize JAX distributed from environment
-  export EASYDEL_INIT_JAX_DISTRIBUTED=1
-  export NPROCS PROC_ID COORD_ADDR
 fi
 
 echo "Starting GSPO training with optimized configuration..."
@@ -93,4 +90,7 @@ python3.11 easydel/scripts/finetune/gsm8k_math_gspo.py \
   --top_p 0.95 \
   --top_k 50 \
   --advantage_epsilon 1e-6 \
-  
+  --jax_distributed_config.initialize_jax_distributed "${INIT_DIST}" \
+  --jax_distributed_config.coordinator_address "${COORD_ADDR}" \
+  --jax_distributed_config.num_processes "${NPROCS}" \
+  --jax_distributed_config.process_id "${PROC_ID}"
