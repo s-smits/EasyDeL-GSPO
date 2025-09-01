@@ -1726,6 +1726,56 @@ class GRPOTrainer(Trainer):
                 dtype="f4",
             )
             
+            # Build a reward batch view with ground-truth replicated to match completions length (B * R)
+            try:
+                c_len = len(completions)
+            except Exception:
+                c_len = int(completion_ids.shape[0])
+            try:
+                # Prefer normalized solutions if present
+                gts = batch.get("solution_normalized", batch.get("solution", batch.get("answer", [])))
+                # Normalize to list[str]
+                if gts is None:
+                    gts_list = []
+                elif isinstance(gts, list):
+                    gts_list = ["" if x is None else (x if isinstance(x, str) else str(x)) for x in gts]
+                else:
+                    # arrays or scalars
+                    try:
+                        import numpy as _np
+                        import jax as _jax
+                        if hasattr(gts, "shape") or hasattr(gts, "tolist"):
+                            try:
+                                gts = _jax.device_get(gts)
+                            except Exception:
+                                pass
+                            gts_list = gts.tolist() if hasattr(gts, "tolist") else [str(gts)]
+                        else:
+                            gts_list = [str(gts)]
+                    except Exception:
+                        gts_list = [str(gts)]
+                if not isinstance(gts_list, list):
+                    gts_list = [str(gts_list)]
+                if len(gts_list) == 0:
+                    gts_expanded = [""] * int(c_len)
+                elif int(c_len) == len(gts_list):
+                    gts_expanded = gts_list
+                elif int(c_len) % len(gts_list) == 0:
+                    _factor = int(c_len) // len(gts_list)
+                    gts_expanded = [x for x in gts_list for _ in range(_factor)]
+                else:
+                    _times = (int(c_len) + len(gts_list) - 1) // len(gts_list)
+                    gts_expanded = (gts_list * _times)[: int(c_len)]
+                batch_for_reward = dict(batch)
+                # Set both keys to be safe for different reward implementations
+                batch_for_reward["solution_normalized"] = gts_expanded
+                if "solution" in batch and batch.get("solution", None) is not None:
+                    batch_for_reward["solution"] = gts_expanded
+                if "answer" in batch and batch.get("answer", None) is not None:
+                    batch_for_reward["answer"] = gts_expanded
+            except Exception:
+                batch_for_reward = batch
+
             with capture_time() as rewarding_time_fn:
                 for i, (reward_func, reward_processing_class) in enumerate(
                     zip(self.reward_funcs, self.reward_processing_classes, strict=False)
@@ -1763,7 +1813,7 @@ class GRPOTrainer(Trainer):
                             prompts=in_prompts,
                             completions=completions,
                             max_length=self.arguments.max_sequence_length,
-                            batch=batch,
+                            batch=batch_for_reward,
                             completion_lengths=jax.device_get(_safe_lengths),
                             num_return_sequences=int(self.num_generations),
                             num_prompts_local=int(prompt_ids.shape[0]),
