@@ -555,9 +555,9 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            # Let PJIT infer input placement uniformly across hosts; state uses its own sharding.
-            in_shardings=(self.state_shardings, empty_sharding, empty_sharding, empty_sharding),
-            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
+            # Let PJIT infer from array sharding for inputs; state uses its sharding.
+            in_shardings=(self.state_shardings, None, None, empty_sharding),
+            out_shardings=(None, None, None),
         )
         def generate(state: EasyDeLState, input_ids, attention_mask, prng_seed: int):
             module = state.model
@@ -597,7 +597,7 @@ class GRPOTrainer(Trainer):
                     generation_config=generation_config,
                     prng_key=prng_key,
                 ).sequences
-                # Return inputs unconstrained to avoid host-specific placement drift
+                # Return inputs as-is (global arrays), avoiding host-specific placement drift
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
@@ -919,24 +919,16 @@ class GRPOTrainer(Trainer):
                 mesh_shape = getattr(self.model.mesh, 'shape', {})
                 dp_val = int(mesh_shape.get('dp', 1)) if hasattr(mesh_shape, 'get') else 1
                 tp_val = int(mesh_shape.get('tp', 1)) if hasattr(mesh_shape, 'get') else 1
-                sig = jnp.array([
+                sig = (
                     int(self.arguments.max_prompt_length),
                     int(self.arguments.max_completion_length),
                     _first_eos(self.eos_token_id),
                     1,  # NRS static enforced to 1
                     dp_val,
                     tp_val,
-                ], dtype=jnp.int32)
-                gs = _mh.process_allgather(sig)
-                arr = jax.device_get(gs)
-                # All rows should equal the first
-                import numpy as _np3
-                base = _np3.array(arr[0])
-                ok = _np3.all((_np3.array(arr) == base).all(axis=1))
-                if not ok:
-                    raise RuntimeError(f"Divergent launch signature across hosts: {arr}")
+                )
+                _mh.assert_equal(sig, fail_message="Divergent launch signature across hosts")
             except Exception as _e:
-                # Do not crash on environments without multihost utils; this is a guard only
                 if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                     print(f"DEBUG: launch signature guard skipped: {_e}")
 
@@ -1031,8 +1023,15 @@ class GRPOTrainer(Trainer):
                         # cur_nrs==1 → single return with unique per_chunk_seed
                         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                             print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_chunk_seed={per_chunk_seed} (chunk_idx={chunk_idx})")
-                        seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
-                            self.generate_function(state, prompt_ids, prompt_mask, per_chunk_seed)
+                        # Convert host-local arrays to global arrays explicitly to avoid boundary drift
+                        try:
+                            import jax.experimental.multihost_utils as _mh
+                            global_pid = _mh.host_local_array_to_global_array(prompt_ids, self.model.mesh, self.arguments.step_partition_spec)
+                            global_pmask = _mh.host_local_array_to_global_array(prompt_mask, self.model.mesh, self.arguments.step_partition_spec)
+                        except Exception:
+                            global_pid, global_pmask = prompt_ids, prompt_mask
+                        seq_chunk, _, _ = jax.block_until_ready(
+                            self.generate_function(state, global_pid, global_pmask, per_chunk_seed)
                         )
                 generation_time += float(generation_time_fn())
                 try:
