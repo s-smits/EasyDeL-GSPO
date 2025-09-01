@@ -1264,6 +1264,10 @@ class GRPOTrainer(Trainer):
 
                     # Determine ground truth value from batch (dataset-dependent)
                     def _get_gt(_batch, idx: int):
+                        """Robustly fetch a per-sample ground truth string for logging.
+
+                        Handles list[str], numpy/jax arrays (including 0-d scalars), and plain strings.
+                        """
                         try:
                             if "solution_normalized" in _batch and _batch["solution_normalized"] is not None:
                                 print("DEBUG: Using 'solution_normalized' from batch")
@@ -1277,14 +1281,47 @@ class GRPOTrainer(Trainer):
                             else:
                                 print("DEBUG: No ground truth key found in batch")
                                 return None
-                            if hasattr(v, "__getitem__"):
-                                try:
-                                    print(f"DEBUG: Attempting to index ground truth with idx={idx}")
-                                    return v[idx]
-                                except Exception as e:
-                                    print(f"DEBUG: Exception indexing ground truth with idx={idx}: {e}, falling back to v[0]")
-                                    return v[0]
-                            return v
+
+                            # Normalize to list[str]
+                            try:
+                                from easydel.verification.reward_utils import normalize_to_list_str as _norm_list  # type: ignore
+                            except Exception:
+                                def _norm_list(obj):
+                                    if obj is None:
+                                        return []
+                                    if isinstance(obj, list):
+                                        base = obj
+                                    elif isinstance(obj, str):
+                                        base = [obj]
+                                    else:
+                                        try:
+                                            if hasattr(obj, "tolist"):
+                                                base = obj.tolist()
+                                            else:
+                                                base = list(obj)
+                                        except Exception:
+                                            base = [obj]
+                                    out = []
+                                    for x in base:
+                                        if x is None:
+                                            out.append("")
+                                        elif isinstance(x, str):
+                                            out.append(x)
+                                        else:
+                                            try:
+                                                out.append(str(x))
+                                            except Exception:
+                                                out.append("")
+                                    return out
+
+                            seq = _norm_list(v)
+                            # Align length; idx comes from local prompt index
+                            if len(seq) == 0:
+                                return ""
+                            if idx < len(seq):
+                                return seq[idx]
+                            # Fallbacks when scalar provided
+                            return seq[0]
                         except Exception as e:
                             print(f"DEBUG: Exception in _get_gt: {e}")
                             return None
