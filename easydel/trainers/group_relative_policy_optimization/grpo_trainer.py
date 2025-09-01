@@ -554,11 +554,14 @@ class GRPOTrainer(Trainer):
         # Relax state in_shardings to avoid scalar device-id mismatches (e.g., state.step)
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
-        # Plain (non-pjit) generate wrapper to avoid cross-host pjit launch divergence
+        # PJIT-wrapped generate with replicated outputs to ensure addressable sequences
+        @ejit(
+            in_shardings=(self.state_shardings, empty_sharding, empty_sharding, empty_sharding),
+            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
+        )
         def generate(state: EasyDeLState, input_ids, attention_mask, prng_seed: int):
             module = state.model
             with module.mesh:
-                # Shard inside mesh context
                 input_ids_s = module.config.partition_manager.shard(
                     input_ids,
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
@@ -569,7 +572,7 @@ class GRPOTrainer(Trainer):
                     axes=[common_types.BATCH, common_types.SEQUENCE_PARALLEL],
                     mode=common_types.MODE_PREFILL,
                 )
-                gen_cfg = GenerationConfig(
+                generation_config = GenerationConfig(
                     top_p=self.arguments.top_p,
                     top_k=self.arguments.top_k,
                     temperature=self.arguments.temperature,
@@ -582,14 +585,12 @@ class GRPOTrainer(Trainer):
                     use_cache=True,
                 )
                 prng_key = jax.random.PRNGKey(prng_seed)
-                out = module.generate(
+                sequences = module.generate(
                     input_ids=input_ids_s,
                     attention_mask=attention_mask_s,
-                    generation_config=gen_cfg,
+                    generation_config=generation_config,
                     prng_key=prng_key,
-                )
-                sequences = out.sequences
-                # Return original host-local inputs for downstream indexing
+                ).sequences
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
