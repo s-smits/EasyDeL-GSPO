@@ -571,7 +571,8 @@ class GRPOTrainer(Trainer):
         # The model weights are already sharded in self.model_state; letting PJIT infer
         # avoids forcing a particular device-id ordering for scalars within the state tree.
         @ejit(
-            in_shardings=(None, input_sharding, input_sharding, empty_sharding),
+            # Explicitly specify sharding for all 5 args to avoid per-host inference drift
+            in_shardings=(self.state_shardings, input_sharding, input_sharding, empty_sharding, empty_sharding),
             out_shardings=(empty_sharding, input_sharding, input_sharding),
             static_argnums=(3,),
         )
@@ -887,6 +888,45 @@ class GRPOTrainer(Trainer):
                     _ans_len = (len(_ans_obj) if _ans_obj is not None and hasattr(_ans_obj, "__len__") else -1)
                     logger.debug(f"preprocess: after-dedup prompts={_pid_len} answers_len={_ans_len}")
 
+            # Enforce uniform per-host batch size to avoid DP HLO divergence
+            try:
+                local_B = int(prompt_ids.shape[0])
+                import jax.experimental.multihost_utils as _mh
+                gathered = _mh.process_allgather(jnp.array(local_B))
+                import numpy as _np
+                B_uniform = int(_np.min(_np.array(jax.device_get(gathered))))
+            except Exception:
+                B_uniform = int(prompt_ids.shape[0])
+
+            if int(prompt_ids.shape[0]) != B_uniform:
+                try:
+                    prompt_ids = prompt_ids[:B_uniform]
+                    prompt_mask = prompt_mask[:B_uniform]
+                    rebuilt = {}
+                    for key, val in batch.items():
+                        try:
+                            vlen = len(val) if hasattr(val, "__len__") else None
+                        except Exception:
+                            vlen = None
+                        if vlen == int(batch["input_ids"].shape[0]):
+                            if isinstance(val, jax.Array):
+                                rebuilt[key] = val[:B_uniform]
+                            else:
+                                if hasattr(val, "__getitem__"):
+                                    try:
+                                        rebuilt[key] = val[:B_uniform]
+                                    except Exception:
+                                        rebuilt[key] = list(val)[:B_uniform] if isinstance(val, (list, tuple)) else val
+                                else:
+                                    rebuilt[key] = val
+                        else:
+                            rebuilt[key] = val
+                    batch = rebuilt
+                    if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                        print(f"DEBUG: Uniformized batch across hosts to B={B_uniform}")
+                except Exception as _e:
+                    print(f"DEBUG: Failed to uniformize batch: {_e}")
+
             # Chunked generation and reference log-prob computation to reduce peak memory
             rollout_chunk_size = getattr(self.arguments, "rollout_chunk_size", None)
             # Memory-cautious default: chunk size = 1 unless explicitly overridden.
@@ -918,6 +958,12 @@ class GRPOTrainer(Trainer):
                 cur_step_int = 0
             chunk_idx = 0
             while nrs_remaining > 0:
+                # Global sync to ensure all hosts reach generation together with identical program signature
+                try:
+                    import jax.experimental.multihost_utils as _mh
+                    _mh.sync_global_devices("pre_generate")
+                except Exception:
+                    pass
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
                     # Base per-chunk seed; ensures reproducible diversity across chunks and ranks
@@ -932,7 +978,9 @@ class GRPOTrainer(Trainer):
                     per_chunk_seed = max(1, per_chunk_seed)
                     diversify_enabled = bool(getattr(self.arguments, "diversify_returns", True))
                     print(f"DEBUG: diversify_returns={diversify_enabled}, cur_nrs={cur_nrs}")
-                    if diversify_enabled and cur_nrs > 1:
+                    # Always generate with num_return_sequences=1 to keep static args identical across hosts.
+                    # When cur_nrs>1, loop per return and diversify via distinct seeds.
+                    if cur_nrs > 1:
                         # Generate returns one-by-one with distinct seeds to maximize stochastic diversity
                         seq_list = []
                         try:
@@ -967,14 +1015,18 @@ class GRPOTrainer(Trainer):
                             seq_pm, (B_local * cur_nrs,) + tuple(seq_pm.shape[2:])
                         )  # (B*R, ...)
                     else:
-                        # cur_nrs==1 → we diversify across chunks via unique per_chunk_seed per call
+                        # cur_nrs==1 → single return with unique per_chunk_seed
                         if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                             print(f"DEBUG: per-chunk diversified path (cur_nrs=1); per_chunk_seed={per_chunk_seed} (chunk_idx={chunk_idx})")
-                        # Single backend call for the whole chunk
                         seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
-                            self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
+                            self.generate_function(state, prompt_ids, prompt_mask, 1, per_chunk_seed)
                         )
                 generation_time += float(generation_time_fn())
+                try:
+                    import jax.experimental.multihost_utils as _mh
+                    _mh.sync_global_devices("post_generate")
+                except Exception:
+                    pass
 
                 # Avoid explicit cross-host barriers here; rely on pjit collectives only
 
