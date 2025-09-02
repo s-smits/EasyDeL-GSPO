@@ -489,14 +489,18 @@ class GRPOTrainer(Trainer):
                 if jax.process_index() == 0:
                     per_process = int(self.arguments.total_batch_size) * int(self.arguments.num_return_sequences)
                     # Use effective dp for expected global actually running this process configuration
-                    global_total = int(effective_dp) * per_process
+                    expected_global = int(effective_dp) * per_process
                     print(
-                        f"DEBUG: Rollout config - num_return_sequences={self.arguments.num_return_sequences}, global_total={global_total}"
+                        "DEBUG: Rollout config - "
+                        f"num_return_sequences={self.arguments.num_return_sequences}, "
+                        f"per_process={per_process}, expected_global={expected_global}"
                     )
                     logger.info(
-                        f"Rollout configuration: num_return_sequences={self.arguments.num_return_sequences}, "
-                        f"expected_global_rollouts_per_step={global_total} (effective DP={effective_dp}, mesh DP={int(dp_size)}), "
+                        "Rollout configuration: "
+                        f"nrs={self.arguments.num_return_sequences}, "
                         f"per_process_rollouts={per_process}, "
+                        f"expected_global_rollouts_per_step={expected_global} "
+                        f"(effective DP={effective_dp}, mesh DP={int(dp_size)}), "
                         f"batch_size={self.arguments.total_batch_size}"
                     )
             except Exception as e:
