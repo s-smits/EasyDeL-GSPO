@@ -299,6 +299,13 @@ class GRPOTrainer(Trainer):
         except Exception:
             # Best-effort filtering; if pad_token_id not available, keep unique list
             pass
+        # Guard: ensure at least one EOS remains after filtering
+        if not unique_eos:
+            raise ValueError(
+                "Resolved EOS token set is empty after excluding pad_token_id. "
+                "Configure a valid eos_token_id on the tokenizer or model.generation_config, "
+                "or use a tokenizer with distinct PAD and EOS tokens."
+            )
         return unique_eos
 
     def _prepare_dataset(
