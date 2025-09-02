@@ -242,10 +242,16 @@ def main():
                 normed = [_norm(a) for a in batch["answer"]]
             else:
                 normed = _norm(batch["answer"]) if batch.get("answer") is not None else batch.get("answer")
+            # Ensure label field survives collation by returning a numpy array
+            try:
+                import numpy as _np
+                answer_arr = _np.array(normed)
+            except Exception:
+                answer_arr = normed
             return {
                 "input_ids": tokenized["input_ids"],
                 "attention_mask": tokenized["attention_mask"],
-                "answer": normed,
+                "answer": answer_arr,
             }
 
         reward_funcs = [gsm8k_answer_reward]
@@ -311,11 +317,19 @@ def main():
             else:
                 b = _extract_last_boxed(sol)
                 normalized = _remove_boxed(b) if b else sol
+            # Ensure label fields survive collation by returning numpy arrays
+            try:
+                import numpy as _np
+                sol_arr = _np.array(sol)
+                norm_arr = _np.array(normalized)
+            except Exception:
+                sol_arr = sol
+                norm_arr = normalized
             result = {
                 "input_ids": tokenized["input_ids"],
                 "attention_mask": tokenized["attention_mask"],
-                "solution": sol,
-                "solution_normalized": normalized,
+                "solution": sol_arr,
+                "solution_normalized": norm_arr,
             }
             # Preserve curriculum fields when present
             if "level" in batch:

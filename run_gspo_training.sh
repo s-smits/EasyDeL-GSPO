@@ -68,9 +68,5 @@ echo "Curriculum math: ${CURRICULUM_MATH}"
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --advantage_epsilon 1e-6 \
-  --verbose true
-
-#   --force_data_parallel 1 \
-
-echo "Training completed!"
+  --advantage_epsilon 1e-6
+  

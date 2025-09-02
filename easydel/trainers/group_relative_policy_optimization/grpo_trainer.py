@@ -1012,7 +1012,16 @@ class GRPOTrainer(Trainer):
             prompts = [""] * _local_prompt_count
 
             if not (getattr(self.arguments, "verify_dataset_sharding", False) and int(jax.device_get(state.step)) == 0):
-                prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                try:
+                    prompts = self.processing_class.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                except Exception:
+                    # Some tokenizers require list[int] per row; fallback to host conversion
+                    try:
+                        prompts = self.processing_class.batch_decode(
+                            np.array(batch["input_ids"]).tolist(), skip_special_tokens=True
+                        )
+                    except Exception:
+                        prompts = [""] * _local_prompt_count
             # Decode completions text using pjit materialization executed on all processes
             _host_completion_ids = self.materialize_for_decode(completion_ids)
             completions_text = self.processing_class.batch_decode(
