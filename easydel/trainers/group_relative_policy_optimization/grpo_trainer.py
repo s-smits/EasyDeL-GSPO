@@ -503,6 +503,9 @@ class GRPOTrainer(Trainer):
                         f"(effective DP={effective_dp}, mesh DP={int(dp_size)}), "
                         f"batch_size={self.arguments.total_batch_size}"
                     )
+                    # Decoding participation (explicit)
+                    print(f"DEBUG: Decoding participation - participating_processes={effective_dp}, ids=[0..{effective_dp-1}]")
+                    logger.info(f"Decoding participation: participating_processes={effective_dp}, ids=[0..{effective_dp-1}]")
             except Exception as e:
                 print(f"DEBUG: Failed to log rollout configuration: {e}")
                 logger.warning(f"Failed to log rollout configuration: {e}")
