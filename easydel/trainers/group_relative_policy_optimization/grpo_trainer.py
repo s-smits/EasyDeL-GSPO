@@ -1421,6 +1421,26 @@ class GRPOTrainer(Trainer):
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         # Local metrics plus safe global scalars (if available)
+        # Local metrics plus safe global scalars (if available)
+        # Add explicit denominators to avoid confusion when B < DP
+        try:
+            denom_comp_global = int(total_comp_global)
+        except Exception:
+            denom_comp_global = int(num_completions_local)
+        try:
+            denom_prompts_global = int(num_prompts_global)
+        except Exception:
+            denom_prompts_global = int(num_prompts_local)
+        # Optional one-line rollouts mapping for quick sanity (proc0 only)
+        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+            try:
+                participants = int(jax.process_count())
+                logger.info(
+                    f"rollouts: B_local={num_prompts_local}, R={int(self.num_generations)}, "
+                    f"C_proc={num_completions_local}, participants={participants}, C_global~={participants * num_completions_local}"
+                )
+            except Exception:
+                pass
         metrics_dict = {
             "reward/mean_per_completion": per_completion_mean_reward,
             "reward/success_rate_completions": float(success_rate_comp_local),
@@ -1428,6 +1448,11 @@ class GRPOTrainer(Trainer):
             # Safe global scalars for display only
             "reward/success_rate_completions_global": float(success_rate_comp_global),
             "reward/pass_at_k_global": float(pass_at_k_global),
+            # Explicit denominators
+            "reward/denominator/completions_local": float(num_completions_local),
+            "reward/denominator/prompts_local": float(num_prompts_local),
+            "reward/denominator/completions_global": float(denom_comp_global),
+            "reward/denominator/prompts_global": float(denom_prompts_global),
             "rollouts/total_global": float(total_comp_global),
             "rollouts/queries_global": float(num_prompts_global),
             "completion_length": completion_length,
