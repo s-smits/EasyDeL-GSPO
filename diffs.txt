@@ -1,0 +1,270 @@
+diff --git a/AGENTS.md b/AGENTS.md
+deleted file mode 100644
+index 22842858..00000000
+--- a/AGENTS.md
++++ /dev/null
+@@ -1,2 +0,0 @@
+-Try to minimal, effective changes, unless the user intends otherwise.
+-Don't use use_cache=True, cache does not work for Qwen3-1.7B.
+\ No newline at end of file
+diff --git a/EasyDeL-GSPO b/EasyDeL-GSPO
+deleted file mode 160000
+index ffeb7237..00000000
+--- a/EasyDeL-GSPO
++++ /dev/null
+@@ -1 +0,0 @@
+-Subproject commit ffeb723779dc9dda48c6f3002d478efbaff8224f
+diff --git a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+index 2accd57f..5aea0d1c 100644
+--- a/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
++++ b/easydel/trainers/group_relative_policy_optimization/grpo_trainer.py
+@@ -340,41 +340,37 @@ class GRPOTrainer(Trainer):
+             )
+ 
+         # Shard dataset per JAX process to balance difficulty and avoid excessive duplicates
+-        if getattr(self.arguments, 'disable_dataset_sharding', False):
+-            if jax.process_index() == 0 and getattr(self.arguments, 'verbose', True):
+-                logger.info('Dataset sharding disabled by arguments.disable_dataset_sharding=True')
+-        else:
++        try:
++            import jax as _jax  # local import to avoid top-level overhead
++            if isinstance(dataset, Dataset):
++                # Deterministic shuffle before sharding to interleave difficulty evenly
+                 try:
+-                    import jax  # local import to avoid top-level overhead
+-                    if isinstance(dataset, Dataset):
+-                        # Deterministic shuffle before sharding to interleave difficulty evenly
+-                        try:
+-                            _seed = int(getattr(arguments, "seed", 17))
+-                        except Exception:
+-                            _seed = 17
+-                        dataset = dataset.shuffle(seed=_seed)
+-                        shard_count = getattr(arguments, "grain_shard_count", None)
+-                        shard_index = getattr(arguments, "grain_shard_index", None)
+-                        if shard_count is None:
+-                            shard_count = max(1, int(jax.process_count()))
+-                        if shard_index is None:
+-                            shard_index = max(0, int(jax.process_index()))
+-                        # Only shard when more than one process
+-                        if int(shard_count) > 1:
+-                            try:
+-                                dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
+-                                if jax.process_index() == 0:
+-                                    print(f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}")
+-                                    logger.info(
+-                                        f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
+-                                    )
+-                            except Exception as e:
+-                                print(f"DEBUG: Dataset sharding failed for {dataset_name}: {e}")
+-                                logger.warning(f"Dataset sharding failed for {dataset_name}: {e}")
+-                except Exception as _e:
+-                    # Best-effort: continue without sharding if anything goes wrong
+-                    if jax.process_index() == 0:
+-                        logger.debug(f"Skipping dataset sharding for {dataset_name}: {_e}")
++                    _seed = int(getattr(arguments, "seed", 17))
++                except Exception:
++                    _seed = 17
++                dataset = dataset.shuffle(seed=_seed)
++                shard_count = getattr(arguments, "grain_shard_count", None)
++                shard_index = getattr(arguments, "grain_shard_index", None)
++                if shard_count is None:
++                    shard_count = max(1, int(_jax.process_count()))
++                if shard_index is None:
++                    shard_index = max(0, int(_jax.process_index()))
++                # Only shard when more than one process
++                if int(shard_count) > 1:
++                    try:
++                        dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
++                        if _jax.process_index() == 0:
++                            print(f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}")
++                            logger.info(
++                                f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
++                            )
++                    except Exception as e:
++                        print(f"DEBUG: Dataset sharding failed for {dataset_name}: {e}")
++                        logger.warning(f"Dataset sharding failed for {dataset_name}: {e}")
++        except Exception as _e:
++            # Best-effort: continue without sharding if anything goes wrong
++            if jax.process_index() == 0:
++                logger.debug(f"Skipping dataset sharding for {dataset_name}: {_e}")
+ 
+         def _tokenize(example):
+             return processing_class(
+@@ -582,7 +578,7 @@ class GRPOTrainer(Trainer):
+                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
+                     num_return_sequences=num_return_sequences,
+                     do_sample=True,
+-                    use_cache=True,
++                    use_cache=False,
+                 )
+                 
+                 # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
+@@ -608,7 +604,9 @@ class GRPOTrainer(Trainer):
+                     generation_config=generation_config,
+                     prng_key=prng_key,
+                 ).sequences
+-                # Return inputs unchanged; avoid placement rebinding drift
++                # Return inputs re-constrained to the input sharding spec to allow repeated calls
++                input_ids = with_sharding_constraint(input_ids, adaptive_spec)
++                attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
+                 return sequences, input_ids, attention_mask
+ 
+         self.generate_function = generate
+@@ -890,39 +888,12 @@ class GRPOTrainer(Trainer):
+ 
+             base_prompt_len = prompt_ids.shape[-1]
+             nrs_remaining = int(self.num_generations)
+-
+-            # DP safety: slice to a common B across hosts
+-            try:
+-                B_local = int(prompt_ids.shape[0])
+-            except Exception:
+-                B_local = 0
+-            try:
+-                all_B = jax.experimental.multihost_utils.process_allgather(jnp.asarray([B_local], jnp.int32)).reshape(-1)
+-                B_uniform = int(jnp.min(all_B))
+-            except Exception:
+-                B_uniform = B_local
+-            prompt_ids = prompt_ids[:B_uniform]
+-            prompt_mask = prompt_mask[:B_uniform]
+-
+             # Create a simple per-step base seed; fold in process index via the seed formula
+             try:
+                 cur_step_int = int(jax.device_get(state.step))
+             except Exception:
+                 cur_step_int = 0
+             chunk_idx = 0
+-
+-            # Assert identical program signature across hosts (content can differ)
+-            try:
+-                sig = jnp.array([
+-                    int(prompt_ids.shape[0]),
+-                    int(self.arguments.max_prompt_length),
+-                    int(self.arguments.max_completion_length),
+-                    int(self.num_generations),
+-                ], dtype=jnp.int32)
+-                _ = jax.experimental.multihost_utils.assert_equal(sig)
+-            except Exception:
+-                pass
+-
+             while nrs_remaining > 0:
+                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
+                 with capture_time() as generation_time_fn:
+@@ -930,7 +901,7 @@ class GRPOTrainer(Trainer):
+                     # Ensure seed is always positive and within 32-bit range
+                     per_chunk_seed = int((cur_step_int * 131071 + 4099 * abs(jax.process_index()) + chunk_idx) % (2**31 - 1))
+                     per_chunk_seed = max(1, per_chunk_seed)
+-                    seq_chunk, _ret_ids, _ret_mask = jax.block_until_ready(
++                    seq_chunk, prompt_ids, prompt_mask = jax.block_until_ready(
+                         self.generate_function(state, prompt_ids, prompt_mask, cur_nrs, per_chunk_seed)
+                     )
+                 # Debug output removed to prevent host divergence in compiled code
+@@ -1022,34 +993,6 @@ class GRPOTrainer(Trainer):
+                 skip_special_tokens=True,
+             )
+ 
+-            # All-workers debug: print per-process prompt and its R completions
+-            if getattr(self.arguments, "debug_log_all_workers", False):
+-                try:
+-                    B = int(prompt_ids.shape[0])
+-                    R = int(self.num_generations)
+-                    log_n = min(2, B)
+-                    for i in range(log_n):
+-                        start = i * R
+-                        end = start + R
+-                        try:
+-                            a_obj = batch.get("answer", None)
+-                            gt = a_obj[i] if (a_obj is not None and hasattr(a_obj, "__getitem__")) else a_obj
+-                        except Exception:
+-                            gt = None
+-                        try:
+-                            prompt_i = prompts[i] if isinstance(prompts, list) else str(prompts)
+-                        except Exception:
+-                            prompt_i = ""
+-                        try:
+-                            outs = completions_text[start:end]
+-                        except Exception:
+-                            outs = []
+-                        logger.info("[W%s] prompt[%d/%d] len=%d gt=%s" % (jax.process_index(), i, B, len(str(prompt_i)), str(gt)))
+-                        for r, o in enumerate(outs):
+-                            _o = str(o).replace("\n", " ")[:256]
+-                            logger.info("[W%s]   r=%d: %s" % (jax.process_index(), r, _o))
+-                except Exception as _eaw:
+-                    logger.debug(f"all-workers debug failed: {_eaw}")
+             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+                 try:
+                     logger.debug(
+@@ -1478,48 +1421,6 @@ class GRPOTrainer(Trainer):
+             proc_count = 1
+         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
+         # Local metrics plus safe global scalars (if available)
+-        # Assert/warn if batch size < DP, as success-rate may be capped at B/DP
+-        try:
+-            dp = int(jax.process_count())
+-            if getattr(self.arguments, 'warn_when_batch_smaller_than_dp', True) and dp > 0:
+-                if num_prompts_local < dp and jax.process_index() == 0:
+-                    logger.warning(
+-                        f"Batch smaller than DP: B_local={num_prompts_local} < DP={dp}. "
+-                        f"Per-process success-rate may be capped at ~B/DP={num_prompts_local/max(1,dp):.2f}."
+-                    )
+-        except Exception:
+-            pass
+-        # Local metrics plus safe global scalars (if available)
+-        # Assert/warn if batch size < DP, as success-rate may be capped at B/DP
+-        try:
+-            dp = int(jax.process_count())
+-            if getattr(self.arguments, 'warn_when_batch_smaller_than_dp', True) and dp > 0:
+-                if num_prompts_local < dp and jax.process_index() == 0:
+-                    logger.warning(
+-                        f"Batch smaller than DP: B_local={num_prompts_local} < DP={dp}. "
+-                        f"Per-process success-rate may be capped at ~B/DP={num_prompts_local/max(1,dp):.2f}."
+-                    )
+-        except Exception:
+-            pass
+-        # Add explicit denominators to avoid confusion when B < DP
+-        try:
+-            denom_comp_global = int(total_comp_global)
+-        except Exception:
+-            denom_comp_global = int(num_completions_local)
+-        try:
+-            denom_prompts_global = int(num_prompts_global)
+-        except Exception:
+-            denom_prompts_global = int(num_prompts_local)
+-        # Optional one-line rollouts mapping for quick sanity (proc0 only)
+-        if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
+-            try:
+-                participants = int(jax.process_count())
+-                logger.info(
+-                    f"rollouts: B_local={num_prompts_local}, R={int(self.num_generations)}, "
+-                    f"C_proc={num_completions_local}, participants={participants}, C_global~={participants * num_completions_local}"
+-                )
+-            except Exception:
+-                pass
+         metrics_dict = {
+             "reward/mean_per_completion": per_completion_mean_reward,
+             "reward/success_rate_completions": float(success_rate_comp_local),
+@@ -1527,11 +1428,6 @@ class GRPOTrainer(Trainer):
+             # Safe global scalars for display only
+             "reward/success_rate_completions_global": float(success_rate_comp_global),
+             "reward/pass_at_k_global": float(pass_at_k_global),
+-            # Explicit denominators
+-            "reward/denominator/completions_local": float(num_completions_local),
+-            "reward/denominator/prompts_local": float(num_prompts_local),
+-            "reward/denominator/completions_global": float(denom_comp_global),
+-            "reward/denominator/prompts_global": float(denom_prompts_global),
+             "rollouts/total_global": float(total_comp_global),
+             "rollouts/queries_global": float(num_prompts_global),
+             "completion_length": completion_length,
+diff --git a/easydel/trainers/training_configurations.py b/easydel/trainers/training_configurations.py
+index 0623c8a1..0f998d8d 100644
+--- a/easydel/trainers/training_configurations.py
++++ b/easydel/trainers/training_configurations.py
+@@ -432,7 +432,7 @@ class TrainingArguments:
+         metadata={"help": "Whether to use a data collator."},
+     )
+     use_grain: bool = field(
+-        default=False,
++        default=True,
+         metadata={"help": "Whether to use grain instead of `tensorflow-datasets`."},
+     )
+     use_wandb: bool = field(

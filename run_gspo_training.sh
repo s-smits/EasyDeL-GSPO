@@ -20,7 +20,9 @@ export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin stable-fix --force
+git pull origin
+git reset --hard origin/stable-fix
+
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -41,11 +43,11 @@ echo "Curriculum math: ${CURRICULUM_MATH}"
 #   If total_batch_size < DP, the planner will cap DP to batch size and use FSDP
 #   to fill remaining devices (e.g., dp=2, fsdp=2 on 16 devices when batch=2).
 
-python easydel/scripts/finetune/gsm8k_math_gspo.py \
+/home/air/.venv/bin/python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
-  --total_batch_size 1 \
+  --total_batch_size 4 \
   --num_return_sequences 4 \
   --rollout_chunk_size 4 \
   --num_train_epochs 2 \
@@ -66,7 +68,8 @@ python easydel/scripts/finetune/gsm8k_math_gspo.py \
   --temperature 0.7 \
   --top_p 0.95 \
   --top_k 50 \
-  --advantage_epsilon 1e-6
+  --advantage_epsilon 1e-6 \
+  --verbose true
 
 #   --force_data_parallel 1 \
 

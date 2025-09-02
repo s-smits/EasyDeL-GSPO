@@ -26,7 +26,7 @@ try:
         replicate_to_length,
         is_main_process,
         safe_global_sum,
-        extract_answer_from_xml,
+        extract_answer_from_xml as _extract_answer_from_xml_util,
     )
 except Exception:  # pragma: no cover
     _extract_text_util = None  # type: ignore
@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover
     replicate_to_length = None  # type: ignore
     is_main_process = lambda: True  # type: ignore
     safe_global_sum = lambda x: x  # type: ignore
+    _extract_answer_from_xml_util = None  # type: ignore
 
 
 def _extract_text(comp) -> str:
@@ -144,7 +145,21 @@ def _math_verify_numeric_check(solution_str: str, ground_truth: str, **kwargs) -
 
 
 def _extract_answer_from_xml(solution_str: str) -> str | None:
-    return extract_answer_from_xml(solution_str)
+    """Best-effort extraction from <answer> tags; falls back to None.
+
+    Avoids linter error when reward_utils.extract_answer_from_xml is unavailable.
+    """
+    try:
+        if _extract_answer_from_xml_util is not None:
+            return _extract_answer_from_xml_util(solution_str)
+    except Exception:
+        pass
+    try:
+        if isinstance(solution_str, str) and "<answer>" in solution_str and "</answer>" in solution_str:
+            return solution_str.split("<answer>", 1)[1].split("</answer>", 1)[0]
+    except Exception:
+        pass
+    return None
 
 
 # format_reward removed — not used anymore (we measure only correctness)

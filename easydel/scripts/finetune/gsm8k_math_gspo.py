@@ -225,7 +225,7 @@ def main():
         from easydel.verification.gsm8k_reward import answer_reward as gsm8k_answer_reward
 
         def data_tokenize_fn(batch, tokenizer, tools):
-            ids = tokenizer(
+            tokenized = tokenizer(
                 batch["prompt"],
                 return_tensors="np",
                 padding="max_length",
@@ -242,8 +242,11 @@ def main():
                 normed = [_norm(a) for a in batch["answer"]]
             else:
                 normed = _norm(batch["answer"]) if batch.get("answer") is not None else batch.get("answer")
-            ids.update({"answer": normed})
-            return ids
+            return {
+                "input_ids": tokenized["input_ids"],
+                "attention_mask": tokenized["attention_mask"],
+                "answer": normed,
+            }
 
         reward_funcs = [gsm8k_answer_reward]
 
@@ -257,7 +260,7 @@ def main():
             pass
 
         def data_tokenize_fn(batch, tokenizer, tools):
-            ids = tokenizer(
+            tokenized = tokenizer(
                 batch["prompt"],
                 return_tensors="np",
                 padding="max_length",
@@ -308,8 +311,18 @@ def main():
             else:
                 b = _extract_last_boxed(sol)
                 normalized = _remove_boxed(b) if b else sol
-            ids.update({"solution": sol, "solution_normalized": normalized})
-            return ids
+            result = {
+                "input_ids": tokenized["input_ids"],
+                "attention_mask": tokenized["attention_mask"],
+                "solution": sol,
+                "solution_normalized": normalized,
+            }
+            # Preserve curriculum fields when present
+            if "level" in batch:
+                result["level"] = batch["level"]
+            if "type" in batch:
+                result["type"] = batch["type"]
+            return result
 
         reward_funcs = [math_answer_reward]
 
