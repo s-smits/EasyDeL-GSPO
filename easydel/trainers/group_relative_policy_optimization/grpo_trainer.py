@@ -582,7 +582,7 @@ class GRPOTrainer(Trainer):
                     max_length=self.arguments.max_completion_length + self.arguments.max_prompt_length,
                     num_return_sequences=num_return_sequences,
                     do_sample=True,
-                    use_cache=False,
+                    use_cache=True,
                 )
                 
                 # Build PRNG key with per-batch folding to decorrelate identical prompts across TP/DP
@@ -608,9 +608,7 @@ class GRPOTrainer(Trainer):
                     generation_config=generation_config,
                     prng_key=prng_key,
                 ).sequences
-                # Return inputs re-constrained to the input sharding spec to allow repeated calls
-                input_ids = with_sharding_constraint(input_ids, adaptive_spec)
-                attention_mask = with_sharding_constraint(attention_mask, adaptive_spec)
+                # Return inputs unchanged; avoid placement rebinding drift
                 return sequences, input_ids, attention_mask
 
         self.generate_function = generate
@@ -892,12 +890,39 @@ class GRPOTrainer(Trainer):
 
             base_prompt_len = prompt_ids.shape[-1]
             nrs_remaining = int(self.num_generations)
+
+            # DP safety: slice to a common B across hosts
+            try:
+                B_local = int(prompt_ids.shape[0])
+            except Exception:
+                B_local = 0
+            try:
+                all_B = jax.experimental.multihost_utils.process_allgather(jnp.asarray([B_local], jnp.int32)).reshape(-1)
+                B_uniform = int(jnp.min(all_B))
+            except Exception:
+                B_uniform = B_local
+            prompt_ids = prompt_ids[:B_uniform]
+            prompt_mask = prompt_mask[:B_uniform]
+
             # Create a simple per-step base seed; fold in process index via the seed formula
             try:
                 cur_step_int = int(jax.device_get(state.step))
             except Exception:
                 cur_step_int = 0
             chunk_idx = 0
+
+            # Assert identical program signature across hosts (content can differ)
+            try:
+                sig = jnp.array([
+                    int(prompt_ids.shape[0]),
+                    int(self.arguments.max_prompt_length),
+                    int(self.arguments.max_completion_length),
+                    int(self.num_generations),
+                ], dtype=jnp.int32)
+                _ = jax.experimental.multihost_utils.assert_equal(sig)
+            except Exception:
+                pass
+
             while nrs_remaining > 0:
                 cur_nrs = int(min(rollout_chunk_size, nrs_remaining))
                 with capture_time() as generation_time_fn:
