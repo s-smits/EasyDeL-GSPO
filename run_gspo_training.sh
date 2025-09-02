@@ -20,7 +20,7 @@ export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin stable-fix
+git pull origin stable-fix --force
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
@@ -42,10 +42,10 @@ echo "Curriculum math: ${CURRICULUM_MATH}"
 #   to fill remaining devices (e.g., dp=2, fsdp=2 on 16 devices when batch=2).
 
 python easydel/scripts/finetune/gsm8k_math_gspo.py \
-  --repo_id "Qwen/Qwen3-0.6B" \
+  --repo_id "Qwen/Qwen3-1.7B" \
   --dataset ${DATASET} \
   --curriculum_math ${CURRICULUM_MATH} \
-  --total_batch_size 4 \
+  --total_batch_size 1 \
   --num_return_sequences 4 \
   --rollout_chunk_size 4 \
   --num_train_epochs 2 \
