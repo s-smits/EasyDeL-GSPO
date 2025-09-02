@@ -993,6 +993,34 @@ class GRPOTrainer(Trainer):
                 skip_special_tokens=True,
             )
 
+            # All-workers debug: print per-process prompt and its R completions
+            if getattr(self.arguments, "debug_log_all_workers", False):
+                try:
+                    B = int(prompt_ids.shape[0])
+                    R = int(self.num_generations)
+                    log_n = min(2, B)
+                    for i in range(log_n):
+                        start = i * R
+                        end = start + R
+                        try:
+                            a_obj = batch.get("answer", None)
+                            gt = a_obj[i] if (a_obj is not None and hasattr(a_obj, "__getitem__")) else a_obj
+                        except Exception:
+                            gt = None
+                        try:
+                            prompt_i = prompts[i] if isinstance(prompts, list) else str(prompts)
+                        except Exception:
+                            prompt_i = ""
+                        try:
+                            outs = completions_text[start:end]
+                        except Exception:
+                            outs = []
+                        logger.info("[W%s] prompt[%d/%d] len=%d gt=%s" % (jax.process_index(), i, B, len(str(prompt_i)), str(gt)))
+                        for r, o in enumerate(outs):
+                            _o = str(o).replace("\n", " ")[:256]
+                            logger.info("[W%s]   r=%d: %s" % (jax.process_index(), r, _o))
+                except Exception as _eaw:
+                    logger.debug(f"all-workers debug failed: {_eaw}")
             if jax.process_index() == 0 and getattr(self.arguments, "verbose", True):
                 try:
                     logger.debug(
