@@ -345,7 +345,7 @@ class GRPOTrainer(Trainer):
                 logger.info('Dataset sharding disabled by arguments.disable_dataset_sharding=True')
         else:
                 try:
-                    import jax as _jax  # local import to avoid top-level overhead
+                    import jax  # local import to avoid top-level overhead
                     if isinstance(dataset, Dataset):
                         # Deterministic shuffle before sharding to interleave difficulty evenly
                         try:
@@ -356,14 +356,14 @@ class GRPOTrainer(Trainer):
                         shard_count = getattr(arguments, "grain_shard_count", None)
                         shard_index = getattr(arguments, "grain_shard_index", None)
                         if shard_count is None:
-                            shard_count = max(1, int(_jax.process_count()))
+                            shard_count = max(1, int(jax.process_count()))
                         if shard_index is None:
-                            shard_index = max(0, int(_jax.process_index()))
+                            shard_index = max(0, int(jax.process_index()))
                         # Only shard when more than one process
                         if int(shard_count) > 1:
                             try:
                                 dataset = dataset.shard(num_shards=int(shard_count), index=int(shard_index), contiguous=False)
-                                if _jax.process_index() == 0:
+                                if jax.process_index() == 0:
                                     print(f"DEBUG: Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}")
                                     logger.info(
                                         f"Applied dataset sharding for {dataset_name}: index={int(shard_index)} num_shards={int(shard_count)}"
