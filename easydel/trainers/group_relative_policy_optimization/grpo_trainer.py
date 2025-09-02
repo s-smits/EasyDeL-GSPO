@@ -1478,7 +1478,29 @@ class GRPOTrainer(Trainer):
             proc_count = 1
         dp_size = max(1, min(int(mesh_dp), int(proc_count)))
         # Local metrics plus safe global scalars (if available)
+        # Assert/warn if batch size < DP, as success-rate may be capped at B/DP
+        try:
+            dp = int(jax.process_count())
+            if getattr(self.arguments, 'warn_when_batch_smaller_than_dp', True) and dp > 0:
+                if num_prompts_local < dp and jax.process_index() == 0:
+                    logger.warning(
+                        f"Batch smaller than DP: B_local={num_prompts_local} < DP={dp}. "
+                        f"Per-process success-rate may be capped at ~B/DP={num_prompts_local/max(1,dp):.2f}."
+                    )
+        except Exception:
+            pass
         # Local metrics plus safe global scalars (if available)
+        # Assert/warn if batch size < DP, as success-rate may be capped at B/DP
+        try:
+            dp = int(jax.process_count())
+            if getattr(self.arguments, 'warn_when_batch_smaller_than_dp', True) and dp > 0:
+                if num_prompts_local < dp and jax.process_index() == 0:
+                    logger.warning(
+                        f"Batch smaller than DP: B_local={num_prompts_local} < DP={dp}. "
+                        f"Per-process success-rate may be capped at ~B/DP={num_prompts_local/max(1,dp):.2f}."
+                    )
+        except Exception:
+            pass
         # Add explicit denominators to avoid confusion when B < DP
         try:
             denom_comp_global = int(total_comp_global)
