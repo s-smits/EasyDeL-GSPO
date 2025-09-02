@@ -20,7 +20,7 @@ export EASYDEL_DISABLE_GLOBAL_AGG=1
 
 # Pull latest changes and install
 echo "Setting up environment..."
-git pull origin stable 2>/dev/null || true
+git pull origin stable-fix 2>/dev/null || true
 uv pip install -e . --quiet
 uv pip install "math-verify[antlr4_13_2]" --quiet || true
 
