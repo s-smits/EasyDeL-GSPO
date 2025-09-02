@@ -432,7 +432,7 @@ class TrainingArguments:
         metadata={"help": "Whether to use a data collator."},
     )
     use_grain: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to use grain instead of `tensorflow-datasets`."},
     )
     use_wandb: bool = field(
