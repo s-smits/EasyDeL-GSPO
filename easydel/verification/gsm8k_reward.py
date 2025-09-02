@@ -37,18 +37,40 @@ except Exception:  # pragma: no cover
 
 
 def _extract_text(comp) -> str:
+    """Extract assistant text from a completion container.
+
+    - Use repo helper if available.
+    - If a list of chat messages, prefer the last assistant message, else the
+      last dict with 'content', else the last string; finally stringify.
+    - If a single dict with 'content', return it. If a string, return as-is.
+    """
     if _extract_text_util is not None:
         try:
             return _extract_text_util(comp)
         except Exception:
             pass
+    # Chat-style list
     if isinstance(comp, list) and comp:
-        c0 = comp[0]
-        if isinstance(c0, dict) and "content" in c0:
-            return c0["content"]
-        if isinstance(c0, str):
-            return c0
-        return str(c0)
+        try:
+            for item in reversed(comp):
+                if isinstance(item, dict) and item.get("role") == "assistant" and "content" in item:
+                    return item["content"]
+            for item in reversed(comp):
+                if isinstance(item, dict) and "content" in item:
+                    return item["content"]
+            for item in reversed(comp):
+                if isinstance(item, str):
+                    return item
+            return str(comp[-1])
+        except Exception:
+            return str(comp)
+    # Single dict
+    if isinstance(comp, dict) and "content" in comp:
+        try:
+            return comp["content"]
+        except Exception:
+            return str(comp)
+    # Raw string
     if isinstance(comp, str):
         return comp
     return ""
@@ -389,16 +411,8 @@ def debug_model_outputs(completions: List[list[dict]], batch, max_examples: int 
             gts = [gt_raw] if gt_raw is not None and not isinstance(gt_raw, list) else []
 
     for i, (comp, gt) in enumerate(zip(completions[:max_examples], gts[:max_examples])):
-        # Handle different completion formats
-        if isinstance(comp, list) and len(comp) > 0:
-            if isinstance(comp[0], dict) and "content" in comp[0]:
-                text = comp[0]["content"]
-            elif isinstance(comp[0], str):
-                text = comp[0]
-            else:
-                text = str(comp[0])
-        else:
-            text = str(comp)
+        # Use the same extractor as the verifier to avoid showing system prompts
+        text = _extract_text(comp) or str(comp)
 
         logger.info(f"\n--- DEBUG EXAMPLE {i+1} ---")
         logger.info(f"Ground truth: '{gt}' (type: {type(gt)})")
@@ -482,5 +496,3 @@ __all__ = [
     "debug_model_outputs",
     "test_verification_with_sample_data",
 ]
-
-
